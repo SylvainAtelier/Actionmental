@@ -1,0 +1,36 @@
+*.iml
+.gradle/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild
+.cxx
+.kotlin/
+
+# Local-only files, including signing material and private audit notes.
+.local/
+
+# Signing material must never enter the repository.
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.jks.base64
+keystore.properties
+
+# Generated release and diagnostic artifacts.
+*.apk
+*.aab
+*.apks
+*.hprof
+*.log
+*.tmp
+*.bak
+
+# Environment files may contain credentials.
+.env
+.env.*
+!.env.example

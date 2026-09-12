@@ -1,0 +1,32 @@
+/* Actionmental · KEYCAP 设计令牌 v1 — 浅色默认，深色为 [data-theme="dark"] */
+:root{
+  --am-bg:#E8E4DC; --am-bg-screen:#EFEBE2; --am-surface:#FFFDF8; --am-surface-sunken:#F4F0E6;
+  --am-line:#DED8CA; --am-line-soft:#EAE4D7; --am-shadow-solid:#E2DCCE;
+  --am-ink:#1B1917; --am-ink-mid:#57514A; --am-ink-muted:#8A837A; --am-ink-faint:#B4ADA2;
+  --am-accent:#C8452B; --am-accent-ink:#8A2C16; --am-accent-bg:#FFF3EF; --am-accent-line:#E8BCB0;
+  --am-ok:#2F7A4F; --am-warn:#B8791F;
+  --am-keycap-face:#F7F3EA; --am-keycap-line:#D8D2C6; --am-keycap-shadow:#C9C2B4;
+  --am-r-card:12px; --am-r-sheet:18px; --am-r-key:6px; --am-r-chip:20px;
+  --am-gap-1:8px; --am-gap-2:10px; --am-gap-3:14px; --am-gap-4:18px;
+  --am-pad-screen:18px; --am-pad-card:13px;
+  --am-font-ui:"IBM Plex Sans","Noto Sans SC",system-ui,sans-serif;
+  --am-font-mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+[data-theme="dark"]{
+  --am-bg:#0F0E0D; --am-bg-screen:#171614; --am-surface:#201F1C; --am-surface-sunken:#221F1B;
+  --am-line:#302E29; --am-line-soft:#2A2822; --am-shadow-solid:#100F0E;
+  --am-ink:#F2EEE6; --am-ink-mid:#A29A8E; --am-ink-muted:#8A837A; --am-ink-faint:#6B655C;
+  --am-accent:#E4653F; --am-accent-ink:#F2A98F; --am-accent-bg:#241A16; --am-accent-line:#4A2C22;
+  --am-ok:#5FBF87; --am-warn:#D8A23E;
+  --am-keycap-face:#2E2B26; --am-keycap-line:#45403A; --am-keycap-shadow:#100F0E;
+}
+/* 字号阶梯(sp)：页标题 21/700 · 卡片标题 15/700 · 正文 12.5/600 · 次要 11/400
+   等宽数据 11.5/400 · 全大写标签 9.5/500 letter-spacing .12em */
+.am-key{display:inline-flex;align-items:center;padding:4px 8px;border-radius:var(--am-r-key);
+  background:var(--am-keycap-face);border:1px solid var(--am-keycap-line);
+  box-shadow:0 2px 0 var(--am-keycap-shadow);font:600 11px var(--am-font-mono);color:var(--am-ink)}
+.am-key[data-pressed]{box-shadow:0 0 0 var(--am-keycap-shadow);transform:translateY(2px)}
+.am-key[data-main]{background:var(--am-accent);border-color:var(--am-accent);color:#fff;box-shadow:0 2px 0 var(--am-accent-ink)}
+.am-card{background:var(--am-surface);border:1px solid var(--am-line);border-radius:var(--am-r-card);
+  padding:var(--am-pad-card);box-shadow:0 2px 0 var(--am-shadow-solid)}
+.am-card[data-alert]{background:var(--am-accent-bg);border-color:var(--am-accent-line)}

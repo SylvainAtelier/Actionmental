@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  debug 变体的显示名一律带后缀。
+  这个应用的三个入口都按应用名列出：桌面图标、无障碍服务列表、快捷设置磁贴。
+  两个同名条目会让人分不清正在调试哪一个，甚至给错误的那个开无障碍权限。
+-->
+<resources>
+    <string name="app_name">Actionmental Debug</string>
+
+    <string name="accessibility_service_label">Actionmental 键盘服务 (Debug)</string>
+
+    <string name="tile_force_landscape">强制横屏 (D)</string>
+    <string name="tile_rotation_cycle">旋转循环 (D)</string>
+</resources>

@@ -1,0 +1,270 @@
+name: Release (Manual)
+
+# 手动触发的发布流程：
+#   1. 自动根据最新的 git tag 计算下一个版本号
+#   2. 先建草稿 Release（含自动生成的 Release Note）
+#   3. 构建签名 APK 并上传到这个草稿 Release
+#   4. 确认至少有一个产物后，把草稿正式发布（此时才创建 tag）
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: '版本号递增方式 (基于最新 tag 计算)'
+        type: choice
+        required: true
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+      prerelease:
+        description: '标记为预发布版本 (pre-release)'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  # ────────────────────────────────────────────────
+  # ① 计算版本号 + 创建草稿 Release（含自动 Release Note）
+  # ────────────────────────────────────────────────
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release_id: ${{ steps.release.outputs.release_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 需要完整历史与 tag 才能计算版本号
+
+      - name: Compute next version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `git tag | head` 会因 head 提前关闭管道而让 git 收到 SIGPIPE，
+          # 在 `pipefail` 下导致整步失败。改用 sort 后取首行，避免 SIGPIPE。
+          LATEST=$(git tag -l 'v*' --sort=-v:refname | sed -n '1p' || true)
+          if [ -z "$LATEST" ]; then LATEST="v0.0.0"; fi
+          echo "Latest tag: $LATEST"
+          # 仅保留形如 vMAJOR.MINOR.PATCH 的数字部分，剔除预发布后缀等噪声。
+          VER=$(printf '%s' "${LATEST#v}" | grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+' || echo '0.0.0')
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VER"
+          MAJOR=${MAJOR:-0}; MINOR=${MINOR:-0}; PATCH=${PATCH:-0}
+          case "${{ github.event.inputs.bump }}" in
+            major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR+1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH+1)) ;;
+          esac
+          NEW="$MAJOR.$MINOR.$PATCH"
+          # 兜底校验：必须是合法 semver，否则立即失败而不是把空值带到下游。
+          if ! printf '%s' "$NEW" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Computed version is not a valid semver: '$NEW'"
+            exit 1
+          fi
+          echo "Next version: $NEW"
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+
+      - name: Create draft release with generated notes
+        id: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="v$VERSION"
+          PRERELEASE=false
+          if [ "${{ github.event.inputs.prerelease }}" = "true" ]; then
+            PRERELEASE=true
+          fi
+          # 直接用 REST API 创建草稿 Release，并从返回 JSON 中读取 id。
+          # 草稿 Release 还未创建 git tag，会处于 "untagged" 状态，按 tag_name
+          # 过滤可能匹配不到，故直接从创建响应里取 id 最可靠。
+          RESPONSE=$(gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
+            -f tag_name="$TAG" \
+            -f name="$TAG" \
+            -f target_commitish="$GITHUB_SHA" \
+            -F draft=true \
+            -F generate_release_notes=true \
+            -F prerelease="$PRERELEASE")
+          RELEASE_ID=$(printf '%s' "$RESPONSE" | jq -r '.id')
+          if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
+            echo "::error::Failed to create draft release for ${TAG}"
+            printf '%s\n' "$RESPONSE" >&2
+            exit 1
+          fi
+          echo "Created draft release ${TAG} (id=$RELEASE_ID)"
+          echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
+
+  # ────────────────────────────────────────────────
+  # ② 构建签名 APK 并上传到同一个草稿 Release
+  # ────────────────────────────────────────────────
+  # 正式发布必须使用稳定的 release 签名。缺任一 Secret 就直接失败，绝不静默退回
+  # 未签名或 debug 签名——签名一旦不一致，用户覆盖安装必然「签名冲突」。
+  # 需要的 Secret 见 docs/签名与发布.md：
+  #   ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD /
+  #   ANDROID_KEY_PASSWORD / ANDROID_KEY_ALIAS
+  build-android:
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Configure Android release signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -z "${ANDROID_KEYSTORE_BASE64:-}" ]   && missing="$missing ANDROID_KEYSTORE_BASE64"
+          [ -z "${ANDROID_KEYSTORE_PASSWORD:-}" ] && missing="$missing ANDROID_KEYSTORE_PASSWORD"
+          [ -z "${ANDROID_KEY_PASSWORD:-}" ]      && missing="$missing ANDROID_KEY_PASSWORD"
+          [ -z "${ANDROID_KEY_ALIAS:-}" ]         && missing="$missing ANDROID_KEY_ALIAS"
+          if [ -n "$missing" ]; then
+            echo "::error::缺少 Android 发布签名 Secret:$missing。请在仓库 Settings → Secrets 中配置后重试。"
+            exit 1
+          fi
+
+          KS="$RUNNER_TEMP/actionmental.jks"
+          # 粘贴 Secret 时很容易带上尾随换行或 CR，base64 会解出一个坏文件，
+          # 报错却要等到 packageRelease 才浮现。这里先把所有空白剔掉。
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '\r\n \t' | base64 -d > "$KS"
+          STORE_PW=$(printf '%s' "$ANDROID_KEYSTORE_PASSWORD" | tr -d '\r\n')
+          KEY_PW=$(printf '%s' "$ANDROID_KEY_PASSWORD" | tr -d '\r\n')
+          ALIAS=$(printf '%s' "$ANDROID_KEY_ALIAS" | tr -d '\r\n')
+          echo "::add-mask::$STORE_PW"
+          echo "::add-mask::$KEY_PW"
+
+          # 预检签名材料，把 AGP 那句 "Failed to read key *** from store: null"
+          # 拆成可分辨的失败：库打不开 / 别名不存在 / 私钥口令不对。
+          # 探针同时告诉我们哪个口令真能解开私钥（PKCS12 下恒为库口令）。
+          set +e
+          WHICH=$(KS_PATH="$KS" KS_PASSWORD="$STORE_PW" KS_ALIAS="$ALIAS" KEY_PASSWORD="$KEY_PW" \
+            java .github/scripts/SigningProbe.java)
+          PROBE_RC=$?
+          set -e
+          case "$PROBE_RC" in
+            0) ;;
+            10) echo "::error::打不开 keystore。要么 ANDROID_KEYSTORE_BASE64 内容不完整，要么 ANDROID_KEYSTORE_PASSWORD 不对。"; exit 1 ;;
+            11) echo "::error::ANDROID_KEY_ALIAS 与 keystore 里的别名对不上，实际条目见上方日志（别名不是机密）。"; exit 1 ;;
+            12) echo "::error::两个口令都解不开私钥。本地用 keytool -list -v -keystore actionmental.jks 核对别名与口令后重设 Secret。"; exit 1 ;;
+            *)  echo "::error::签名预检异常退出（rc=$PROBE_RC）。"; exit 1 ;;
+          esac
+
+          if [ "$WHICH" = "store" ]; then
+            # PKCS12 不支持库口令与密钥口令不同：keytool -genkeypair 会忽略 -keypass，
+            # 密钥口令恒等于库口令。把当初输入的 keypass 填进 Secret 就会读不出私钥。
+            echo "::warning::ANDROID_KEY_PASSWORD 解不开私钥，已改用 ANDROID_KEYSTORE_PASSWORD。这是 PKCS12 keystore 的常态，建议把 ANDROID_KEY_PASSWORD 改成与库口令相同的值。"
+            RESOLVED_KEY_PW="$STORE_PW"
+          else
+            RESOLVED_KEY_PW="$KEY_PW"
+          fi
+
+          # app/build.gradle.kts 无 keystore.properties 时读这四个环境变量。
+          # 这里回写的是清洗并校验过的值，后续步骤不再直接取原始 Secret。
+          echo "ANDROID_KEYSTORE_PATH=$KS" >> "$GITHUB_ENV"
+          echo "ANDROID_KEYSTORE_PASSWORD=$STORE_PW" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_PASSWORD=$RESOLVED_KEY_PW" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_ALIAS=$ALIAS" >> "$GITHUB_ENV"
+
+      # 仓库若在 Windows 上提交丢失了可执行位，这里补一次，避免 Permission denied。
+      - name: Make gradlew executable
+        shell: bash
+        run: chmod +x ./gradlew
+
+      # 签名相关的四个环境变量由上一步写入 GITHUB_ENV，此处无需再声明。
+      - name: Run unit tests and lint
+        shell: bash
+        run: ./gradlew --no-daemon :app:testReleaseUnitTest :app:lintRelease
+
+      - name: Build signed release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.create-release.outputs.version }}"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Invalid version received from create-release job: '$VERSION'"
+            exit 1
+          fi
+          # 只传 versionName。versionCode 由 app/build.gradle.kts 从它推导，
+          # 这样本地传同一个版本号就能得到同一个包 —— run_number 做不到这件事，
+          # 它连同一份代码重跑一次都会变。
+          ./gradlew --no-daemon :app:assembleRelease "-PversionName=$VERSION"
+
+      - name: Verify APK signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=$(ls app/build/outputs/apk/release/*.apk | sed -n '1p')
+          # runner 上装了多个 build-tools 版本，`.../*/apksigner` 会展开成多条路径，
+          # 第二条会被 apksigner 当成子命令 → "Unsupported command"。取版本号最高的那个。
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n1)
+          if [ -z "$APKSIGNER" ]; then
+            echo "::error::在 $ANDROID_HOME/build-tools 下找不到 apksigner。"
+            exit 1
+          fi
+          echo "Using $APKSIGNER"
+          "$APKSIGNER" verify --print-certs "$APK"
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+
+      - name: Upload APK to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.create-release.outputs.version }}"
+          RELEASE_ID="${{ needs.create-release.outputs.release_id }}"
+          ASSET_NAME="actionmental_${VERSION}_android_release.apk"
+          echo "Uploading $APK_PATH as $ASSET_NAME"
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Content-Type: application/vnd.android.package-archive" \
+            --data-binary @"$APK_PATH" \
+            "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=${ASSET_NAME}"
+
+  # ────────────────────────────────────────────────
+  # ③ 确认产物存在后，把草稿正式发布
+  # ────────────────────────────────────────────────
+  publish-release:
+    needs: [create-release, build-android]
+    if: ${{ always() && needs.create-release.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure the build produced artifacts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ASSET_COUNT=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/${{ needs.create-release.outputs.release_id }}/assets" \
+            --jq 'length')
+          echo "Release asset count: $ASSET_COUNT"
+          if [ "${ASSET_COUNT:-0}" -eq 0 ]; then
+            echo "::error::No build artifacts were uploaded; aborting publish."
+            exit 1
+          fi
+
+      - name: Publish release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "v${{ needs.create-release.outputs.version }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false

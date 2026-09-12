@@ -1,0 +1,3 @@
+-keep class com.actionmental.platform.shizuku.** { *; }
+-keep interface com.actionmental.platform.shizuku.** { *; }
+-keepclassmembers class ** { @kotlinx.serialization.Serializable *; }

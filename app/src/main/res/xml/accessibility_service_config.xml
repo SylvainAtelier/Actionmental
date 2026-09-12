@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    只订阅两样东西：实体按键，和「前台窗口换了」。
+
+    accessibilityFlags 里刻意不含 flagReportViewIds —— 那会让系统为每一个窗口事件
+    多带一份视图标识过来，而这个应用只看 event.packageName，一个字段都用不上。
+    canRetrieveWindowContent 同样保持 false：从不读界面内容（PRD 26）。
+
+    notificationTimeout 是同类事件的合并窗口。连着切几个应用时，中间那些一闪而过的
+    窗口本来就不该各触发一次规则匹配 —— 300ms 把它们并成一次，代价是应用级旋转规则
+    最多晚这么久生效，换来的是切应用时不再一连串地唤醒进程。
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagRequestFilterKeyEvents"
+    android:canRequestFilterKeyEvents="true"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="300"
+    android:summary="@string/accessibility_service_description" />

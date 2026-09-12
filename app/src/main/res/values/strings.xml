@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Actionmental</string>
+
+    <string name="accessibility_service_label">Actionmental 键盘服务</string>
+    <string name="accessibility_service_description">接收实体键盘按键并触发你配置的快捷键。仅读取按键码与前台应用包名，不记录文本输入，不联网。</string>
+
+    <string name="notification_channel_hardening">后台加固与自愈</string>
+    <string name="notification_channel_hardening_description">监听服务被系统关闭并自动恢复时提醒你。只在后台自动发生时发送，你自己点按钮不会有通知。</string>
+    <string name="notification_heal_ok_title">监听服务已自动恢复</string>
+    <string name="notification_heal_failed_title">监听服务被关闭，恢复失败</string>
+
+    <string name="notification_channel_awake">屏幕常亮</string>
+    <string name="notification_channel_awake_description">常亮开启期间在通知栏留一条，随手可以关掉。这条通知不会响，也不会自己消失 —— 它就是常亮本身的开关。</string>
+    <string name="notification_awake_title">屏幕常亮中</string>
+    <string name="notification_awake_text">屏幕会变暗但不会熄灭，持续耗电</string>
+    <string name="notification_awake_stop">关闭常亮</string>
+
+    <string name="notification_channel_keepalive">常驻运行</string>
+    <string name="notification_channel_keepalive_description">开启常驻后在通知栏留一条。它没有信息量，作用是让系统把本应用算作前台，温控清理后台时不再挑中它。</string>
+    <string name="notification_keepalive_title">Actionmental 常驻中</string>
+    <string name="notification_keepalive_text">保持监听服务不被系统回收</string>
+
+    <string name="tile_screen_awake">屏幕常亮</string>
+    <string name="tile_screen_awake_unavailable">设备不支持</string>
+    <string name="tile_force_landscape">强制横屏</string>
+    <string name="tile_rotation_cycle">旋转模式循环</string>
+    <string name="tile_on">已开启</string>
+    <string name="tile_off">已关闭</string>
+    <string name="tile_unavailable">Shizuku 不可用</string>
+    <string name="tile_paused">已暂停</string>
+</resources>
