@@ -197,7 +197,7 @@ class AppGraph private constructor(context: Context) {
      * 不需要前台服务，也不需要 Shizuku（PRD 3.4）。
      */
     val screenAwake = ScreenAwakeController(
-        switch = ScreenAwakeBackend(context),
+        switch = ScreenAwakeBackend(context, accessibility::boundService),
         persistIntent = { on -> settingsRepository.update { it.copy(screenAwake = on) } },
     )
 
@@ -576,6 +576,10 @@ class AppGraph private constructor(context: Context) {
             accessibility.connected.collect { on ->
                 if (on) eventLog.info("a11y", "监听服务已连接")
                 else eventLog.warn("a11y", "监听服务未连接")
+                // 常亮的悬浮层挂在服务实例上：服务一换（连上 / 掉线），旧窗口就作废了。
+                // 连上时按意图重挂（从唤醒锁兜底升级回悬浮层），掉线时按意图退回唤醒锁。
+                if (!pausedNow) screenAwake.restore(settingsRepository.load().screenAwake)
+                else screenAwake.refresh()
             }
         }
 
@@ -1211,7 +1215,7 @@ class AppGraph private constructor(context: Context) {
             eventLog.info(
                 "pause",
                 if (reason == PauseReason.NO_KEYBOARD) "未检测到键盘，已自动暂停" else "已暂停 · 全部功能停止",
-                "按键不再拦截 · 唤醒锁已释放 · 旋转交还系统\n监听配置：" + suppression +
+                "按键不再拦截 · 唤醒锁已释放 · 旋转固定竖屏\n监听配置：" + suppression +
                     "\n进入暂停时：" + accessibility.diagnosticSummary(KeyboardAccessibilityService::class.java),
             )
             vitals.sample("进入暂停", force = true)

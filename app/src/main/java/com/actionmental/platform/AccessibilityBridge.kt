@@ -343,6 +343,9 @@ class AccessibilityBridge(private val context: Context) {
         _foregroundPackage.value = null
     }
 
+    /** 当前绑定着的服务实例，只给需要它当窗口令牌的平台实现用（屏幕常亮的悬浮层）。 */
+    fun boundService(): AccessibilityService? = service
+
     fun performGlobalAction(action: Int): Boolean =
         service?.performGlobalAction(action) ?: false
 

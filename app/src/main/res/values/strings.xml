@@ -13,7 +13,7 @@
     <string name="notification_channel_awake">屏幕常亮</string>
     <string name="notification_channel_awake_description">常亮开启期间在通知栏留一条，随手可以关掉。这条通知不会响，也不会自己消失 —— 它就是常亮本身的开关。</string>
     <string name="notification_awake_title">屏幕常亮中</string>
-    <string name="notification_awake_text">屏幕会变暗但不会熄灭，持续耗电</string>
+    <string name="notification_awake_text">屏幕不会自动熄灭，持续耗电</string>
     <string name="notification_awake_stop">关闭常亮</string>
 
     <string name="notification_channel_keepalive">常驻运行</string>

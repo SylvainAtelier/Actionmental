@@ -127,7 +127,7 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
             Spacer(Modifier.height(AmSpace.s2))
             Text(
                 "暂停后：按键原样交给前台应用（不再匹配、不再改写），前台应用不再被识别，" +
-                    "强制旋转交还系统，屏幕常亮的唤醒锁被释放，常驻前台服务与自动恢复一并停止，" +
+                    "屏幕旋转固定为竖屏，屏幕常亮被释放，常驻前台服务与自动恢复一并停止，" +
                     "体征采样也不再进行。",
                 style = AmType.secondary,
                 color = c.inkMid,

@@ -99,14 +99,17 @@ service/       系统实例化的组件，尽可能薄
 | 音量 / 媒体 | `AudioManager`（普通 API） |
 | 启动应用 | `PackageManager` + `startActivity` |
 | 返回 / 主页 / 最近任务 | `AccessibilityService.performGlobalAction` |
-| 屏幕常亮 | `PowerManager.WakeLock`（普通权限） |
+| 屏幕常亮 | 无障碍悬浮层 `FLAG_KEEP_SCREEN_ON`，兜底 `PowerManager.WakeLock` |
 | 屏幕方向 / Shell | Shizuku |
 
 屏幕常亮特意没走 Shizuku 改 `screen_off_timeout`：那要改一条全局系统设置并负责改回来，
 进程中途被杀就在系统里留下一个用户自己都找不着的超长熄屏时间。
-唤醒锁跟着进程走 —— 无障碍服务本来就让进程常驻，所以也不需要额外的前台服务。
+主路径是用无障碍服务挂一个 1px 透明的 `TYPE_ACCESSIBILITY_OVERLAY` 窗口并带上
+`FLAG_KEEP_SCREEN_ON`：屏幕唤醒锁在部分 ROM 上对非前台应用会被直接忽略（`isHeld` 为真、屏幕照熄），
+而窗口策略不受这个影响。服务未连接时退回 `SCREEN_DIM_WAKE_LOCK`，服务连上后自动升级回悬浮层。
+两者都跟着进程走，不需要额外的前台服务。
 它同样遵守「意图与事实分开」：意图落在 `UserSettings.screenAwake`（进程重启后重建），
-事实是每次写入后回读的 `WakeLock.isHeld`。
+事实是每次写入后回读的「悬浮层是否挂在当前服务上 || `WakeLock.isHeld`」。
 
 常亮是会一直耗电、又可能被一个快捷键悄悄按开的状态，所以它有三处可见性，
 三处读的都是同一个 `ScreenAwakeController.state`：状态中心的开关卡、快捷设置磁贴、

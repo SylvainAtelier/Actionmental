@@ -102,8 +102,9 @@ class RotationController(
     /**
      * 全局暂停。
      *
-     * 比 [override] 更外一层：暂停期间生效模式一律是 [RotationMode.NORMAL]，
-     * 系统的旋转策略完全交还给系统。用户的 [globalMode] 与应用规则的 [override]
+     * 比 [override] 更外一层：暂停期间生效模式一律是 [PAUSED_MODE]（竖屏）。
+     * 暂停（手动或拔掉键盘自动暂停）意味着回到手持使用，自动旋转在这时只会随手一歪就转屏，
+     * 所以不交还系统自动旋转，而是固定竖屏。用户的 [globalMode] 与应用规则的 [override]
      * 都原样留着，[setPaused] 传 false 时按它们重新算一次就回来了。
      */
     @Volatile
@@ -212,7 +213,7 @@ class RotationController(
         return setGlobal(next)
     }
 
-    private fun effectiveMode(): RotationMode = if (paused) RotationMode.NORMAL else (override ?: globalMode)
+    private fun effectiveMode(): RotationMode = if (paused) PAUSED_MODE else (override ?: globalMode)
 
     private suspend fun applyEffective(): ActionResult = mutex.withLock {
         val target = effectiveMode()
@@ -363,6 +364,9 @@ class RotationController(
     }
 
     private companion object {
+        /** 暂停期间固定的方向：竖屏，而不是系统自动旋转。 */
+        val PAUSED_MODE = RotationMode.FORCE_PORTRAIT
+
         /**
          * 缓存的系统模式能信多久。
          *
