@@ -18,7 +18,7 @@ object AppTranslations {
         "已暂停 · 手动" to "Paused · by you",
         "已启用 · 当前" to "On · currently",
         "个键盘，正常运行" to "keyboards attached, running normally",
-        "暂停后：按键原样交给前台应用（不再匹配、不再改写），前台应用不再被识别，屏幕旋转固定为竖屏，屏幕常亮被释放，常驻前台服务与自动恢复一并停止，体征采样也不再进行。" to "While paused: keys go straight to the foreground app (nothing is matched or rewritten), the foreground app is no longer identified, the screen is locked to portrait, keep-awake is released, the persistent foreground service and automatic recovery both stop, and vitals sampling stops too.",
+        "暂停后：按键原样交给前台应用（不再匹配、不再改写），前台应用不再被识别，屏幕旋转不再被修改，屏幕常亮被释放，常驻前台服务与自动恢复一并停止，体征采样也不再进行。" to "While paused: keys go straight to the foreground app (nothing is matched or rewritten), the foreground app is no longer identified, screen rotation is left untouched, keep-awake is released, the persistent foreground service and automatic recovery both stop, and vitals sampling stops too.",
         "无障碍授权保持原样，不需要去系统设置里关。进程仍由系统绑定着，但它此刻是个空壳 —— 这是不撤授权就能做到的最低占用。关掉这个开关，一切按你原来的设置恢复。" to "The accessibility grant is left alone; there is no need to turn it off in system settings. The process is still bound by the system, but it is an empty shell — this is the lowest footprint reachable without revoking the grant. Switch this back on and everything returns to your existing settings.",
         "全部功能停止中 · 快捷键、映射、旋转规则、常亮都不生效" to "Everything is stopped · shortcuts, remaps, rotation rules and keep-awake all do nothing",
         "快捷键、键位映射、旋转规则、屏幕常亮都在生效" to "Shortcuts, remaps, rotation rules and keep-awake are all in effect",

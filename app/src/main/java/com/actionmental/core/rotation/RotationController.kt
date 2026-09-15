@@ -100,24 +100,37 @@ class RotationController(
     private var override: RotationMode? = null
 
     /**
-     * 全局暂停。
+     * 全局暂停：一道写入闸门。
      *
-     * 比 [override] 更外一层：暂停期间生效模式一律是 [PAUSED_MODE]（竖屏）。
-     * 暂停（手动或拔掉键盘自动暂停）意味着回到手持使用，自动旋转在这时只会随手一歪就转屏，
-     * 所以不交还系统自动旋转，而是固定竖屏。用户的 [globalMode] 与应用规则的 [override]
-     * 都原样留着，[setPaused] 传 false 时按它们重新算一次就回来了。
+     * 暂停（手动或拔掉键盘自动暂停）期间**一条旋转命令都不下发**：进暂停那一刻不写，
+     * 应用规则压 override 不写，快捷键 / 磁贴 / 界面 / 多屏下发一律拒绝。
+     * 系统旋转停在什么样就是什么样，用户在快捷设置里自己拨也不会被改回去。
+     * [globalMode] 与 [override] 照常记录，[setPaused] 传 false 时按它们重新算一次。
+     *
+     * 初值是 true：进程被拉起时还不知道盘上是不是暂停着，而规则管理器的第一次发射、
+     * 以及尚未从盘上恢复的 [globalMode]（默认 NORMAL）都会立刻触发一次写入 ——
+     * 暂停期间进程每被系统杀掉重启一次，就把系统自动旋转写回去一次。
+     * 由 [com.actionmental.AppGraph] 在暂停状态落定后放开。
      */
     @Volatile
-    private var paused = false
+    private var paused = true
 
     /**
-     * 进 / 出暂停。写入与回读都走 [applyEffective]，所以界面看到的仍然是系统事实。
+     * 进 / 出暂停。进入时只关闸不写；退出时按当前意图写一次，回读走 [applyEffective]。
      */
     suspend fun setPaused(on: Boolean): ActionResult {
         if (paused == on) return ActionResult.OK
-        paused = on
+        if (on) {
+            // 拿锁再关闸：正在进行的那一次写入写完，之后的一律挡在门外
+            mutex.withLock { paused = true }
+            return ActionResult.OK
+        }
+        paused = false
         return applyEffective()
     }
+
+    private fun pausedResult(): ActionResult =
+        ActionResult.Failed(ActionResult.Reason.UNSUPPORTED, "已暂停 · 不修改屏幕旋转")
 
     /**
      * 最后一次观察到的系统真实模式。
@@ -173,12 +186,13 @@ class RotationController(
 
     /** 用户 / 快捷键 / 磁贴设置全局模式。 */
     suspend fun setGlobal(mode: RotationMode): ActionResult {
+        if (paused) return pausedResult()
         globalMode = mode
         persistGlobalMode(mode)
         return applyEffective()
     }
 
-    /** 应用级规则压入的临时模式；传 null 表示离开受控应用。 */
+    /** 应用级规则压入的临时模式；传 null 表示离开受控应用。暂停期间只记录，不写入。 */
     suspend fun setOverride(mode: RotationMode?): ActionResult {
         override = mode
         return applyEffective()
@@ -186,6 +200,7 @@ class RotationController(
 
     /** 磁贴与快捷键的「切换强制横屏」。基于真实状态判断，而不是本地 boolean。 */
     suspend fun toggleLandscape(): ActionResult {
+        if (paused) return pausedResult()
         val current = refresh()
         if (!current.available) return ActionResult.Failed(unavailableReason(), current.failure.orEmpty())
         return setGlobal(
@@ -196,6 +211,7 @@ class RotationController(
 
     /** 快捷键切换指定方向；再次触发当前方向时撤销强制方向并回到竖屏锁定。 */
     suspend fun toggle(mode: RotationMode): ActionResult {
+        if (paused) return pausedResult()
         val current = refresh()
         if (!current.available) return ActionResult.Failed(unavailableReason(), current.failure.orEmpty())
         return setGlobal(RotationMode.toggleTarget(current.mode, mode))
@@ -203,6 +219,7 @@ class RotationController(
 
     /** 循环：默认 → 横屏 → 竖屏 → 默认。 */
     suspend fun cycle(): ActionResult {
+        if (paused) return pausedResult()
         val current = refresh()
         if (!current.available) return ActionResult.Failed(unavailableReason(), current.failure.orEmpty())
         val next = when (current.mode) {
@@ -213,9 +230,11 @@ class RotationController(
         return setGlobal(next)
     }
 
-    private fun effectiveMode(): RotationMode = if (paused) PAUSED_MODE else (override ?: globalMode)
+    private fun effectiveMode(): RotationMode = override ?: globalMode
 
     private suspend fun applyEffective(): ActionResult = mutex.withLock {
+        // 闸门在锁里再判一次：排队等锁的写入可能是在暂停落地之前发起的
+        if (paused) return@withLock ActionResult.OK
         val target = effectiveMode()
         val availability = backend().availability()
         if (availability is ActionResult.Failed) {
@@ -311,6 +330,7 @@ class RotationController(
      * 只对默认屏设过的强制在另一块屏上根本不存在 —— 这里把当前生效模式推到每一块屏上。
      */
     suspend fun spreadToAllDisplays(): ActionResult = mutex.withLock {
+        if (paused) return@withLock pausedResult()
         val b = backend()
         val availability = b.availability()
         if (availability is ActionResult.Failed) return@withLock availability
@@ -364,9 +384,6 @@ class RotationController(
     }
 
     private companion object {
-        /** 暂停期间固定的方向：竖屏，而不是系统自动旋转。 */
-        val PAUSED_MODE = RotationMode.FORCE_PORTRAIT
-
         /**
          * 缓存的系统模式能信多久。
          *

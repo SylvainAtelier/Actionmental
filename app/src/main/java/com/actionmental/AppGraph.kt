@@ -1189,6 +1189,9 @@ class AppGraph private constructor(context: Context) {
         // 不该有一次「恢复」跟在后面。
         if (_paused.value == on && _pauseReason.value == reason) {
             pausedNow = on
+            // 冷启动且没有暂停：旋转控制器默认关着闸（见 RotationController.paused），
+            // 只有在这里确认了才放开。已经放开时这是一次空操作。
+            if (!on) resumeRotation()
             return
         }
         pausedNow = on
@@ -1207,6 +1210,7 @@ class AppGraph private constructor(context: Context) {
             // 通知栏那一条跟着 screenAwake.state 走（见 start 里的收集器），
             // 锁一放掉它自己就消失，这里不重复渲染
             screenAwake.releaseQuietly()
+            // 旋转只关闸、不写：暂停期间系统旋转保持原样，谁也不去改它
             rotation.setPaused(true)
             // 前台包停在暂停那一刻会让恢复后的第一条规则算不出来，索性清掉
             accessibility.clearForeground()
@@ -1215,14 +1219,14 @@ class AppGraph private constructor(context: Context) {
             eventLog.info(
                 "pause",
                 if (reason == PauseReason.NO_KEYBOARD) "未检测到键盘，已自动暂停" else "已暂停 · 全部功能停止",
-                "按键不再拦截 · 唤醒锁已释放 · 旋转固定竖屏\n监听配置：" + suppression +
+                "按键不再拦截 · 唤醒锁已释放 · 旋转不再修改\n监听配置：" + suppression +
                     "\n进入暂停时：" + accessibility.diagnosticSummary(KeyboardAccessibilityService::class.java),
             )
             vitals.sample("进入暂停", force = true)
         } else {
             val pausedForMs = if (pausedSinceMs == 0L) 0L else System.currentTimeMillis() - pausedSinceMs
             pausedSinceMs = 0L
-            rotation.setPaused(false)
+            resumeRotation()
             screenAwake.restore(settingsRepository.load().screenAwake)
             refreshAccessibility()
             eventLog.info(
@@ -1234,6 +1238,17 @@ class AppGraph private constructor(context: Context) {
             // 单独起一条：这一步最长要等十几秒，留在收集器里会挡住下一次暂停切换
             scope.launch { resumeAccessibility(pausedForMs) }
         }
+    }
+
+    /**
+     * 打开旋转写入闸门。
+     *
+     * 先从盘上取回全局意图再放开：冷启动时 [RotationController.globalMode] 还是默认的 NORMAL，
+     * 恢复它的那条订阅未必已经跑到 —— 抢先放开会把系统自动旋转写回去。
+     */
+    private suspend fun resumeRotation() {
+        rotation.restoreGlobalMode(settingsRepository.load().globalRotationMode)
+        rotation.setPaused(false)
     }
 
     /**
