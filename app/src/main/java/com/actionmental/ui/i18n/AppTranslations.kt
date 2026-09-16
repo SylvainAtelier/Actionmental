@@ -8,8 +8,8 @@ import com.actionmental.data.UserSettings
  */
 object AppTranslations {
     private val english = linkedMapOf(
-        "自动暂停会连旋转规则和屏幕常亮一起停掉 —— 那两样本来不需要键盘。键盘掉线后等 8 秒才真的停，蓝牙键盘短暂重连不会来回折腾；插回来则立刻恢复。" to "Auto-pause stops the rotation rules and keep-awake too, and neither of those needs a keyboard. It waits 8 seconds after the keyboard goes away, so a Bluetooth keyboard reconnecting briefly does not cause any churn; plugging one back in resumes immediately.",
-        "键盘接回来就自动恢复 · 期间快捷键、映射、旋转规则、常亮都不生效" to "Resumes as soon as a keyboard is back · until then shortcuts, remaps, rotation rules and keep-awake all do nothing",
+        "自动暂停会连旋转规则一起停掉 —— 它本来不需要键盘；屏幕常亮不受影响。键盘掉线后等 8 秒才真的停，蓝牙键盘短暂重连不会来回折腾；插回来则立刻恢复。" to "Auto-pause stops the rotation rules too, even though they do not need a keyboard; keep-awake is not affected. It waits 8 seconds after the keyboard goes away, so a Bluetooth keyboard reconnecting briefly does not cause any churn; plugging one back in resumes immediately.",
+        "键盘接回来就自动恢复 · 期间快捷键、映射、旋转规则都不生效，常亮照常" to "Resumes as soon as a keyboard is back · until then shortcuts, remaps and rotation rules do nothing; keep-awake still works",
         "未启用 · 拔掉键盘后应用照常运行" to "Off · the app keeps running with no keyboard attached",
         "已启用 · 键盘不在，已自动停下" to "On · no keyboard, stopped automatically",
         "没有键盘时自动暂停" to "Pause automatically with no keyboard",
@@ -18,11 +18,11 @@ object AppTranslations {
         "已暂停 · 手动" to "Paused · by you",
         "已启用 · 当前" to "On · currently",
         "个键盘，正常运行" to "keyboards attached, running normally",
-        "暂停后：按键原样交给前台应用（不再匹配、不再改写），前台应用不再被识别，屏幕旋转不再被修改，屏幕常亮被释放，常驻前台服务与自动恢复一并停止，体征采样也不再进行。" to "While paused: keys go straight to the foreground app (nothing is matched or rewritten), the foreground app is no longer identified, screen rotation is left untouched, keep-awake is released, the persistent foreground service and automatic recovery both stop, and vitals sampling stops too.",
+        "暂停后：按键原样交给前台应用（不再匹配、不再改写），前台应用不再被识别，屏幕旋转不再被修改，常驻前台服务与自动恢复一并停止，体征采样也不再进行。屏幕常亮不受暂停影响，照你的开关保持。" to "While paused: keys go straight to the foreground app (nothing is matched or rewritten), the foreground app is no longer identified, screen rotation is left untouched, the persistent foreground service and automatic recovery both stop, and vitals sampling stops too. Keep-awake is not affected by pausing and stays as you set it.",
         "无障碍授权保持原样，不需要去系统设置里关。进程仍由系统绑定着，但它此刻是个空壳 —— 这是不撤授权就能做到的最低占用。关掉这个开关，一切按你原来的设置恢复。" to "The accessibility grant is left alone; there is no need to turn it off in system settings. The process is still bound by the system, but it is an empty shell — this is the lowest footprint reachable without revoking the grant. Switch this back on and everything returns to your existing settings.",
-        "全部功能停止中 · 快捷键、映射、旋转规则、常亮都不生效" to "Everything is stopped · shortcuts, remaps, rotation rules and keep-awake all do nothing",
+        "快捷键、映射、旋转规则都已停止 · 屏幕常亮照常" to "Shortcuts, remaps and rotation rules are stopped · keep-awake still works",
         "快捷键、键位映射、旋转规则、屏幕常亮都在生效" to "Shortcuts, remaps, rotation rules and keep-awake are all in effect",
-        "全部功能停止，占用降到最低" to "Everything stops and the footprint drops to its lowest",
+        "除屏幕常亮外全部停止，占用降到最低" to "Everything except keep-awake stops and the footprint drops to its lowest",
         "运行 · RUNTIME" to "RUNTIME",
         "已暂停" to "Paused",
         "系统没有接受常亮请求" to "The system did not accept the keep-awake request",

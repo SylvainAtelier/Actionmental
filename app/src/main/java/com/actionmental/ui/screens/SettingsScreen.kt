@@ -86,7 +86,7 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                     )
                     Text(
                         if (paused) {
-                            "全部功能停止，占用降到最低"
+                            "除屏幕常亮外全部停止，占用降到最低"
                         } else {
                             "快捷键、键位映射、旋转规则、屏幕常亮都在生效"
                         },
@@ -127,8 +127,8 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
             Spacer(Modifier.height(AmSpace.s2))
             Text(
                 "暂停后：按键原样交给前台应用（不再匹配、不再改写），前台应用不再被识别，" +
-                    "屏幕旋转不再被修改，屏幕常亮被释放，常驻前台服务与自动恢复一并停止，" +
-                    "体征采样也不再进行。",
+                    "屏幕旋转不再被修改，常驻前台服务与自动恢复一并停止，" +
+                    "体征采样也不再进行。屏幕常亮不受暂停影响，照你的开关保持。",
                 style = AmType.secondary,
                 color = c.inkMid,
             )
@@ -143,7 +143,7 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
             if (settings.autoPauseWithoutKeyboard) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "自动暂停会连旋转规则和屏幕常亮一起停掉 —— 那两样本来不需要键盘。" +
+                    "自动暂停会连旋转规则一起停掉 —— 它本来不需要键盘；屏幕常亮不受影响。" +
                         "键盘掉线后等 8 秒才真的停，蓝牙键盘短暂重连不会来回折腾；" +
                         "插回来则立刻恢复。",
                     style = AmType.secondary,

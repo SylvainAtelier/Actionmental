@@ -73,11 +73,19 @@ class ScreenAwakeBackend(
 
     override fun isHeld(): Boolean = onMain { overlayAlive() } || wakeLock?.isHeld == true
 
-    /** 悬浮层是否真的挂在**当前**服务上。服务重绑后旧窗口已随旧实例作废。 */
+    /**
+     * 悬浮层是否真的挂在**当前**服务上。服务重绑后旧窗口已随旧实例作废。
+     *
+     * 判据是 `parent`，不是 `isAttachedToWindow`：后者要等 ViewRootImpl 跑完第一次
+     * traversal（下一帧）才为真，而 [acquire] 一返回控制器就要回读一次事实 ——
+     * 那一刻用它会判成「没挂上」，把刚加上去的窗口又拆掉，界面上就是
+     * 「系统没有接受常亮请求」。`parent` 在 `addView` 里同步就赋好了，
+     * `removeViewImmediate` 也同步清掉，正好是我们要的那条事实。
+     */
     private fun overlayAlive(): Boolean {
         val view = overlay ?: return false
         val current = serviceProvider()
-        if (current == null || current !== overlayOwner || !view.isAttachedToWindow) {
+        if (current == null || current !== overlayOwner || view.parent == null) {
             detachOverlay()
             return false
         }

@@ -578,8 +578,8 @@ class AppGraph private constructor(context: Context) {
                 else eventLog.warn("a11y", "监听服务未连接")
                 // 常亮的悬浮层挂在服务实例上：服务一换（连上 / 掉线），旧窗口就作废了。
                 // 连上时按意图重挂（从唤醒锁兜底升级回悬浮层），掉线时按意图退回唤醒锁。
-                if (!pausedNow) screenAwake.restore(settingsRepository.load().screenAwake)
-                else screenAwake.refresh()
+                // 常亮不受暂停管，所以这里不看 pausedNow。
+                screenAwake.restore(settingsRepository.load().screenAwake)
             }
         }
 
@@ -623,7 +623,7 @@ class AppGraph private constructor(context: Context) {
                 pending = null
 
                 if (reason == PauseReason.NO_KEYBOARD) {
-                    // 蓝牙键盘掉一下再回来是常事。进暂停要放掉唤醒锁、把强制旋转写回系统，
+                    // 蓝牙键盘掉一下再回来是常事。进暂停要把强制旋转写回系统，
                     // 那都是 shell 写入 —— 为了几秒钟的抖动拆了又装回去，恰恰是这个应用
                     // 最该避免的那种发热。恢复不等：键盘回来了就该立刻能用。
                     pending = scope.launch {
@@ -1176,7 +1176,7 @@ class AppGraph private constructor(context: Context) {
      * 进 / 出全局暂停。
      *
      * 一处集中处理，而不是让每个模块自己去订阅设置：暂停要求的是一个**顺序** ——
-     * 先掐掉入口（事件不再进来），再放掉正握着的系统资源（唤醒锁、强制旋转），
+     * 先掐掉入口（事件不再进来），再放掉正握着的系统资源（强制旋转；屏幕常亮除外），
      * 最后才丢缓存。反过来做会在中间那一瞬留下「事件还在进、状态已经拆了」的窗口。
      *
      * 恢复时不去记「暂停前各项是什么样」：意图本来就在设置里存着，
@@ -1205,11 +1205,9 @@ class AppGraph private constructor(context: Context) {
             pausedAtDetachCount = accessibility.detachCount
             pausedBindingNote = null
             val suppression = accessibility.setEventsSuppressed(true)
-            // 系统资源按「握着就要还」的顺序放掉。唤醒锁不写意图（releaseQuietly），
-            // 所以恢复时 settings.screenAwake 仍然是用户当初的选择。
-            // 通知栏那一条跟着 screenAwake.state 走（见 start 里的收集器），
-            // 锁一放掉它自己就消失，这里不重复渲染
-            screenAwake.releaseQuietly()
+            // 屏幕常亮刻意不动：它不依赖键盘，而暂停多半正是「键盘拿走、只看屏幕」的时候。
+            // 主路径是无障碍悬浮层，暂停期间服务仍被系统绑定着，窗口令牌照样有效；
+            // 它不收事件、不跑定时器，留着不增加任何唤醒。常驻前台服务照停，不会因为常亮被拉起。
             // 旋转只关闸、不写：暂停期间系统旋转保持原样，谁也不去改它
             rotation.setPaused(true)
             // 前台包停在暂停那一刻会让恢复后的第一条规则算不出来，索性清掉
@@ -1219,7 +1217,9 @@ class AppGraph private constructor(context: Context) {
             eventLog.info(
                 "pause",
                 if (reason == PauseReason.NO_KEYBOARD) "未检测到键盘，已自动暂停" else "已暂停 · 全部功能停止",
-                "按键不再拦截 · 唤醒锁已释放 · 旋转不再修改\n监听配置：" + suppression +
+                "按键不再拦截 · 旋转不再修改 · 常亮保持" +
+                    (if (screenAwake.state.value.on) "开启" else "关闭") +
+                    "\n监听配置：" + suppression +
                     "\n进入暂停时：" + accessibility.diagnosticSummary(KeyboardAccessibilityService::class.java),
             )
             vitals.sample("进入暂停", force = true)

@@ -249,13 +249,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- 屏幕常亮 -------------------------------------------------------------
 
+    // 常亮不受全局暂停影响，所以这两个入口不走 blockedWhilePaused
     fun setScreenAwake(on: Boolean) = viewModelScope.launch {
-        if (blockedWhilePaused()) return@launch
         report(graph.screenAwake.set(on))
     }
 
     fun toggleScreenAwake() = viewModelScope.launch {
-        if (blockedWhilePaused()) return@launch
         report(graph.screenAwake.toggle())
     }
 

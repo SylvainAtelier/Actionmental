@@ -93,12 +93,6 @@ class ScreenAwakeController(
     /** 只读事实，不做任何写入。 */
     fun refresh(): ScreenAwakeState = readState().also { _state.value = it }
 
-    /** 进程退出前把锁交回去，别让它靠 GC。 */
-    fun releaseQuietly() {
-        runCatching { switch.release() }
-        _state.value = readState()
-    }
-
     private suspend fun apply(on: Boolean): ActionResult = mutex.withLock {
         if (!switch.supported) {
             _state.value = ScreenAwakeState(

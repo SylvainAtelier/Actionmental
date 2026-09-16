@@ -163,9 +163,8 @@ fun DashboardScreen(
                     AmSwitch(
                         checked = status.screenAwake.on,
                         onCheckedChange = { vm.setScreenAwake(it) },
-                        // 暂停期间不让它动：那颗开关一按就会去申请唤醒锁，
-                        // 而暂停刚刚才把锁放掉
-                        enabled = status.screenAwake.available && !paused,
+                        // 常亮不受全局暂停影响，暂停期间照样能开关
+                        enabled = status.screenAwake.available,
                     )
                 }
             }
@@ -294,9 +293,9 @@ private fun PausedBanner(reason: AppGraph.PauseReason, onOpenSettings: () -> Uni
                 )
                 Text(
                     if (reason == AppGraph.PauseReason.NO_KEYBOARD) {
-                        "键盘接回来就自动恢复 · 期间快捷键、映射、旋转规则、常亮都不生效"
+                        "键盘接回来就自动恢复 · 期间快捷键、映射、旋转规则都不生效，常亮照常"
                     } else {
-                        "全部功能停止中 · 快捷键、映射、旋转规则、常亮都不生效"
+                        "快捷键、映射、旋转规则都已停止 · 屏幕常亮照常"
                     },
                     style = AmType.data,
                     color = c.inkFaint,

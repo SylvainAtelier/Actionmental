@@ -42,20 +42,15 @@ class ScreenAwakeTileService : TileService() {
 
     override fun onClick() {
         val s = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Main).also { scope = it }
-        s.launch {
-            if (graph.paused.value) return@launch
-            graph.screenAwake.toggle()
-        }
+        // 常亮不受全局暂停影响：暂停期间照样能开关
+        s.launch { graph.screenAwake.toggle() }
     }
 
     private fun render(state: ScreenAwakeState) {
         val tile = qsTile ?: return
         tile.label = getString(R.string.tile_screen_awake)
         tile.icon = Icon.createWithResource(this, R.drawable.ic_tile_screen_awake)
-        if (graph.paused.value) {
-            tile.state = Tile.STATE_UNAVAILABLE
-            tile.subtitle = getString(R.string.tile_paused)
-        } else if (!state.available) {
+        if (!state.available) {
             tile.state = Tile.STATE_UNAVAILABLE
             tile.subtitle = getString(R.string.tile_screen_awake_unavailable)
         } else {

@@ -73,7 +73,7 @@ On Android 13 and newer, the app can request the Force Landscape tile. Add the S
 ### Status, diagnostics, and recovery
 
 - A status center for Accessibility, Shizuku, keyboard connection, rotation, screen awake, shortcut count, foreground app, and active rotation rules.
-- Manual pause and resume. Pausing stops key processing, releases screen awake, and restores normal rotation.
+- Manual pause and resume. Pausing stops key processing and restores normal rotation. Screen awake is not affected by pausing.
 - A live key monitor with the current combination, `keyCode`, `scanCode`, key direction, input-device details, match result, and recent events.
 - A bounded in-memory trace of up to 200 key events. The monitor enables collection only while it is open.
 - Runtime, shell, process-exit, thermal, and process-vitals diagnostics.
