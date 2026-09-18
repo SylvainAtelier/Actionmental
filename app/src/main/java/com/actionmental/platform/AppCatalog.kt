@@ -1,5 +1,6 @@
 package com.actionmental.platform
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,6 +29,7 @@ class AppCatalog(
      * 而它到底有多贵一直没有人量过 —— 排查发热时，没量过的东西等于不存在。
      */
     private val onLoaded: (count: Int, elapsedMs: Long) -> Unit = { _, _ -> },
+    private val onFailed: (Throwable) -> Unit = {},
 ) {
     private val _apps = MutableStateFlow<List<PackageBackend.InstalledApp>>(emptyList())
     val apps: StateFlow<List<PackageBackend.InstalledApp>> = _apps.asStateFlow()
@@ -51,6 +53,12 @@ class AppCatalog(
             val loaded = withContext(Dispatchers.IO) { packages.launchableApps() }
             _apps.value = loaded
             onLoaded(loaded.size, System.currentTimeMillis() - startedAt)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // 冷启动时 PackageManager 查几百个包可能直接抛出来。清单只是选择器的缓存，
+            // 查不到就留空，下次回到前台 warmUp 会再试 —— 不能为它把进程带走
+            onFailed(e)
         } finally {
             _loading.value = false
         }

@@ -110,7 +110,9 @@ class PackageBackend(private val context: Context) {
                 val applicationInfo = it.activityInfo.applicationInfo
                 InstalledApp(
                     packageName = it.activityInfo.packageName,
-                    label = it.loadLabel(context.packageManager).toString(),
+                    // 查询与逐条取名之间包可能刚被更新或卸载，取不到名字就用包名顶上
+                    label = runCatching { it.loadLabel(context.packageManager).toString() }
+                        .getOrDefault(it.activityInfo.packageName),
                     launchActivity = it.activityInfo.name,
                     frozen = !applicationInfo.enabled ||
                         applicationInfo.flags and ApplicationInfo.FLAG_SUSPENDED != 0,

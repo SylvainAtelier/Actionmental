@@ -53,6 +53,7 @@ import com.actionmental.platform.shizuku.ShizukuManager
 import com.actionmental.service.KeepAliveService
 import com.actionmental.service.KeyboardAccessibilityService
 import com.actionmental.service.ScreenAwakeReceiver
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -60,6 +61,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -83,7 +85,20 @@ class AppGraph private constructor(context: Context) {
 
     private val packageName = context.packageName
 
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /**
+     * 后台协程里漏出来的异常，一律记下来，不让它杀掉进程。
+     *
+     * 没有它时，这个 scope 上任何一个 launch 抛出异常都会交给线程的默认处理器，进程当场结束。
+     * 冷启动最容易撞上：启动那一串收集器、界面拉起的应用清单查询、上次死因的上报
+     * 全挤在同一秒里。表现就是「打开即闪退」，下次启动再提示「上次进程被系统结束 · Java 异常崩溃」；
+     * 先点一下磁贴让进程在没有界面时起来，这一秒就错开了。
+     *
+     * 这个进程还要以无障碍服务的身份收按键：一条诊断、一次清单查询失败，
+     * 代价最多只应该是那一件事没做成。
+     */
+    val coroutineFailures = CoroutineExceptionHandler { _, error -> onCoroutineFailure(error) }
+
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + coroutineFailures)
 
     private val appStore = AppStore(context)
 
@@ -109,6 +124,7 @@ class AppGraph private constructor(context: Context) {
         onLoaded = { count, elapsedMs ->
             eventLog.debug("catalog", "应用清单已加载 · " + count + " 个", "耗时 " + elapsedMs + "ms")
         },
+        onFailed = { error -> eventLog.error("catalog", "应用清单加载失败", error) },
     )
     val inputDevices = InputDeviceBackend(context)
     private val settingsReader = SettingsReader(context)
@@ -484,6 +500,20 @@ class AppGraph private constructor(context: Context) {
         }
     }
 
+    /**
+     * [coroutineFailures] 的落点。
+     *
+     * 异常可能早到 [eventLog] 还没构造完（仓库的 stateIn 在构造函数里就开始读盘），
+     * 那时字段还是 null —— 退回 [CrashSink] 直接写盘，保证这一条无论如何都留得下来。
+     */
+    private fun onCoroutineFailure(error: Throwable) {
+        runCatching {
+            eventLog.error("coroutine", "后台任务异常，已拦下 · " + error.javaClass.simpleName, error)
+        }.onFailure {
+            CrashSink.recordNonFatal("coroutine", error)
+        }
+    }
+
     fun start() {
         installCrashHandler()
         eventLog.info("app", "进程启动")
@@ -608,7 +638,14 @@ class AppGraph private constructor(context: Context) {
                 keep && !stopped
             }
                 .distinctUntilChanged()
-                .collect { applyKeepAlive(it) }
+                // 落地前先压一下抖动。进程刚起来时这条流必定连发两次：设置里的
+                // keepAlive 先到（true），盘上的暂停状态随后才恢复（转 false）——
+                // 两次相隔不到一毫秒，中间那次启动纯属多余，却要让通知栏闪一下，
+                // 还把服务推进「刚启动就被停」的那个窗口里。用户手动拨开关感觉不到这 250ms。
+                .collectLatest {
+                    delay(KEEP_ALIVE_SETTLE_MS)
+                    applyKeepAlive(it)
+                }
         }
 
         // 全局暂停。这条流是所有闸门的上游，必须在别的收集器之后挂上 ——
@@ -1348,11 +1385,24 @@ class AppGraph private constructor(context: Context) {
      * 用户会以为已经保住了。
      */
     private fun applyKeepAlive(on: Boolean) {
+        val wasOn = keepAliveOn
         keepAliveOn = on
         val intent = Intent(appContext, KeepAliveService::class.java)
         runCatching {
-            if (on) ContextCompat.startForegroundService(appContext, intent)
-            else appContext.stopService(intent)
+            when {
+                on -> ContextCompat.startForegroundService(appContext, intent)
+                // 停也得走 startForegroundService：stopService 不解除系统那个
+                // 「startForegroundService 之后必须进前台」的超时，服务被停在进前台
+                // 之前就是一次 ForegroundServiceDidNotStartInTimeException。
+                // 让服务自己先 startForeground 再 stopSelf，超时才算兑现。
+                wasOn -> ContextCompat.startForegroundService(
+                    appContext,
+                    Intent(intent).setAction(KeepAliveService.ACTION_STOP),
+                )
+                // 从没启动过就没有待兑现的超时，stopService 收掉可能残留的实例即可
+                // （进程崩溃重启后系统会按 START_STICKY 把它拉起来）。
+                else -> appContext.stopService(intent)
+            }
         }.onFailure {
             eventLog.error("keepalive", if (on) "常驻前台服务启动失败" else "常驻前台服务停止失败", it)
         }
@@ -1376,6 +1426,9 @@ class AppGraph private constructor(context: Context) {
         // 直接用字面值，免得为了两个常量把 ComponentCallbacks2 拖进领域层
         /** PowerManager.THERMAL_STATUS_SEVERE。到这一档系统已经在限制后台了。 */
         private const val THERMAL_SEVERE = 3
+
+        /** 常驻服务开关落地前的静置时间：吃掉进程启动瞬间的那次抖动。 */
+        private const val KEEP_ALIVE_SETTLE_MS = 250L
 
         /** 宽限期到点之后再确认这么久。绑定与超时之间常常只差一瞬。 */
         private const val CONFIRM_MS = 3_000L

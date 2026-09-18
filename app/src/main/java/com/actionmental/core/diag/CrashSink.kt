@@ -48,11 +48,25 @@ object CrashSink {
         sink = handler
     }
 
+    /**
+     * 记一条**没有**杀掉进程的异常。
+     *
+     * 给比 [EventLog] 更早出事的地方用：异常已经被拦下，但内存日志还不存在。
+     */
+    fun recordNonFatal(tag: String, error: Throwable) {
+        runCatching {
+            append(" ERROR [" + tag + "] 后台任务异常，已拦下 · 线程 " + Thread.currentThread().name, error)
+        }
+    }
+
     private fun writeDirect(thread: Thread, error: Throwable) {
+        append(" ERROR [crash] 进程因未捕获异常终止 · 线程 " + thread.name, error)
+    }
+
+    private fun append(head: String, error: Throwable) {
         val dir = logDir ?: return
         dir.mkdirs()
-        val head = TIME.format(Date()) + " ERROR [crash] 进程因未捕获异常终止 · 线程 " + thread.name
         val body = EventLog.stackTraceOf(error).replace("\n", "\n    ")
-        File(dir, FILE_NAME).appendText(head + "\n    " + body + "\n")
+        File(dir, FILE_NAME).appendText(TIME.format(Date()) + head + "\n    " + body + "\n")
     }
 }

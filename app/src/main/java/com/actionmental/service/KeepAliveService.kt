@@ -36,9 +36,22 @@ class KeepAliveService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /**
+     * 一进来就必须 startForeground —— 哪怕这一趟是来关掉它的。
+     *
+     * 系统在 startForegroundService() 之后挂了一个超时：服务没在窗口内进入前台就抛
+     * ForegroundServiceDidNotStartInTimeException 把进程干掉。而 stopService() **不会**
+     * 解除那个超时 —— 它只会让 ServiceRecord 走销毁路径，之后再调 startForeground 也
+     * 已经没人听了。设备上那串一秒一次的崩溃循环就是这么来的：进程刚起来时
+     * keepAlive=true 先发一次 start，暂停状态紧接着从盘上恢复又发一次 stop，两者同一
+     * 毫秒，服务被停在了进入前台之前。
+     *
+     * 所以关闭走的是 ACTION_STOP 而不是 stopService：先兑现前台承诺，再自己退场。
+     */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val log = AppGraph.get(this).eventLog
-        runCatching {
+        val stopping = intent?.action == ACTION_STOP
+        val started = runCatching {
             ensureChannel()
             val notification = NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_tile_screen_awake)
@@ -57,14 +70,24 @@ class KeepAliveService : Service() {
                 startForeground(ID, notification)
             }
         }.fold(
-            onSuccess = { log.info("keepalive", "常驻前台服务已启动") },
+            onSuccess = {
+                if (!stopping) log.info("keepalive", "常驻前台服务已启动")
+                true
+            },
             onFailure = {
                 // 从后台启动前台服务在 Android 12 以后是受限的，失败必须留痕：
-                // 否则用户打开了开关、通知栏什么都没有，还以为已经保住了
-                log.error("keepalive", "常驻前台服务启动失败", it)
-                stopSelf()
+                // 否则用户打开了开关、通知栏什么都没有，还以为已经保住了。
+                // 这条路径上系统自己已经拒了这次启动，超时也跟着撤销，stopSelf 是安全的。
+                if (!stopping) log.error("keepalive", "常驻前台服务启动失败", it)
+                false
             },
         )
+
+        if (stopping || !started) {
+            if (started) stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         return START_STICKY
     }
 
@@ -100,8 +123,14 @@ class KeepAliveService : Service() {
         )
     }
 
-    private companion object {
-        const val CHANNEL_ID = "keep_alive"
-        const val ID = 4103
+    companion object {
+        /**
+         * 关闭用的 action。调用方必须也用 startForegroundService 发它，
+         * 不能用 stopService —— 理由见 onStartCommand。
+         */
+        const val ACTION_STOP = "com.actionmental.action.KEEPALIVE_STOP"
+
+        private const val CHANNEL_ID = "keep_alive"
+        private const val ID = 4103
     }
 }

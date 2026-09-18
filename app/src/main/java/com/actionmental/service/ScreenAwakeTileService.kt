@@ -26,7 +26,7 @@ class ScreenAwakeTileService : TileService() {
 
     override fun onStartListening() {
         super.onStartListening()
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.Main).also { s ->
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Main + graph.coroutineFailures).also { s ->
             s.launch {
                 graph.screenAwake.refresh()
                 graph.screenAwake.state.collect(::render)
@@ -41,7 +41,7 @@ class ScreenAwakeTileService : TileService() {
     }
 
     override fun onClick() {
-        val s = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Main).also { scope = it }
+        val s = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Main + graph.coroutineFailures).also { scope = it }
         // 常亮不受全局暂停影响：暂停期间照样能开关
         s.launch { graph.screenAwake.toggle() }
     }

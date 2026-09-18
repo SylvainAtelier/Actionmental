@@ -27,7 +27,7 @@ class ForceLandscapeTileService : TileService() {
 
     override fun onStartListening() {
         super.onStartListening()
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.Main).also { s ->
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Main + graph.coroutineFailures).also { s ->
             s.launch {
                 render()
                 graph.rotation.state.collect { renderFrom(it.mode, it.available) }
@@ -42,7 +42,7 @@ class ForceLandscapeTileService : TileService() {
     }
 
     override fun onClick() {
-        val s = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Main).also { scope = it }
+        val s = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Main + graph.coroutineFailures).also { scope = it }
         s.launch {
             // 暂停期间这块磁贴显示的是 UNAVAILABLE，系统照理不会送点击过来；
             // 真送过来也不动手 —— 暂停的承诺是「什么都不做」，不是「悄悄做一半」

@@ -20,7 +20,7 @@ class RotationCycleTileService : TileService() {
 
     override fun onStartListening() {
         super.onStartListening()
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.Main).also { s ->
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Main + graph.coroutineFailures).also { s ->
             s.launch {
                 graph.rotation.refresh()
                 graph.rotation.state.collect(::render)
@@ -35,7 +35,7 @@ class RotationCycleTileService : TileService() {
     }
 
     override fun onClick() {
-        val s = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Main).also { scope = it }
+        val s = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Main + graph.coroutineFailures).also { scope = it }
         s.launch {
             if (graph.paused.value) return@launch
             graph.rotation.cycle()
