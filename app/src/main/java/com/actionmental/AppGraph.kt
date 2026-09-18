@@ -61,7 +61,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -267,21 +266,9 @@ class AppGraph private constructor(context: Context) {
     @Volatile
     private var pausedNow = false
 
-    /**
-     * 这次暂停是什么时候开始的，以及开始时绑定计数是多少。
-     *
-     * 「暂停久了才会出问题」是用户报上来的唯一规律，而原来的日志里连暂停了多久都没有 ——
-     * 恢复失败那一条旁边没有任何自变量。这三个值让每一条恢复记录都自带时长，
-     * 以及「这段时间里绑定掉没掉过」。
-     */
+    /** 这次暂停是什么时候开始的。只为了让恢复那一条日志自带时长。 */
     @Volatile
     private var pausedSinceMs = 0L
-
-    @Volatile
-    private var pausedAtAttachCount = 0
-
-    @Volatile
-    private var pausedAtDetachCount = 0
 
     private val _paused = MutableStateFlow(false)
 
@@ -405,11 +392,8 @@ class AppGraph private constructor(context: Context) {
             refreshKeyboards()
 
             // 暂停期间余下的都省掉：服务绑没绑上此刻并不重要，
-            // 而这条广播每次亮屏都会来一次
-            if (pausedNow) {
-                noteBindingWhilePaused("亮屏")
-                return
-            }
+            // 解除暂停时会补查一次
+            if (pausedNow) return
             refreshAccessibility()
             scope.launch { ensureAccessibilityBound(trigger = "亮屏 / 解锁") }
         }
@@ -535,15 +519,9 @@ class AppGraph private constructor(context: Context) {
         // 系统把服务从运行列表里摘掉的那一刻就复查一次。这是唯一能在「用户还没
         // 熄屏、也还没重启进程」时发现绑定失效的时机 —— 少了它，失灵要等到
         // 下一次亮屏才可能被发现，而如果失灵正好发生在熄屏期间，就得等下下次。
+        // 暂停期间不去重绑（那要改系统设置），解除暂停时会补查一次。
         accessibility.onServicesStateChanged = {
-            if (pausedNow) {
-                // 暂停期间不去重绑（那要挂住协程几十秒，而暂停承诺的正是连这一下都不做），
-                // 但一定要记一条：恢复失败的现场十有八九就发生在这里，
-                // 而原来这段时间在日志上是一片空白
-                noteBindingWhilePaused("系统服务列表变化")
-            } else {
-                scope.launch { ensureAccessibilityBound(trigger = "系统服务列表变化") }
-            }
+            if (!pausedNow) scope.launch { ensureAccessibilityBound(trigger = "系统服务列表变化") }
         }
         accessibility.startObserving(KeyboardAccessibilityService::class.java)
 
@@ -630,22 +608,15 @@ class AppGraph private constructor(context: Context) {
             }
         }
 
-        // 常驻前台服务跟着设置走。distinctUntilChanged 是必须的：
-        // 设置里任何一项变动都会让这条流重新发射，而反复 startService 毫无意义。
-        // 暂停时一律停掉：那条通知代表的是「我在替你守着」，而暂停期间什么都没在守。
+        // 常驻前台服务只跟着开关走，不跟暂停走。
+        //
+        // 暂停期间进程也得活着：自动暂停要靠它看见键盘回来才解除得了。
+        // 原来暂停时把它停掉，还要为「进程刚起来时 keepAlive 与暂停状态前后脚到达」
+        // 压一道抖动 —— 脱开之后这条流只剩用户拨开关那一种变化。
         scope.launch {
-            combine(settingsRepository.settings.map { it.keepAlive }, paused) { keep, stopped ->
-                keep && !stopped
-            }
+            settingsRepository.settings.map { it.keepAlive }
                 .distinctUntilChanged()
-                // 落地前先压一下抖动。进程刚起来时这条流必定连发两次：设置里的
-                // keepAlive 先到（true），盘上的暂停状态随后才恢复（转 false）——
-                // 两次相隔不到一毫秒，中间那次启动纯属多余，却要让通知栏闪一下，
-                // 还把服务推进「刚启动就被停」的那个窗口里。用户手动拨开关感觉不到这 250ms。
-                .collectLatest {
-                    delay(KEEP_ALIVE_SETTLE_MS)
-                    applyKeepAlive(it)
-                }
+                .collect { applyKeepAlive(it) }
         }
 
         // 全局暂停。这条流是所有闸门的上游，必须在别的收集器之后挂上 ——
@@ -1063,26 +1034,21 @@ class AppGraph private constructor(context: Context) {
     /**
      * 现在真的收得到按键吗。
      *
-     * 三个条件缺一不可，因为「失灵」有三种长得一模一样的成因：
+     * 两个条件缺一不可，因为「失灵」有两种长得一模一样的成因：
      *  1. 进程里没有服务实例 —— 被杀之后系统还没绑回来；
-     *  2. 实例在、系统那边不认 —— 熄屏冻结留下的失效连接，不会有任何回调；
-     *  3. 实例在、系统也认，但按键过滤标志没能写回来 —— 暂停恢复之后的后遗症。
-     * 原来只看第 1 条，于是后两种情况下自动恢复根本不会启动：应用一路显示
-     * 「已连接」，用户却只能去系统设置里手动关掉再打开。
+     *  2. 实例在、系统那边不认 —— 熄屏冻结留下的失效连接，不会有任何回调。
+     * 只看第 1 条时，第 2 种情况下自动恢复根本不会启动：应用一路显示「已连接」，
+     * 用户却只能去系统设置里关掉再打开。
      */
-    private fun accessibilityHealthy(): Boolean {
-        if (!accessibility.connected.value) return false
-        if (!accessibility.isRunningPerSystem(KeyboardAccessibilityService::class.java)) return false
-        // 暂停期间按键过滤是被自己主动摘掉的，那不是故障
-        return pausedNow || accessibility.keyFilteringActive()
-    }
+    private fun accessibilityHealthy(): Boolean =
+        accessibility.connected.value &&
+            accessibility.isRunningPerSystem(KeyboardAccessibilityService::class.java)
 
     /**
      * 等服务真的重新站起来。
      *
-     * 轮询而不是挂在 [AccessibilityBridge.connected] 上：三条判据里只有「有没有实例」
-     * 是流，另外两条（系统认不认这个绑定、按键过滤有没有生效）都只能当场去问。
-     * 而恰恰是后两条决定了「取消暂停之后按键到底来不来」—— 挂在流上时，实例一直在、
+     * 轮询而不是挂在 [AccessibilityBridge.connected] 上：两条判据里只有「有没有实例」
+     * 是流，「系统认不认这个绑定」只能当场去问 —— 挂在流上时，实例一直在、
      * 流一次都不会再发，于是这里只会干等到超时，然后报一个假的「没救了」。
      */
     private suspend fun awaitAccessibilityHealthy(timeoutMs: Long): Boolean {
@@ -1213,8 +1179,13 @@ class AppGraph private constructor(context: Context) {
      * 进 / 出全局暂停。
      *
      * 一处集中处理，而不是让每个模块自己去订阅设置：暂停要求的是一个**顺序** ——
-     * 先掐掉入口（事件不再进来），再放掉正握着的系统资源（强制旋转；屏幕常亮除外），
+     * 先掐掉入口（按键直通、窗口事件丢弃），再处理屏幕（写一次 0° 竖屏后关闸），
      * 最后才丢缓存。反过来做会在中间那一瞬留下「事件还在进、状态已经拆了」的窗口。
+     *
+     * 暂停不碰无障碍服务的配置：按键照常送到 [pipeline]，由它原样放行。
+     * 原来靠改写 serviceInfo 让系统别再分发，恢复时再写回去 —— 有些 ROM 写回去之后
+     * 不重算按键过滤链，于是有了「解除暂停后按键不灵、只能去系统设置里关掉再打开」，
+     * 以及为它准备的三段式恢复。配置从不改，这一整类故障就不存在了。
      *
      * 恢复时不去记「暂停前各项是什么样」：意图本来就在设置里存着，
      * 照着 [com.actionmental.data.UserSettings] 重建一遍就是了。
@@ -1238,15 +1209,7 @@ class AppGraph private constructor(context: Context) {
 
         if (on) {
             pausedSinceMs = System.currentTimeMillis()
-            pausedAtAttachCount = accessibility.attachCount
-            pausedAtDetachCount = accessibility.detachCount
-            pausedBindingNote = null
-            val suppression = accessibility.setEventsSuppressed(true)
-            // 屏幕常亮刻意不动：它不依赖键盘，而暂停多半正是「键盘拿走、只看屏幕」的时候。
-            // 主路径是无障碍悬浮层，暂停期间服务仍被系统绑定着，窗口令牌照样有效；
-            // 它不收事件、不跑定时器，留着不增加任何唤醒。常驻前台服务照停，不会因为常亮被拉起。
-            // 旋转只关闸、不写：暂停期间系统旋转保持原样，谁也不去改它
-            rotation.setPaused(true)
+            val portrait = enterPauseRotation()
             // 前台包停在暂停那一刻会让恢复后的第一条规则算不出来，索性清掉
             accessibility.clearForeground()
             releaseUiCaches()
@@ -1254,15 +1217,14 @@ class AppGraph private constructor(context: Context) {
             eventLog.info(
                 "pause",
                 if (reason == PauseReason.NO_KEYBOARD) "未检测到键盘，已自动暂停" else "已暂停 · 全部功能停止",
-                "按键不再拦截 · 旋转不再修改 · 常亮保持" +
-                    (if (screenAwake.state.value.on) "开启" else "关闭") +
-                    "\n监听配置：" + suppression +
-                    "\n进入暂停时：" + accessibility.diagnosticSummary(KeyboardAccessibilityService::class.java),
+                "按键直通 · 旋转" + portrait + " · 常亮保持" +
+                    (if (screenAwake.state.value.on) "开启" else "关闭"),
             )
             vitals.sample("进入暂停", force = true)
         } else {
             val pausedForMs = if (pausedSinceMs == 0L) 0L else System.currentTimeMillis() - pausedSinceMs
             pausedSinceMs = 0L
+            settingsRepository.update { it.copy(pauseRotationApplied = false) }
             resumeRotation()
             screenAwake.restore(settingsRepository.load().screenAwake)
             refreshAccessibility()
@@ -1272,9 +1234,30 @@ class AppGraph private constructor(context: Context) {
                 "暂停 " + formatDuration(pausedForMs) + " · 键盘=" + keyboards.value.size + " 个",
             )
             vitals.sample("退出暂停", force = true)
-            // 单独起一条：这一步最长要等十几秒，留在收集器里会挡住下一次暂停切换
-            scope.launch { resumeAccessibility(pausedForMs) }
+            // 暂停期间跳过了所有绑定复查，这里补一次。单独起一条：它最长要等十几秒，
+            // 留在收集器里会挡住下一次暂停切换。要等档期：暂停前发起的那趟可能还挂着
+            scope.launch {
+                ensureAccessibilityBound(trigger = "解除暂停", waitForSlotMs = RESUME_SLOT_WAIT_MS)
+            }
         }
+    }
+
+    /**
+     * 暂停落地时关旋转闸门，并在这一段暂停里第一次落地时把屏幕放回 0° 竖屏。
+     *
+     * 「第一次」以盘上的 [com.actionmental.data.UserSettings.pauseRotationApplied] 为准，
+     * 所以暂停期间进程被杀、重启后暂停重新落地，不会再把用户自己转过的屏幕扳回来。
+     * 写失败（多半是 Shizuku 不在）不置位，下一次落地再试。
+     *
+     * @return 给日志用的一句话。
+     */
+    private suspend fun enterPauseRotation(): String {
+        val pending = !settingsRepository.load().pauseRotationApplied
+        val result = rotation.setPaused(true, lockPortrait = pending)
+        if (!pending) return "不再修改（本段暂停已放回过 0°）"
+        if (!result.succeeded) return "放回 0° 竖屏失败 · " + result.message
+        settingsRepository.update { it.copy(pauseRotationApplied = true) }
+        return "已放回 0° 竖屏，之后不再修改"
     }
 
     /**
@@ -1286,87 +1269,6 @@ class AppGraph private constructor(context: Context) {
     private suspend fun resumeRotation() {
         rotation.restoreGlobalMode(settingsRepository.load().globalRotationMode)
         rotation.setPaused(false)
-    }
-
-    /**
-     * 解除暂停时把监听服务重新激活，并确认它**真的**活了。
-     *
-     * 暂停靠改写 serviceInfo 让系统别再分发事件，恢复靠把声明配置写回去 ——
-     * 而「写回去」有三种失败，在界面上长得一模一样，都表现为「取消暂停后按键不灵、
-     * 只能去系统设置里关掉再打开」：
-     *  1. 暂停期间服务掉过线，恢复时手里根本没有服务实例；
-     *  2. 写进去了，但这一份绑定早已作废（熄屏冻结留下的僵尸连接，不会有任何回调）；
-     *  3. 系统收下了配置，却没有重算按键过滤链 —— 服务连着、窗口事件照收，唯独按键不来。
-     *
-     * 所以这里不止「写回去」，而是写回去 → 读回确认 → 再写一次 → 仍然不行才摘掉重绑。
-     * 每一步都留痕：外面看到的同一个症状，在日志里必须是三条不同的记录。
-     */
-    private suspend fun resumeAccessibility(pausedForMs: Long) {
-        val serviceClass = KeyboardAccessibilityService::class.java
-        val bindingChanges = (accessibility.attachCount - pausedAtAttachCount) +
-            (accessibility.detachCount - pausedAtDetachCount)
-        val before = accessibility.diagnosticSummary(serviceClass)
-        val applied = accessibility.setEventsSuppressed(false)
-        eventLog.info(
-            "a11y",
-            "解除暂停 · 正在恢复监听配置",
-            "暂停 " + formatDuration(pausedForMs) + " · 暂停期间绑定变化 " + bindingChanges + " 次" +
-                "\n恢复前：" + before +
-                "\n写回结果：" + applied,
-        )
-
-        if (awaitAccessibilityHealthy(RESUME_VERIFY_MS)) {
-            eventLog.info("a11y", "监听配置已恢复，按键过滤生效", accessibility.diagnosticSummary(serviceClass))
-            return
-        }
-
-        // 第一次没成。先便宜地再写一遍：有些 ROM 只是没在这一次写入里重算过滤链，
-        // 而摘掉服务再写回去会让键盘真的失灵好几秒，不该是第一选择。
-        val retry = accessibility.reapplyDeclaredInfo()
-        eventLog.warn(
-            "a11y",
-            "恢复后按键过滤未生效，再写一次配置",
-            "重写结果：" + retry + "\n当前：" + accessibility.diagnosticSummary(serviceClass),
-        )
-        if (awaitAccessibilityHealthy(RESUME_VERIFY_MS)) {
-            eventLog.info("a11y", "第二次写回后按键过滤生效", accessibility.diagnosticSummary(serviceClass))
-            return
-        }
-
-        // 到这里配置这条路已经走死了，只剩下「摘掉再写回」——也就是用户手动
-        // 关掉再打开的等价动作。宽限期给 0：这不是「系统还没来得及绑」，
-        // 而是这份绑定已经明确不干活了，再等只是让键盘多失灵十几秒。
-        eventLog.error(
-            "a11y",
-            "解除暂停后监听服务仍未恢复，转入重新绑定",
-            accessibility.diagnosticSummary(serviceClass),
-        )
-        ensureAccessibilityBound(graceMs = 0L, trigger = "解除暂停", waitForSlotMs = RESUME_SLOT_WAIT_MS)
-    }
-
-    /** 上一次在暂停期间记下的绑定状态。用来把重复的通知压成「真的变了」那几条。 */
-    @Volatile
-    private var pausedBindingNote: String? = null
-
-    /**
-     * 暂停期间绑定状态变了，记一条。
-     *
-     * 这里刻意**不**去修：暂停承诺的就是什么都不做，而重绑要摘掉服务、写系统设置，
-     * 那是用户明确说了不要的动作。但「不修」不等于「不看」—— 恢复失败的成因几乎
-     * 全在这一段里形成，而原来这整段时间在日志上是一片空白，事后只剩一条孤零零的
-     * 「取消暂停后按键不灵」，没有任何上文。
-     */
-    private fun noteBindingWhilePaused(source: String) {
-        val summary = accessibility.diagnosticSummary(KeyboardAccessibilityService::class.java)
-        if (pausedBindingNote == summary) return
-        pausedBindingNote = summary
-        eventLog.debug(
-            "a11y",
-            "暂停期间绑定状态变化 · " + source,
-            "已暂停 " + formatDuration(
-                if (pausedSinceMs == 0L) 0L else System.currentTimeMillis() - pausedSinceMs,
-            ) + "\n" + summary,
-        )
     }
 
     /** 把毫秒说成人话。日志里「暂停 4200000ms」没人算得动，而这个时长正是关键自变量。 */
@@ -1427,9 +1329,6 @@ class AppGraph private constructor(context: Context) {
         /** PowerManager.THERMAL_STATUS_SEVERE。到这一档系统已经在限制后台了。 */
         private const val THERMAL_SEVERE = 3
 
-        /** 常驻服务开关落地前的静置时间：吃掉进程启动瞬间的那次抖动。 */
-        private const val KEEP_ALIVE_SETTLE_MS = 250L
-
         /** 宽限期到点之后再确认这么久。绑定与超时之间常常只差一瞬。 */
         private const val CONFIRM_MS = 3_000L
 
@@ -1440,14 +1339,6 @@ class AppGraph private constructor(context: Context) {
          * 早早报「失败」并推一条通知，比等着更打扰人。
          */
         private const val REBIND_VERIFY_MS = 20_000L
-
-        /**
-         * 解除暂停后，等按键过滤真的回来多久。
-         *
-         * 这一步不写系统设置，只是 `setServiceInfo` 之后等系统重算一次过滤链 ——
-         * 快的话几十毫秒。等太久没意义：真的没生效时，早一点转入重绑更划算。
-         */
-        private const val RESUME_VERIFY_MS = 2_500L
 
         /** 解除暂停那一趟复查愿意等多久的档期。够上一趟（最长 43s）跑完。 */
         private const val RESUME_SLOT_WAIT_MS = 45_000L

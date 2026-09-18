@@ -102,9 +102,9 @@ class RotationController(
     /**
      * 全局暂停：一道写入闸门。
      *
-     * 暂停（手动或拔掉键盘自动暂停）期间**一条旋转命令都不下发**：进暂停那一刻不写，
-     * 应用规则压 override 不写，快捷键 / 磁贴 / 界面 / 多屏下发一律拒绝。
-     * 系统旋转停在什么样就是什么样，用户在快捷设置里自己拨也不会被改回去。
+     * 暂停（手动或拔掉键盘自动暂停）落地那一刻，至多写一次「解除强制 + 锁定 0° 竖屏」
+     * （见 [setPaused] 的 lockPortrait），之后**一条旋转命令都不下发**：应用规则压 override
+     * 不写，快捷键 / 磁贴 / 界面 / 多屏下发一律拒绝。用户在快捷设置里自己拨也不会被改回去。
      * [globalMode] 与 [override] 照常记录，[setPaused] 传 false 时按它们重新算一次。
      *
      * 初值是 true：进程被拉起时还不知道盘上是不是暂停着，而规则管理器的第一次发射、
@@ -116,17 +116,39 @@ class RotationController(
     private var paused = true
 
     /**
-     * 进 / 出暂停。进入时只关闸不写；退出时按当前意图写一次，回读走 [applyEffective]。
+     * 进 / 出暂停。
+     *
+     * 进入：拿锁关闸（正在进行的那一次写入写完，之后的一律挡在门外）；
+     * [lockPortrait] 为 true 时在同一把锁里写一次 0° 竖屏 —— 关闸与这次写入之间
+     * 不会被任何别的写入插队。闸门初值就是关着的，所以这里不能因为「已经是 true」提前返回。
+     *
+     * 退出：按当前意图写一次，回读走 [applyEffective]。
      */
-    suspend fun setPaused(on: Boolean): ActionResult {
-        if (paused == on) return ActionResult.OK
-        if (on) {
-            // 拿锁再关闸：正在进行的那一次写入写完，之后的一律挡在门外
-            mutex.withLock { paused = true }
-            return ActionResult.OK
+    suspend fun setPaused(on: Boolean, lockPortrait: Boolean = false): ActionResult {
+        if (on) return mutex.withLock {
+            paused = true
+            if (lockPortrait) lockPortraitLocked() else ActionResult.OK
         }
+        if (!paused) return ActionResult.OK
         paused = false
         return applyEffective()
+    }
+
+    /**
+     * 解除一切强制，把屏幕锁在 0° 竖屏。
+     *
+     * 用的是 [RotationMode.CUSTOM] 那份写入计划（ignore-orientation-request=false、
+     * fix-to-user-rotation 复位、`user-rotation lock 0`），而不是 FORCE_PORTRAIT：
+     * 暂停的意思是「这个应用不再管屏幕」，留一个强制竖屏等于还在管。
+     * 只锁不强制时，自带方向要求的应用照样能转过去，用户在快捷设置里也拨得动。
+     */
+    private suspend fun lockPortraitLocked(): ActionResult {
+        val availability = backend().availability()
+        if (availability is ActionResult.Failed) return availability
+        onWrite()
+        val result = write(RotationMode.CUSTOM)
+        publish(readState())
+        return result
     }
 
     private fun pausedResult(): ActionResult =

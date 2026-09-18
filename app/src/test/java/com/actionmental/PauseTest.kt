@@ -5,6 +5,8 @@ import com.actionmental.core.key.KeyCombo
 import com.actionmental.core.key.KeyPipeline
 import com.actionmental.core.key.KeyboardDevice
 import com.actionmental.core.key.NormalizedKeyEvent
+import com.actionmental.core.rotation.RotationMode
+import com.actionmental.core.rotation.rotationWritePlan
 import com.actionmental.data.UserSettings
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
@@ -110,5 +112,27 @@ class PauseTest {
         // 而实际上还压着他自己按下的那个暂停
         assertEquals("MANUAL", reasonOf(both, keyboards = 0))
         assertEquals("MANUAL", reasonOf(both, keyboards = 2))
+    }
+
+    /**
+     * 暂停落地时写的那一次：解除强制，锁在 0°。
+     *
+     * 不能是 FORCE_PORTRAIT —— 那会留下 ignore-orientation-request=true，
+     * 暂停期间应用还在替用户管着屏幕。
+     */
+    @Test
+    fun `暂停放回竖屏是解除强制加锁定 0 度`() {
+        val plan = rotationWritePlan(RotationMode.CUSTOM)!!
+
+        assertTrue("cmd window set-ignore-orientation-request false" in plan)
+        assertTrue("cmd window user-rotation lock 0" in plan)
+        assertFalse(plan.any { it.contains("set-ignore-orientation-request true") })
+    }
+
+    @Test
+    fun `老配置升级后第一次暂停会放回竖屏`() {
+        val settings = Json.decodeFromString<UserSettings>("""{"paused":true}""")
+
+        assertFalse(settings.pauseRotationApplied)
     }
 }

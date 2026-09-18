@@ -44,8 +44,8 @@ class KeyboardAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         try {
-            // 暂停时系统本来就不该再送事件过来（serviceInfo 的 eventTypes 已被清零），
-            // 但改配置与系统真正停止分发之间有一小段延迟，这里补上
+            // 暂停期间不认前台应用。事件照收（300ms 合并窗口，代价可忽略），
+            // 换来的是不去改写 serviceInfo —— 那正是「解除暂停后按键不灵」的根源
             if (graph.paused.value) return
             if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
                 graph.counters.windowChange.incrementAndGet()

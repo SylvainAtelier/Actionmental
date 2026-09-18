@@ -42,9 +42,7 @@ class KeepAliveService : Service() {
      * 系统在 startForegroundService() 之后挂了一个超时：服务没在窗口内进入前台就抛
      * ForegroundServiceDidNotStartInTimeException 把进程干掉。而 stopService() **不会**
      * 解除那个超时 —— 它只会让 ServiceRecord 走销毁路径，之后再调 startForeground 也
-     * 已经没人听了。设备上那串一秒一次的崩溃循环就是这么来的：进程刚起来时
-     * keepAlive=true 先发一次 start，暂停状态紧接着从盘上恢复又发一次 stop，两者同一
-     * 毫秒，服务被停在了进入前台之前。
+     * 已经没人听了。开关拨开又立刻拨回去，就会把服务停在进入前台之前。
      *
      * 所以关闭走的是 ACTION_STOP 而不是 stopService：先兑现前台承诺，再自己退场。
      */
