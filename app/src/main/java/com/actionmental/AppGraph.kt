@@ -114,7 +114,9 @@ class AppGraph private constructor(context: Context) {
     val configBackupFile = ConfigBackupFile(context)
 
     val accessibility = AccessibilityBridge(context)
-    val shizuku = ShizukuManager(context, scope)
+    val shizuku = ShizukuManager(context, scope, onEvent = { warn, message, detail ->
+        if (warn) eventLog.warn("shizuku", message, detail) else eventLog.debug("shizuku", message, detail)
+    })
     val audio = AudioBackend(context)
     val packages = PackageBackend(context)
     val appCatalog = AppCatalog(
@@ -321,6 +323,16 @@ class AppGraph private constructor(context: Context) {
         val master: Boolean,
     )
 
+    /** 自愈监视只关心的那几个量。 */
+    private data class SwitchSignals(
+        val enabled: Boolean,
+        val listed: Boolean,
+        val shizukuUsable: Boolean,
+        val paused: Boolean,
+        val autoHealAccessibility: Boolean,
+        val accessibilityEverEnabled: Boolean,
+    )
+
     private data class Bindings(
         val shortcuts: List<com.actionmental.core.shortcut.Shortcut>,
         val rules: List<com.actionmental.core.rotation.AppRotationRule>,
@@ -523,6 +535,13 @@ class AppGraph private constructor(context: Context) {
         accessibility.onServicesStateChanged = {
             if (!pausedNow) scope.launch { ensureAccessibilityBound(trigger = "系统服务列表变化") }
         }
+        accessibility.onSettingsChanged = { listed, master ->
+            eventLog.debug(
+                "a11y",
+                "系统无障碍设置变化 · 列表=" + (if (listed) "在" else "不在") + " 总开关=" + (if (master) "开" else "关"),
+                accessibility.diagnosticSummary(KeyboardAccessibilityService::class.java),
+            )
+        }
         accessibility.startObserving(KeyboardAccessibilityService::class.java)
 
         // 旋转控制器靠「系统现在是什么样」决定还要不要写。用户在快捷设置里拨一下
@@ -663,7 +682,13 @@ class AppGraph private constructor(context: Context) {
                     lastActionResult.value = shortcut.displayLabel to result
                     // 触发与结果都留一条：排查「连按几下就失灵」时，这条时间线是唯一的线索
                     if (result.succeeded) {
-                        eventLog.debug("action", shortcut.displayLabel, shortcut.action.technical)
+                        // 结果要跟着写：切换类动作的标签永远是同一句，只有结果说得出
+                        // 这一下是转过去了还是转回来了（盘上记录里连按三下的那几段就分不清）
+                        eventLog.debug(
+                            "action",
+                            shortcut.displayLabel,
+                            shortcut.action.technical + " · " + result.message,
+                        )
                     } else {
                         eventLog.error("action", shortcut.displayLabel + " 执行失败", result.message)
                     }
@@ -772,16 +797,29 @@ class AppGraph private constructor(context: Context) {
      * 冷却与失败退避在 [HardeningController] 内部，这里不重复实现。
      */
     private suspend fun watchAccessibilitySwitch() {
+        var lastSkip: String? = null
         combine(
             accessibility.enabledInSettings,
+            accessibility.listedInSettings,
             shizuku.status,
             settingsRepository.settings,
-        ) { enabled, shizukuStatus, userSettings ->
-            Triple(enabled, shizukuStatus.usable, userSettings)
-        }.collect { (enabled, shizukuUsable, userSettings) ->
+        ) { enabled, listed, shizukuStatus, s ->
+            SwitchSignals(
+                enabled = enabled,
+                listed = listed,
+                shizukuUsable = shizukuStatus.usable,
+                paused = s.paused,
+                autoHealAccessibility = s.autoHealAccessibility,
+                accessibilityEverEnabled = s.accessibilityEverEnabled,
+            )
+            // 只留这几个量再去重：设置流每写一次（每转一次屏都会写）都会发射，
+            // 不收窄的话每一次都要重跑一遍自愈判断，甚至重新拉起一趟十几秒的绑定复查
+        }.distinctUntilChanged().collect { signals ->
+            val (enabled, listed, shizukuUsable) = signals
             if (enabled) {
+                lastSkip = null
                 // 记下「用户确实授权过」，这是将来允许自动写回的唯一依据
-                if (!userSettings.accessibilityEverEnabled) {
+                if (!signals.accessibilityEverEnabled) {
                     settingsRepository.update { it.copy(accessibilityEverEnabled = true) }
                 }
                 hardening.resetAutoHealBackoff()
@@ -789,15 +827,51 @@ class AppGraph private constructor(context: Context) {
             }
             // 暂停期间不替用户去改系统开关：这个应用此刻本来就不该起作用，
             // 把无障碍写回去只会让「已暂停」和一个正在被自动恢复的服务同时成立
-            if (userSettings.paused) return@collect
-            if (!userSettings.autoHealAccessibility) return@collect
-            if (!userSettings.accessibilityEverEnabled || !shizukuUsable) return@collect
+            if (signals.paused) return@collect
 
-            // Skipped（冷却中、开关本来就在）不打扰用户；只有真的动了手才提示
+            // 服务还在列表里、只是总开关读到 0：这不是谁把开关关了。
+            //
+            // accessibility_enabled 是系统**推导**出来的值（AOSP AccessibilityManagerService
+            // .updateAccessibilityEnabledSettingLocked：有已绑定或正在绑定的服务才写 1）。
+            // 进程被杀的那一刻 binderDied 把它写成 0，并把服务记成 crashed ——
+            // 之后系统不会主动重绑，只等 ActivityManager 哪天把服务拉起来。
+            // 盘上记录里被温控杀掉之后三次重启都是「列表=在 总开关=关」，然后键盘失灵 3~5 分钟。
+            //
+            // 这时单写一个总开关=1 什么都修不好（系统下一次变化就会按实情覆盖回去，
+            // 也不会因此去绑定），原来却会报一句「已自动恢复」。真正解得开的是重绑：
+            // 摘掉再写回会清掉 crashed 标记，盘上记录里那一次 136ms 就连上了。
+            if (listed) {
+                if (!signals.autoHealAccessibility) return@collect
+                scope.launch { ensureAccessibilityBound(trigger = "系统报告没有已绑定的服务") }
+                return@collect
+            }
+
+            val gate = when {
+                !signals.autoHealAccessibility -> "自动恢复未开启"
+                !signals.accessibilityEverEnabled -> "从未授权过，不代为打开"
+                !shizukuUsable -> "Shizuku 不可用 · " + shizuku.status.value.conclusion
+                else -> null
+            }
+            if (gate != null) {
+                // 原来这里一声不吭地返回：服务不在列表里、自愈也没动手，日志里什么都看不出
+                if (gate != lastSkip) eventLog.debug("heal", "监听服务不在系统列表里，这次不写回 · " + gate)
+                lastSkip = gate
+                return@collect
+            }
+
             when (val outcome = hardening.healAccessibility(HealTrigger.AUTO)) {
-                is HealOutcome.Skipped -> Unit
+                is HealOutcome.Skipped -> {
+                    // 冷却中、本来就开着：不打扰用户，但要留一条（同一个原因只记一次）
+                    if (outcome.why != lastSkip) eventLog.debug("heal", "自动恢复跳过 · " + outcome.why)
+                    lastSkip = outcome.why
+                }
                 is HealOutcome.Attempted -> {
+                    lastSkip = null
                     val succeeded = outcome.result.succeeded
+                    val tail = outcome.result.message + "\n" +
+                        accessibility.diagnosticSummary(KeyboardAccessibilityService::class.java)
+                    if (succeeded) eventLog.info("heal", "已把监听服务写回系统设置", tail)
+                    else eventLog.error("heal", "写回监听服务失败", tail)
                     hardeningNotice.value = if (succeeded) {
                         "监听服务被系统关闭，已自动恢复"
                     } else {
@@ -917,12 +991,21 @@ class AppGraph private constructor(context: Context) {
         // 暂停时服务连不连得上没有意义，而这段等待要挂住一个协程十几秒
         if (pausedNow) return false
         refreshAccessibility()
-        if (accessibilityHealthy()) return false
-        // 开关本身掉了是另一回事，交给 watchAccessibilitySwitch 写回去
-        if (!accessibility.enabledInSettings.value) {
+        // 两条判据取同一份快照。原来先问一遍「健康吗」，隔几行再单独读一次「实例在不在」——
+        // 服务恰好在这两次读之间连上时，就会得出「实例在、系统不认」这个两边都没发生过的结论：
+        // 盘上记录里 15:40:17 那条告警，后面跟着的摘要写的却是「实例=在 系统认=是」。
+        val instance = accessibility.connected.value
+        val running = accessibility.isRunningPerSystem(KeyboardAccessibilityService::class.java)
+        if (instance && running) return false
+        // 不在列表里才是真的「开关掉了」，交给 watchAccessibilitySwitch 写回去。
+        //
+        // 列表在、总开关是 0 **不算**：那个值是系统按「此刻有没有已绑定的服务」推导出来的，
+        // 进程被杀后就是 0。原来这里连它一起放过，于是每次被温控杀掉之后，
+        // 恰恰在最需要重绑的时候什么都不做（盘上记录：22:34 → 22:38、18:45 → 18:50 键盘全程失灵）。
+        if (!accessibility.listedInSettings.value) {
             eventLog.debug(
                 "a11y",
-                "服务没连上，但系统开关也不在，这一趟不管",
+                "服务不在系统的无障碍列表里，这一趟不管",
                 "触发=" + trigger + " · " + accessibility.diagnosticSummary(KeyboardAccessibilityService::class.java),
             )
             return false
@@ -938,19 +1021,28 @@ class AppGraph private constructor(context: Context) {
         // 手里还攥着服务实例，说明这不是「还没绑上」，而是绑定已经作废 ——
         // 熄屏被冻结、连接被服务端丢掉，系统都不会回调 onUnbind / onDestroy。
         // 这种情况等下去没有意义：不会有任何一方再发起绑定。
-        val stale = accessibility.connected.value
+        val stale = instance
         val startedAt = System.currentTimeMillis()
         if (stale) {
+            // attach 和系统把服务登记进「正在运行」之间有一点时间差，
+            // 先过确认期再下结论，免得刚绑上就被当成失效连接报一次、拆一次
+            delay(CONFIRM_MS)
+            refreshAccessibility()
+            if (accessibilityHealthy()) {
+                eventLog.debug(
+                    "a11y",
+                    "系统在确认期内认下了这个绑定",
+                    "触发=" + trigger + " · 判定时 实例=在 系统认=否 · " + CONFIRM_MS + "ms 后复查已正常",
+                )
+                return false
+            }
             eventLog.warn(
                 "a11y",
                 "服务实例还在，系统却不认这个绑定",
                 "触发=" + trigger + " · 按键收不到了 · 自动恢复=" + autoHeal +
+                    " · 判定时 实例=在 系统认=否，" + CONFIRM_MS + "ms 后仍是这样" +
                     "\n" + accessibility.diagnosticSummary(KeyboardAccessibilityService::class.java),
             )
-            // attach 和系统把服务登记进「正在运行」之间有一点时间差，
-            // 给一个确认期，免得刚绑上就被当成失效连接拆一次
-            delay(CONFIRM_MS)
-            refreshAccessibility()
         } else {
             eventLog.debug(
                 "a11y",
@@ -1010,13 +1102,29 @@ class AppGraph private constructor(context: Context) {
                 // 报成功却没连上，等于让用户以为修好了，然后继续对着失灵的键盘。
                 val requested = outcome.result.succeeded
                 val recovered = requested && awaitAccessibilityHealthy(REBIND_VERIFY_MS)
+
+                // 请求没发出去，系统却在这期间自己绑上了 —— 那就不是失败。
+                // 盘上记录 23:05：49.838 开始重连，50.773 系统自己连上，51.863 才因为
+                // 特权服务没连上而返回，结果一个已经好了的服务被报成 ERROR，还推了一条失败通知。
+                if (!requested && accessibilityHealthy()) {
+                    eventLog.info(
+                        "a11y",
+                        "重连请求没发出去，但系统已经自己绑上了",
+                        "触发=" + trigger + " · 请求失败原因=" + outcome.result.message +
+                            " · 距开始等待 " + (System.currentTimeMillis() - startedAt) + "ms" +
+                            "\n" + accessibility.diagnosticSummary(KeyboardAccessibilityService::class.java),
+                    )
+                    return true
+                }
+
                 val message = when {
                     recovered -> outcome.result.message
                     requested -> "已写回系统设置，但服务仍未连上，请到系统设置里手动关掉再打开"
                     else -> outcome.result.message
                 }
                 val tail = "触发=" + trigger + " · " + message +
-                    "\n" + accessibility.diagnosticSummary(KeyboardAccessibilityService::class.java)
+                    "\n" + accessibility.diagnosticSummary(KeyboardAccessibilityService::class.java) +
+                    "\nShizuku " + shizuku.describe()
                 if (recovered) eventLog.info("a11y", "自动重连完成", tail)
                 else eventLog.error("a11y", "自动重连失败", tail)
                 hardeningNotice.value = if (recovered) {

@@ -225,10 +225,9 @@ class RotationController(
         if (paused) return pausedResult()
         val current = refresh()
         if (!current.available) return ActionResult.Failed(unavailableReason(), current.failure.orEmpty())
-        return setGlobal(
-            if (current.mode == RotationMode.FORCE_LANDSCAPE) RotationMode.NORMAL
-            else RotationMode.FORCE_LANDSCAPE
-        )
+        val target = if (current.mode == RotationMode.FORCE_LANDSCAPE) RotationMode.NORMAL
+        else RotationMode.FORCE_LANDSCAPE
+        return withTransition(current.mode, target, setGlobal(target))
     }
 
     /** 快捷键切换指定方向；再次触发当前方向时撤销强制方向并回到竖屏锁定。 */
@@ -236,8 +235,22 @@ class RotationController(
         if (paused) return pausedResult()
         val current = refresh()
         if (!current.available) return ActionResult.Failed(unavailableReason(), current.failure.orEmpty())
-        return setGlobal(RotationMode.toggleTarget(current.mode, mode))
+        val target = RotationMode.toggleTarget(current.mode, mode)
+        return withTransition(current.mode, target, setGlobal(target))
     }
+
+    /**
+     * 成功结果里写明「从哪到哪」。
+     *
+     * 切换类快捷键的标签永远是同一句（「切换 · 270° 反向横屏」），事件日志里只看得到
+     * 按了几下，看不出每一下是转过去还是转回来 —— 连按三下的那几段就没法判断是不是没生效。
+     */
+    private fun withTransition(from: RotationMode, to: RotationMode, result: ActionResult): ActionResult =
+        if (result is ActionResult.Ok) {
+            ActionResult.Ok(from.label + " → " + to.label + if (result.detail.isBlank()) "" else " · " + result.detail)
+        } else {
+            result
+        }
 
     /** 循环：默认 → 横屏 → 竖屏 → 默认。 */
     suspend fun cycle(): ActionResult {

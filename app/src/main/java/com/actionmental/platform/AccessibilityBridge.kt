@@ -63,6 +63,17 @@ class AccessibilityBridge(private val context: Context) {
     var onServicesStateChanged: (() -> Unit)? = null
 
     /**
+     * 系统设置里的列表 / 总开关变了（不含启动后的第一次读取）。
+     *
+     * 总开关是系统按「此刻有没有已绑定的服务」推导的，进程被杀会把它写成 0。
+     * 它什么时候、在什么之后变回 1，是分辨「系统自己绑上了」还是「自愈写进去的」
+     * 唯一的依据 —— 原来这两个值只在别的日志的摘要里偶尔露一次面。
+     */
+    var onSettingsChanged: ((listed: Boolean, master: Boolean) -> Unit)? = null
+
+    private var settingsRead = false
+
+    /**
      * 盯住系统设置里那两个键，变化时立刻刷新。
      *
      * 这替掉了原来每 1.5 秒读一次的轮询。轮询要不停地跨进程查两个值，
@@ -190,13 +201,18 @@ class AccessibilityBridge(private val context: Context) {
     fun performGlobalAction(action: Int): Boolean =
         service?.performGlobalAction(action) ?: false
 
-    /** 重新读一次系统设置，刷新三个开关状态。轮询与生命周期回调都走这里。 */
+    /** 重新读一次系统设置，刷新三个开关状态。主线程的观察者与后台协程都会走这里。 */
+    @Synchronized
     fun refresh(serviceClass: Class<*>) {
         val listed = isListedInSettings(serviceClass)
         val master = isMasterSwitchOn()
+        val changed = settingsRead &&
+            (listed != _listedInSettings.value || master != _masterSwitchOn.value)
+        settingsRead = true
         _listedInSettings.value = listed
         _masterSwitchOn.value = master
         _enabledInSettings.value = listed && master
+        if (changed) onSettingsChanged?.invoke(listed, master)
     }
 
     /**
@@ -209,7 +225,13 @@ class AccessibilityBridge(private val context: Context) {
     fun isEnabledInSettings(serviceClass: Class<*>): Boolean =
         isListedInSettings(serviceClass) && isMasterSwitchOn()
 
-    /** accessibility_enabled：系统的无障碍总开关。0 表示所有服务都不会被绑定。 */
+    /**
+     * accessibility_enabled。
+     *
+     * 名字叫总开关，实际上是系统**推导**出来的：AOSP 在每次服务绑定 / 断开后按
+     * 「有没有已绑定或正在绑定的服务」重写它。所以列表在、它却是 0，
+     * 说的是「此刻没有服务绑着」（比如进程刚被杀），而不是用户关掉了什么。
+     */
     fun isMasterSwitchOn(): Boolean =
         Settings.Secure.getInt(context.contentResolver, Settings.Secure.ACCESSIBILITY_ENABLED, 0) == 1
 

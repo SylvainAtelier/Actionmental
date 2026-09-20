@@ -26,7 +26,7 @@ class VitalsWatchTest {
         return VitalsWatch(log = log, counters = counters, read = vitals) to log
     }
 
-    private fun vitals(rssMb: Long, cpuPercent: Int = 0) =
+    private fun vitals(rssMb: Long, cpuPercent: Int? = 0) =
         ProcessVitals(rssMb = rssMb, threads = 30, cpuPercent = cpuPercent, elapsedMs = 30_000)
 
     @Test
@@ -106,5 +106,17 @@ class VitalsWatchTest {
 
         assertEquals(0L, watch.sample("启动", force = true))
         assertTrue(log.entries.value.isEmpty())
+    }
+
+    /** 窗口太短时 CPU 算不准：不能拿一个量化误差去升 WARN（盘上记录里的 cpu=142%）。 */
+    @Test
+    fun `CPU 算不准时不报数也不告警`() {
+        val (watch, log) = newWatch { vitals(120, cpuPercent = null) }
+
+        watch.sample("界面进入前台", force = true)
+
+        val entry = log.entries.value.single()
+        assertTrue(entry.message.contains("cpu=—"))
+        assertEquals(com.actionmental.core.diag.LogLevel.DEBUG, entry.level)
     }
 }

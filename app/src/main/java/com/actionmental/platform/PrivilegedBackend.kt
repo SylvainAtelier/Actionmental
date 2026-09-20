@@ -31,8 +31,15 @@ interface PrivilegedBackend {
     /** 只注入半边。整颗替换一颗修饰键时，目标键要真的按住。 */
     suspend fun injectKeyState(keyCode: Int, metaState: Int, down: Boolean): Result<Unit>
 
-    /** 读取一个 settings 值，读不到返回 null。 */
-    suspend fun getSetting(namespace: String, key: String): String?
+    /**
+     * 读取一个 settings 值。
+     *
+     * 「读失败」与「这个键没有值」必须分开：自愈与重绑都是读出整串、改一项、再整串写回。
+     * 把读失败当成空串，写回去的就只剩自己这一项 —— 用户其它的无障碍服务被一并抹掉。
+     *
+     * @return 成功时是值（没有值为 null）；特权服务不可用或命令失败时是 failure。
+     */
+    suspend fun getSetting(namespace: String, key: String): Result<String?>
 
     suspend fun putSetting(namespace: String, key: String, value: String): Result<Unit>
 }
@@ -46,7 +53,8 @@ class UnavailableBackend(private val reason: ActionResult.Reason) : PrivilegedBa
         Result.failure<Unit>(IllegalStateException(reason.message))
     override suspend fun injectKeyState(keyCode: Int, metaState: Int, down: Boolean) =
         Result.failure<Unit>(IllegalStateException(reason.message))
-    override suspend fun getSetting(namespace: String, key: String): String? = null
+    override suspend fun getSetting(namespace: String, key: String) =
+        Result.failure<String?>(IllegalStateException(reason.message))
     override suspend fun putSetting(namespace: String, key: String, value: String) =
         Result.failure<Unit>(IllegalStateException(reason.message))
 }

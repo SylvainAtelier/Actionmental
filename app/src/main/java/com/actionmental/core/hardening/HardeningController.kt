@@ -183,9 +183,14 @@ class HardeningController(
 
         _busy.value = true
         try {
-            val current = b.getSetting(SECURE, ENABLED_SERVICES)
+            // 读不出来就不写：下面写回的是「整串 + 自己」，按空串算会抹掉别人的服务
+            val currentRead = b.getSetting(SECURE, ENABLED_SERVICES)
+            if (currentRead.isFailure) return HealOutcome.Attempted(record(trigger, stepFailed("读取服务列表", currentRead)))
+            val current = currentRead.getOrNull()
+            val masterRead = b.getSetting(SECURE, ACCESSIBILITY_ENABLED)
+            if (masterRead.isFailure) return HealOutcome.Attempted(record(trigger, stepFailed("读取总开关", masterRead)))
             val listed = containsComponent(current, accessibilityComponent)
-            val masterOn = b.getSetting(SECURE, ACCESSIBILITY_ENABLED)?.trim() == "1"
+            val masterOn = masterRead.getOrNull()?.trim() == "1"
 
             if (listed && masterOn) {
                 consecutiveFailures = 0
@@ -199,7 +204,7 @@ class HardeningController(
                     ENABLED_SERVICES,
                     appendComponent(current, accessibilityComponent),
                 )
-                if (write.isFailure) return HealOutcome.Attempted(record(trigger, writeFailed(write)))
+                if (write.isFailure) return HealOutcome.Attempted(record(trigger, stepFailed("写回服务列表", write)))
             }
 
             // 总开关是 0 时系统一个服务都不绑：列表写对了也照样连不上，
@@ -207,7 +212,7 @@ class HardeningController(
             // 报成功等于让用户以为修好了，实际还得手动去设置里关掉再打开。
             if (!masterOn) {
                 val write = b.putSetting(SECURE, ACCESSIBILITY_ENABLED, "1")
-                if (write.isFailure) return HealOutcome.Attempted(record(trigger, writeFailed(write)))
+                if (write.isFailure) return HealOutcome.Attempted(record(trigger, stepFailed("打开总开关", write)))
             }
 
             val what = when {
@@ -259,11 +264,15 @@ class HardeningController(
 
         _busy.value = true
         try {
-            val current = b.getSetting(SECURE, ENABLED_SERVICES)
+            // 读失败就停在这里。按空串往下走，摘掉再写回之后列表里只剩自己 ——
+            // 用户别的无障碍服务会被悄悄关掉，而这一步的 Shizuku 抖动在冷启动时是常态
+            val currentRead = b.getSetting(SECURE, ENABLED_SERVICES)
+            if (currentRead.isFailure) return record(HealTrigger.REBIND, stepFailed("读取服务列表", currentRead))
+            val current = currentRead.getOrNull()
             val without = removeComponent(current, accessibilityComponent)
 
             val off = b.putSetting(SECURE, ENABLED_SERVICES, without)
-            if (off.isFailure) return record(HealTrigger.REBIND, writeFailed(off))
+            if (off.isFailure) return record(HealTrigger.REBIND, stepFailed("摘除服务", off))
 
             val on = b.putSetting(
                 SECURE,
@@ -283,7 +292,7 @@ class HardeningController(
             }
 
             val master = b.putSetting(SECURE, ACCESSIBILITY_ENABLED, "1")
-            if (master.isFailure) return record(HealTrigger.REBIND, writeFailed(master))
+            if (master.isFailure) return record(HealTrigger.REBIND, stepFailed("打开总开关", master))
 
             return record(HealTrigger.REBIND, ActionResult.Ok("已请求系统重新绑定监听服务"))
         } finally {
@@ -291,9 +300,10 @@ class HardeningController(
         }
     }
 
-    private fun writeFailed(result: Result<*>): ActionResult = ActionResult.Failed(
+    /** 失败带上是哪一步：「特权服务未连接」出现在读和写上，意味着完全不同的两件事。 */
+    private fun stepFailed(step: String, result: Result<*>): ActionResult = ActionResult.Failed(
         ActionResult.Reason.EXECUTION_FAILED,
-        result.exceptionOrNull()?.message.orEmpty(),
+        step + "失败 · " + result.exceptionOrNull()?.message.orEmpty(),
     )
 
     private suspend fun record(trigger: HealTrigger, result: ActionResult): ActionResult {

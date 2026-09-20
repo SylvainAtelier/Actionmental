@@ -48,7 +48,7 @@ class LoggingBackend(
     override suspend fun injectKeyState(keyCode: Int, metaState: Int, down: Boolean): Result<Unit> =
         delegate.injectKeyState(keyCode, metaState, down)
 
-    override suspend fun getSetting(namespace: String, key: String): String? =
+    override suspend fun getSetting(namespace: String, key: String): Result<String?> =
         delegate.getSetting(namespace, key)
 
     override suspend fun putSetting(namespace: String, key: String, value: String): Result<Unit> {

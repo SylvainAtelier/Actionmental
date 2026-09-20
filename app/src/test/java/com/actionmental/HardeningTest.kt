@@ -11,6 +11,7 @@ import com.actionmental.core.hardening.removeComponent
 import com.actionmental.core.action.ActionResult
 import com.actionmental.core.hardening.HardeningController
 import com.actionmental.core.hardening.HealOutcome
+import com.actionmental.core.hardening.HealTrigger
 import com.actionmental.platform.PrivilegedBackend
 import com.actionmental.platform.ShellResult
 import com.actionmental.platform.shizuku.settingsWriteCommand
@@ -23,6 +24,7 @@ import org.junit.Test
 
 private const val PKG = "com.actionmental"
 private const val COMPONENT = PKG + "/com.actionmental.service.KeyboardAccessibilityService"
+private const val OTHER = "com.other/.OtherService"
 
 class HardeningTest {
 
@@ -216,17 +218,57 @@ class HardeningTest {
         fun advance(ms: Long) { value += ms }
     }
 
-    private class FakeBackend(private val writeFails: Boolean = false) : PrivilegedBackend {
+    private class FakeBackend(
+        private val writeFails: Boolean = false,
+        private val readFails: Boolean = false,
+    ) : PrivilegedBackend {
+        val writes = mutableListOf<Pair<String, String>>()
         override fun availability() = ActionResult.OK
         override suspend fun exec(command: String) = Result.success(ShellResult(0, ""))
         override suspend fun injectKey(keyCode: Int, metaState: Int) = Result.success(Unit)
         override suspend fun injectKeyState(keyCode: Int, metaState: Int, down: Boolean) =
             Result.success(Unit)
 
-        override suspend fun getSetting(namespace: String, key: String): String? =
-            if (key == "accessibility_enabled") "1" else COMPONENT
+        override suspend fun getSetting(namespace: String, key: String): Result<String?> =
+            if (readFails) Result.failure(IllegalStateException("特权服务未连接"))
+            else Result.success(if (key == "accessibility_enabled") "1" else OTHER + ":" + COMPONENT)
 
-        override suspend fun putSetting(namespace: String, key: String, value: String) =
-            if (writeFails) Result.failure(IllegalStateException("Bad arguments")) else Result.success(Unit)
+        override suspend fun putSetting(namespace: String, key: String, value: String): Result<Unit> {
+            writes += key to value
+            return if (writeFails) Result.failure(IllegalStateException("Bad arguments")) else Result.success(Unit)
+        }
+    }
+
+    /**
+     * 读失败绝不能当成空串写回去。
+     *
+     * 重绑是「读出整串 → 摘掉自己 → 写回 → 再加上自己」。读失败时若按空串算，
+     * 写回去的就只剩这一个组件，用户别的无障碍服务被悄悄关掉。
+     */
+    @Test
+    fun rebindNeverWritesWhenTheReadFails() = runBlocking {
+        val backend = FakeBackend(readFails = true)
+        val result = controller(backend, FakeClock()).rebindAccessibility()
+
+        assertFalse(result.succeeded)
+        assertTrue(backend.writes.isEmpty())
+    }
+
+    @Test
+    fun healNeverWritesWhenTheReadFails() = runBlocking {
+        val backend = FakeBackend(readFails = true)
+        val outcome = controller(backend, FakeClock()).healAccessibility(HealTrigger.MANUAL)
+
+        assertFalse(outcome.succeeded)
+        assertTrue(backend.writes.isEmpty())
+    }
+
+    @Test
+    fun rebindKeepsOtherServices() = runBlocking {
+        val backend = FakeBackend()
+        controller(backend, FakeClock()).rebindAccessibility()
+
+        val lastList = backend.writes.last { it.first == "enabled_accessibility_services" }.second
+        assertTrue(lastList.contains(OTHER))
     }
 }

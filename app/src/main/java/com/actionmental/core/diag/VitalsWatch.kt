@@ -42,14 +42,16 @@ class VitalsWatch(
      *              明确的时间点，本身就是后面回看时最需要的锚点。
      * @return 本次采到的 rss（MB）。
      */
+    @Synchronized
     fun sample(reason: String, force: Boolean = false): Long {
         val vitals = read() ?: return 0L
         val now = System.currentTimeMillis()
         val bucket = vitals.rssMb / BUCKET_MB
+        val cpu = vitals.cpuPercent ?: 0
 
         val notable = force ||
             bucket != lastBucket ||
-            vitals.cpuPercent >= CPU_NOTABLE_PERCENT ||
+            cpu >= CPU_NOTABLE_PERCENT ||
             (lastLogAtMs != 0L && now - lastLogAtMs >= HEARTBEAT_MS)
 
         if (!notable) {
@@ -65,7 +67,8 @@ class VitalsWatch(
         lastLogAtMs = now
 
         val counts = counters.drain()
-        val head = "体征 · rss=" + vitals.rssMb + "MB cpu=" + vitals.cpuPercent + "%"
+        val head = "体征 · rss=" + vitals.rssMb + "MB cpu=" +
+            (vitals.cpuPercent?.let { "$it%" } ?: "—")
         val detail = buildString {
             append("rss=").append(vitals.rssMb).append("MB ")
             append(memoryBreakdown())
@@ -75,7 +78,7 @@ class VitalsWatch(
             append(" · ").append(reason)
         }
 
-        if (vitals.rssMb >= WARN_RSS_MB || vitals.cpuPercent >= CPU_WARN_PERCENT) {
+        if (vitals.rssMb >= WARN_RSS_MB || cpu >= CPU_WARN_PERCENT) {
             log.warn(TAG, head, detail)
         } else {
             log.debug(TAG, head, detail)
@@ -97,7 +100,12 @@ class VitalsWatch(
             val kb = runCatching { info.getMemoryStat(key)?.toLongOrNull() }.getOrNull() ?: return@mapNotNull null
             if (kb < 1024L) null else label + "=" + (kb / 1024L) + "MB"
         }
+        // totalPss 把换出到 zram 的那部分也算进去了，rss 却不算 —— 于是日志里出现过
+        // pss 比 rss 还大、rss 一路降而 pss 一路涨的样子。单列出来，两个数才对得上
+        val swapMb = runCatching { info.getMemoryStat("summary.total-swap")?.toLongOrNull() }
+            .getOrNull()?.div(1024L) ?: 0L
         return "pss=" + (info.totalPss / 1024L) + "MB" +
+            (if (swapMb >= 1L) "(含swap=" + swapMb + "MB)" else "") +
             if (parts.isEmpty()) "" else " " + parts.joinToString(" ")
     }
 

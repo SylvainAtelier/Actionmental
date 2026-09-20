@@ -62,6 +62,14 @@ data class ShizukuStatus(
 class ShizukuManager(
     private val context: Context,
     private val scope: CoroutineScope,
+    /**
+     * 生命周期里的每一步：binder 到没到、特权服务绑没绑上、什么时候掉的。
+     *
+     * 盘上记录里有过进程启动 20 秒后重连仍失败于「特权服务未连接」的情况 ——
+     * 这句话既可能是 Shizuku 自己没起来，也可能是 user service 迟迟绑不上，
+     * 而原来的日志里一点痕迹都没有，只能猜。
+     */
+    private val onEvent: (warn: Boolean, message: String, detail: String) -> Unit = { _, _, _ -> },
 ) : PrivilegedBackend {
 
     companion object {
@@ -74,6 +82,18 @@ class ShizukuManager(
 
     private var service: IPrivilegedService? = null
 
+    /** 最近一次请求绑定特权服务的时刻；0 表示还没请求过。 */
+    @Volatile
+    private var bindRequestedAtMs = 0L
+
+    /** 特权服务最近一次连上的时刻；0 表示这个进程里还没连上过。 */
+    @Volatile
+    private var boundAtMs = 0L
+
+    /** 等特权服务超时这件事只记一次，连上后再重新计。按键注入每一颗都会走到这里。 */
+    @Volatile
+    private var awaitTimeoutLogged = false
+
     private val userServiceArgs = Shizuku.UserServiceArgs(
         ComponentName(context.packageName, PrivilegedUserService::class.java.name)
     ).daemon(false).processNameSuffix("privileged").debuggable(false).version(3)
@@ -82,22 +102,32 @@ class ShizukuManager(
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             service = binder?.let { IPrivilegedService.Stub.asInterface(it) }
             _status.value = _status.value.copy(serviceBound = service != null)
+            if (service != null) {
+                boundAtMs = System.currentTimeMillis()
+                awaitTimeoutLogged = false
+                onEvent(false, "特权服务已连接", "距请求绑定 " + sinceMs(bindRequestedAtMs) + "ms")
+            } else {
+                onEvent(true, "特权服务回调了连接，但 binder 为空", describe())
+            }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
             service = null
             _status.value = _status.value.copy(serviceBound = false)
+            onEvent(true, "特权服务断开", "已连 " + sinceMs(boundAtMs) + "ms")
         }
     }
 
     private val binderReceived = Shizuku.OnBinderReceivedListener {
         refresh()
+        onEvent(false, "Shizuku binder 已到位", describe())
         bindIfPossible()
     }
 
     private val binderDead = Shizuku.OnBinderDeadListener {
         service = null
         refresh()
+        onEvent(true, "Shizuku binder 死亡", describe())
     }
 
     private val permissionResult =
@@ -144,8 +174,20 @@ class ShizukuManager(
 
     private fun bindIfPossible() {
         if (!_status.value.granted || service != null) return
+        bindRequestedAtMs = System.currentTimeMillis()
         runCatching { Shizuku.bindUserService(userServiceArgs, connection) }
+            .onFailure { onEvent(true, "请求绑定特权服务失败", it.javaClass.simpleName + " · " + it.message.orEmpty()) }
     }
+
+    /** 一行说清楚此刻的 Shizuku：给「特权服务未连接」这类失败配上下文。 */
+    fun describe(): String {
+        val s = _status.value
+        return s.conclusion + " · " + s.identity +
+            " · 特权服务=" + (if (service != null) "已连 " + sinceMs(boundAtMs) + "ms" else "未连") +
+            " · 上次请求绑定=" + (if (bindRequestedAtMs == 0L) "从未" else sinceMs(bindRequestedAtMs).toString() + "ms 前")
+    }
+
+    private fun sinceMs(at: Long): Long = if (at == 0L) -1L else System.currentTimeMillis() - at
 
     private fun isInstalled(): Boolean = runCatching {
         context.packageManager.getPackageInfo(SHIZUKU_PACKAGE, 0)
@@ -169,6 +211,10 @@ class ShizukuManager(
             while (service == null && waited < 1000) {
                 delay(50)
                 waited += 50
+            }
+            if (service == null && !awaitTimeoutLogged) {
+                awaitTimeoutLogged = true
+                onEvent(true, "等了 1s 特权服务仍未连上", describe())
             }
         }
         return service
@@ -209,12 +255,12 @@ class ShizukuManager(
             }
         }
 
-    override suspend fun getSetting(namespace: String, key: String): String? {
-        val result = exec("settings get " + namespace + " " + key).getOrNull() ?: return null
-        if (!result.ok) return null
-        val value = result.output.trim()
-        return if (value.isEmpty() || value == "null") null else value
-    }
+    override suspend fun getSetting(namespace: String, key: String): Result<String?> =
+        exec("settings get " + namespace + " " + key).mapCatching { result ->
+            if (!result.ok) throw IllegalStateException("exit " + result.exitCode + " · " + result.output.trim())
+            val value = result.output.trim()
+            if (value.isEmpty() || value == "null") null else value
+        }
 
     override suspend fun putSetting(namespace: String, key: String, value: String): Result<Unit> =
         exec(settingsWriteCommand(namespace, key, value)).mapCatching {
