@@ -77,6 +77,9 @@ fun PrivilegeScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
     val hardeningBusy by vm.hardeningBusy.collectAsStateWithLifecycle()
     val records by vm.hardeningRecords.collectAsStateWithLifecycle()
     val shizuku = status.shizuku
+    val access by vm.settingsAccess.collectAsStateWithLifecycle()
+    // 自愈只读写 secure 表：Shizuku 与 adb 授予的 WRITE_SECURE_SETTINGS 任一即可
+    val healWritable = shizuku.usable || access.secure
 
     // 进页面就复查一次真实状态：加固是「系统里现在是什么样」，不是「我点过没点过」。
     // Shizuku 从不可用变可用时也要重查，否则会一直停在「未知」。
@@ -129,7 +132,7 @@ fun PrivilegeScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
             if (!shizuku.installed) {
                 Spacer(Modifier.height(AmSpace.s1))
                 Text(
-                    "未检测到 Shizuku。快捷键与按键检测仍然可用，屏幕方向相关动作与磁贴会显示为不可用。",
+                    "未检测到 Shizuku。快捷键与按键检测仍然可用；屏幕方向与键位映射降级运行，能力见下方「免 Shizuku 授权」。",
                     style = AmType.secondary,
                     color = c.inkMid,
                 )
@@ -140,12 +143,30 @@ fun PrivilegeScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
             AmLabel("能力矩阵 · CAPABILITY MATRIX")
             Spacer(Modifier.height(4.dp))
             val ok = shizuku.usable
-            DataRow("settings put user_rotation", if (rotation.userRotation != null) "OK" else if (ok) "PARTIAL" else "不可用")
+            DataRow(
+                "settings put user_rotation",
+                when {
+                    ok && rotation.userRotation != null -> "OK"
+                    ok -> "PARTIAL"
+                    access.system -> "OK · 应用直写"
+                    else -> "不可用"
+                },
+            )
+            DataRow("悬浮层强制方向", if (status.accessibilityConnected) "可用 · 无需 Shizuku" else "不可用 · 无障碍未连接")
             DataRow("wm ignore-orientation-request", if (rotation.ignoreAppRequest != null) "OK" else if (ok) "PARTIAL · OEM 限制" else "不可用")
             DataRow("fixed_to_user_rotation", if (rotation.fixedToUserRotation != null) "OK" else if (ok) "PARTIAL · OEM 限制" else "不可用")
             DataRow("am start / launch app", "OK · 普通 API")
             DataRow("自定义 Shell 动作", if (ok) "需逐条确认" else "不可用")
         }
+
+        WithoutShizukuCard(
+            systemWritable = access.system,
+            secureWritable = access.secure,
+            command = vm.secureSettingsCommand(),
+            onGrantSystem = vm::openWriteSettings,
+            onCopy = { clipboard.setText(AnnotatedString(vm.secureSettingsCommand())) },
+            onRecheck = vm::refreshSettingsAccess,
+        )
 
         AmCard(Modifier.fillMaxWidth(), alert = shizuku.usable && hardening.checked && !hardening.hardened) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -241,12 +262,12 @@ fun PrivilegeScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                 AmSwitch(
                     checked = settings.autoHealAccessibility,
                     onCheckedChange = { on -> vm.updateSettings { it.copy(autoHealAccessibility = on) } },
-                    enabled = shizuku.usable,
+                    enabled = healWritable,
                 )
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                "部分 ROM 会在重启或省电时把第三方无障碍开关踢掉。开启后会用 Shizuku 把监听服务" +
+                "部分 ROM 会在重启或省电时把第三方无障碍开关踢掉。开启后会用 Shizuku（或 adb 授予的 WRITE_SECURE_SETTINGS）把监听服务" +
                     "重新写回 enabled_accessibility_services —— 只追加，不覆盖别人的服务。",
                 style = AmType.secondary,
                 color = c.inkMid,
@@ -269,7 +290,7 @@ fun PrivilegeScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                 AmSecondaryButton(
                     "立即恢复",
                     vm::healAccessibilityNow,
-                    enabled = shizuku.usable && !hardeningBusy,
+                    enabled = healWritable && !hardeningBusy,
                     accent = true,
                 )
                 if (!canNotify) {
@@ -304,7 +325,7 @@ fun PrivilegeScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
             )
             Spacer(Modifier.height(AmSpace.s1))
             Text(
-                "只在「你自己开启过」且 Shizuku 可用时才会自动写回，自动重试有冷却与失败上限，" +
+                "只在「你自己开启过」且 Shizuku 可用（或授过 WRITE_SECURE_SETTINGS）时才会自动写回，自动重试有冷却与失败上限，" +
                     "不会和系统反复拉锯。注意：你主动在系统设置里关掉它，这里同样会写回去 —— 不想要就关掉这个开关。",
                 style = AmType.secondary,
                 color = c.inkMid,
@@ -458,6 +479,75 @@ private fun TilePreview(title: String, subtitle: String, visual: TileVisual, mod
     ) {
         Text(title, style = AmType.body, color = ink, maxLines = 1)
         Text(subtitle, style = AmType.label, color = ink)
+    }
+}
+
+/**
+ * 不装 Shizuku 也能拿到的两项授权。
+ *
+ * 它们各自替代 Shizuku 的一小块：「修改系统设置」让旋转在降级时也写得了自动旋转与锁定角度；
+ * WRITE_SECURE_SETTINGS 让无障碍自愈不再依赖 Shizuku —— 开机那一刻 Shizuku 往往还没起来，
+ * 而那恰恰是 ROM 最常关掉无障碍开关的时候。
+ */
+@Composable
+private fun WithoutShizukuCard(
+    systemWritable: Boolean,
+    secureWritable: Boolean,
+    command: String,
+    onGrantSystem: () -> Unit,
+    onCopy: () -> Unit,
+    onRecheck: () -> Unit,
+) {
+    val c = amColors
+    AmCard(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            AmLabel("免 Shizuku 授权 · WITHOUT SHIZUKU")
+            Spacer(Modifier.weight(1f))
+            AmSecondaryButton("重新检测", onRecheck)
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Shizuku 不在时，这两项让一部分能力照常工作。都可以不给，不给时对应项如实显示不可用。",
+            style = AmType.secondary,
+            color = c.inkMid,
+        )
+        Spacer(Modifier.height(AmSpace.s2))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StatusDot(if (systemWritable) c.ok else c.inkFaint)
+            Column(Modifier.weight(1f)) {
+                Text("修改系统设置", style = AmType.body, color = c.ink)
+                Text(
+                    "旋转降级时写自动旋转开关与锁定角度",
+                    style = AmType.secondary,
+                    color = c.inkMid,
+                )
+            }
+            if (systemWritable) AmLabel("GRANTED", color = c.ok)
+            else AmSecondaryButton("去授权", onGrantSystem, accent = true)
+        }
+        Spacer(Modifier.height(AmSpace.s2))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StatusDot(if (secureWritable) c.ok else c.inkFaint)
+            Column(Modifier.weight(1f)) {
+                Text("WRITE_SECURE_SETTINGS", style = AmType.body, color = c.ink)
+                Text(
+                    "监听服务自愈不再需要 Shizuku，开机即可用；也覆盖上一项",
+                    style = AmType.secondary,
+                    color = c.inkMid,
+                )
+            }
+            if (secureWritable) AmLabel("GRANTED", color = c.ok)
+            else AmSecondaryButton("复制命令", onCopy)
+        }
+        if (!secureWritable) {
+            Spacer(Modifier.height(AmSpace.s1))
+            Text(
+                "在电脑上执行一次（手机开 USB 调试），重启不丢：",
+                style = AmType.secondary,
+                color = c.inkMid,
+            )
+            Text(command, style = AmType.data, color = c.ink)
+        }
     }
 }
 

@@ -17,6 +17,17 @@
         类型只能是 specialUse：这个服务不播放媒体、不同步数据、不定位，
         它唯一的作用是把进程移出「后台」这个桶，好让温控清理策略不再挑中它。
     -->
+    <!--
+        没有 Shizuku 时的两条降级路，都可以不给，不给时对应功能如实显示「不可用」：
+        WRITE_SETTINGS 由用户在系统「修改系统设置」页里开，只用来写旋转那两项
+        （accelerometer_rotation / user_rotation）；
+        WRITE_SECURE_SETTINGS 只能用 adb 授予一次（pm grant，重启不丢），
+        只用来在无障碍开关被 ROM 关掉时把本应用的监听服务写回去。
+    -->
+    <uses-permission android:name="android.permission.WRITE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 

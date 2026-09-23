@@ -100,7 +100,44 @@ service/       系统实例化的组件，尽可能薄
 | 启动应用 | `PackageManager` + `startActivity` |
 | 返回 / 主页 / 最近任务 | `AccessibilityService.performGlobalAction` |
 | 屏幕常亮 | 无障碍悬浮层 `FLAG_KEEP_SCREEN_ON`，兜底 `PowerManager.WakeLock` |
-| 屏幕方向 / Shell | Shizuku |
+| 屏幕方向 | Shizuku → 无障碍悬浮层 `screenOrientation` → 系统设置（见下） |
+| 键位映射输出 | Shizuku 注入 → 全局动作 / AudioManager / 无障碍输入通道（见下） |
+| 无障碍自愈 | `WRITE_SECURE_SETTINGS`（adb 授予一次）→ Shizuku |
+| Shell | Shizuku |
+
+### 没有 Shizuku 时
+
+Shizuku 是唯一能「向系统注入任意按键」「执行 `cmd window`」的通道，但它掉线是常态
+（重启后要重新拉起、特权服务绑定可能迟迟不到）。所以旋转与映射不再是「有 Shizuku 才有」，
+而是按那一刻最强的一级去做，并把实际用的是哪一级摆在界面上：
+
+**旋转（`RotationTier`，每次写入现挑）**
+
+| 级别 | 做法 | 能做到 | 做不到 |
+|---|---|---|---|
+| `SHELL` | `ignore-orientation-request` + `fix-to-user-rotation` | 压住应用自带方向，多屏下发 | — |
+| `OVERLAY` | 无障碍服务挂 1px 窗口，带 `screenOrientation` | 压住应用自带方向 | 显示屏级忽略方向请求时无效（部分大屏 / 折叠屏） |
+| `SETTINGS` | 写 `accelerometer_rotation` / `user_rotation` | 锁定角度、开关自动旋转 | 应用自带方向优先 |
+| `NONE` | — | 只读 | 写入如实失败，意图不落盘 |
+
+读不需要特权（两个旋转设置是公开的 system 表），所以 Shizuku 不在时状态照样是真值，不再整块报 `UNKNOWN`。
+悬浮层下发后要等屏幕真的转过去：90° / 270° 转反了就对调一次重发（`config_reverseDefaultRotation`
+读不到），仍然转不过去就撤掉窗口、退到锁定并如实提示 —— 留着它回读会谎报「已强制」。
+悬浮层随服务实例作废，服务重绑、Shizuku 来去时 `RotationController.reapplyAsync()` 按意图重新落一次。
+
+**映射（`KeyOutput` / `KeyRouting`）**
+
+按键线程上同步挑路，发不出去就不拦源键（绝不吞键）：
+
+1. Shizuku 已授权**且特权服务已连上** → 注入。只看授权不看绑定，会在绑定迟到时拦下源键再注入失败，按键就哑了；
+2. 系统键（返回、主页、最近任务、截屏、锁屏、方向键）→ `performGlobalAction`；
+3. 媒体与音量键 → `AudioManager`；
+4. 其余的键 → Android 13+ 无障碍服务自带的输入通道（`flagInputMethodEditor`，与用户输入法并存），
+   只在输入框获得焦点时有；
+5. 都不通 → 放行原键，事件流写明原因。
+
+**自愈**只读写 secure 表：用 adb 授过一次 `WRITE_SECURE_SETTINGS` 就直接写（`SettingsFirstBackend`），
+开机那一刻不必等 Shizuku 起来。
 
 屏幕常亮特意没走 Shizuku 改 `screen_off_timeout`：那要改一条全局系统设置并负责改回来，
 进程中途被杀就在系统里留下一个用户自己都找不着的超长熄屏时间。

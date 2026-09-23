@@ -6,6 +6,11 @@
     多带一份视图标识过来，而这个应用只看 event.packageName，一个字段都用不上。
     canRetrieveWindowContent 同样保持 false：从不读界面内容（PRD 26）。
 
+    flagInputMethodEditor（Android 13+）让系统在输入框获得焦点时给这个服务一条输入连接，
+    与用户自己的输入法并存。它只用来做一件事：Shizuku 不在时，把键位映射的目标键
+    （Esc、Backspace、Ctrl 组合……）经这条连接发给前台输入框。从不读取、不提交文字。
+    更早的系统不认识这一位，会直接忽略。
+
     notificationTimeout 是同类事件的合并窗口。连着切几个应用时，中间那些一闪而过的
     窗口本来就不该各触发一次规则匹配 —— 300ms 把它们并成一次，代价是应用级旋转规则
     最多晚这么久生效，换来的是切应用时不再一连串地唤醒进程。
@@ -13,7 +18,7 @@
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagRequestFilterKeyEvents"
+    android:accessibilityFlags="flagRequestFilterKeyEvents|flagInputMethodEditor"
     android:canRequestFilterKeyEvents="true"
     android:canRetrieveWindowContent="false"
     android:description="@string/accessibility_service_description"

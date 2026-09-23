@@ -30,7 +30,7 @@ class ForceLandscapeTileService : TileService() {
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Main + graph.coroutineFailures).also { s ->
             s.launch {
                 render()
-                graph.rotation.state.collect { renderFrom(it.mode, it.available) }
+                graph.rotation.state.collect { renderFrom(it.mode, it.writable) }
             }
         }
     }
@@ -55,7 +55,7 @@ class ForceLandscapeTileService : TileService() {
 
     private suspend fun render() {
         val state = graph.rotation.refresh()
-        renderFrom(state.mode, state.available)
+        renderFrom(state.mode, state.writable)
     }
 
     private fun setBusy() {

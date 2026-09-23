@@ -34,7 +34,7 @@ The data model and matcher understand device and foreground-app scopes. The curr
 | Volume | Volume up, volume down, mute toggle | Android audio APIs |
 | Apps | Launch an app or a specific activity | Android package APIs, with a Shizuku fallback where needed |
 | Links | Open an HTTP, HTTPS, or mail link in the matching Android app | Android intents |
-| Screen orientation | Set four forced orientations, toggle landscape, cycle modes, restore Android defaults | Shizuku |
+| Screen orientation | Set four forced orientations, toggle landscape, cycle modes, restore Android defaults | Shizuku; falls back to an accessibility overlay or system settings |
 | Screen awake | Turn on, turn off, or toggle a wake lock | Android wake lock |
 | Shell | Run a command configured explicitly by the user | Shizuku |
 
@@ -46,7 +46,7 @@ The data model and matcher understand device and foreground-app scopes. The curr
 - Run a self-test before relying on an injected key.
 - Suppress the original down, repeat, and up events for a remapped key.
 
-Key injection needs Shizuku. A shortcut wins over a remap for the same input, which prevents accidental remap chains.
+Injecting any key needs Shizuku. Without it, remaps are routed by target key: system keys (back, home, recents, screenshot, lock, D-pad) use accessibility global actions, media and volume keys use the Android audio APIs, and other keys go to the focused text field through the accessibility input channel on Android 13+. When no route works the original key passes through and is never swallowed. A shortcut wins over a remap for the same input, which prevents accidental remap chains.
 
 ### Screen orientation and per-app rules
 
@@ -59,6 +59,8 @@ Key injection needs Shizuku. A shortcut wins over a remap for the same input, wh
 - Diagnose why rotation did not change and show the relevant shell results.
 
 Every write is followed by a system read. If Shizuku, the ROM, or the command cannot report a trustworthy state, Actionmental shows `UNKNOWN` or unavailable instead of guessing.
+
+Without Shizuku, orientation is forced by an accessibility overlay (it still overrides an app's own orientation, though some tablets and foldables ignore it), and failing that by locking the angle in system settings (an app's own orientation wins). The UI shows which level is in use.
 
 ### Quick Settings tiles
 
@@ -100,7 +102,10 @@ On Android 13 and newer, the app can request the Force Landscape tile. Add the S
 | Global shortcut listening | Enable the Actionmental keyboard Accessibility Service | Key events and shortcuts do not run |
 | Media, volume, links, normal app launches | Standard Android APIs | Only the affected action reports failure |
 | Screen awake | `WAKE_LOCK` permission, granted at install time | The action reports unsupported or failed |
-| Rotation, key remapping, Shell, privileged app launch | Shizuku running and authorized | Controls remain visible but show unavailable |
+| Full forced rotation, injecting any key, Shell, privileged app launch | Shizuku running and authorized | Rotation and remapping run degraded; Shell and frozen-app launch show unavailable |
+| Auto-rotate and angle lock while degraded | Optional: grant 'Modify system settings' | Rotation relies on the accessibility overlay only |
+| Accessibility self-healing without Shizuku | Optional: `adb shell pm grant <package> android.permission.WRITE_SECURE_SETTINGS` once | Self-healing needs Shizuku |
+| Remapping ordinary keys without Shizuku | Android 13+ | Only system and media keys are covered |
 | Rotation commands | Android 12 or newer in practice | Older or incompatible ROMs report unknown |
 | Add the Force Landscape tile from inside the app | Android 13 or newer | Add it manually |
 

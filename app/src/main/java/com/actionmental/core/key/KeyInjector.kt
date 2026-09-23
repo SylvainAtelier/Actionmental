@@ -1,6 +1,5 @@
 package com.actionmental.core.key
 
-import com.actionmental.platform.PrivilegedBackend
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.BufferOverflow
@@ -22,7 +21,8 @@ import kotlinx.coroutines.launch
  */
 class KeyInjector(
     scope: CoroutineScope,
-    private val backend: () -> PrivilegedBackend,
+    /** 输出口按目标键分流（Shizuku 注入 / 全局动作 / 媒体 / 输入通道），见 [KeyOutput]。 */
+    private val output: KeyOutput,
     capacity: Int = 32,
 ) {
     /** [KeyCombo] 加一个「只发半边」的意图。null 表示按下 + 抬起成对发出。 */
@@ -62,10 +62,7 @@ class KeyInjector(
 
     private suspend fun send(emission: Emission): Result<Unit> {
         val combo = emission.combo
-        val result = when (val down = emission.down) {
-            null -> backend().injectKey(combo.keyCode, combo.metaState())
-            else -> backend().injectKeyState(combo.keyCode, combo.metaState(), down)
-        }
+        val result = output.send(combo, emission.down)
         result.fold(
             onSuccess = {
                 _lastError.value = null
@@ -75,6 +72,14 @@ class KeyInjector(
         )
         return result
     }
+
+    /** 按键线程上同步问：这颗目标键此刻发得出去吗，走哪条路。 */
+    fun route(combo: KeyCombo): KeyChannel? = output.route(combo)
+
+    /** 被映射成修饰键的源键此刻能不能拦下（改写后的其余按键要有路可发）。 */
+    fun canCarryModifiers(): Boolean = output.canCarryModifiers()
+
+    fun unavailableReason(): String = output.unavailableReason()
 
     fun clearError() {
         _lastError.value = null

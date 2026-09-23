@@ -67,6 +67,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val keyTraces = graph.pipeline.traces
     val lastDevice = graph.pipeline.lastDevice
 
+    /**
+     * 应用自己写系统设置的两项授权。
+     *
+     * 授予都发生在别处（系统设置页、电脑上的 adb），没有回调可听，
+     * 所以跟着 [refreshEverything] 在界面回到前台时重读一次。
+     */
+    data class SettingsAccessState(val system: Boolean = false, val secure: Boolean = false)
+
+    private val _settingsAccess = MutableStateFlow(SettingsAccessState())
+    val settingsAccess: StateFlow<SettingsAccessState> = _settingsAccess.asStateFlow()
+
     private val _toast = MutableStateFlow<String?>(null)
     val toast: StateFlow<String?> = _toast.asStateFlow()
 
@@ -114,6 +125,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun ensureAppCatalog() = graph.appCatalog.warmUp()
 
     fun refreshEverything() {
+        refreshSettingsAccess()
         graph.shizuku.refresh()
         graph.refreshAccessibility()
         graph.refreshKeyboards()
@@ -141,6 +153,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun requestShizukuPermission() = graph.shizuku.requestPermission()
 
     fun reconnectShizuku() = graph.shizuku.reconnect()
+
+    fun refreshSettingsAccess() {
+        val access = graph.settingsAccess
+        val next = SettingsAccessState(system = access.systemWritable(), secure = access.secureWritable())
+        if (next != _settingsAccess.value) {
+            _settingsAccess.value = next
+            // 写入级别可能因此变了（多了系统设置这一级），旋转按当前意图重新落一次
+            graph.rotation.reapplyAsync()
+        }
+    }
+
+    /** 打开系统的「修改系统设置」授权页。回来时 [refreshEverything] 会重读结果。 */
+    fun openWriteSettings() {
+        runCatching { getApplication<android.app.Application>().startActivity(graph.settingsAccess.manageWriteSettingsIntent()) }
+            .onFailure { _toast.value = "打不开系统的「修改系统设置」页 · " + it.message.orEmpty() }
+    }
+
+    /** 授予 WRITE_SECURE_SETTINGS 的那一行 adb 命令。 */
+    fun secureSettingsCommand(): String = graph.settingsAccess.grantSecureCommand()
 
     // --- 快捷键 ---------------------------------------------------------------
 

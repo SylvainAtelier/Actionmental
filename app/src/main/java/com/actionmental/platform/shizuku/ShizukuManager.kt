@@ -75,11 +75,14 @@ class ShizukuManager(
     companion object {
         const val PERMISSION_REQUEST_CODE = 1101
         private const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
+        private const val BIND_NUDGE_INTERVAL_MS = 5_000L
     }
 
     private val _status = MutableStateFlow(ShizukuStatus())
     val status: StateFlow<ShizukuStatus> = _status.asStateFlow()
 
+    /** 按键线程也会读（[injectReady]），所以必须 @Volatile。 */
+    @Volatile
     private var service: IPrivilegedService? = null
 
     /** 最近一次请求绑定特权服务的时刻；0 表示还没请求过。 */
@@ -199,6 +202,36 @@ class ShizukuManager(
     override fun availability(): ActionResult {
         val reason = _status.value.reason
         return if (reason == null) ActionResult.OK else ActionResult.Failed(reason)
+    }
+
+    /**
+     * 按键注入此刻能不能**立刻**用上。按键线程专用。
+     *
+     * 与 [availability] 不同：那一条只看 Shizuku 授没授权，特权服务没连上时照样说「可用」，
+     * 于是映射拦下源键、注入再在 [awaitService] 里空等 1 秒后失败 —— 原键发不出去，
+     * 目标键也没有，这颗键就哑了。按键路径不能等，也不能赌：没连上就是不可用，
+     * 同时在后台催一次绑定，下一颗键多半就用得上了。
+     */
+    fun injectReady(): Boolean {
+        if (_status.value.reason != null) return false
+        if (service != null) return true
+        requestBindAsync()
+        return false
+    }
+
+    /** [injectReady] 为假时的原因，一句话。 */
+    fun injectUnavailableReason(): String =
+        _status.value.reason?.message ?: if (service == null) "特权服务未连接" else "可用"
+
+    @Volatile
+    private var lastBindNudgeMs = 0L
+
+    /** 按键线程上不能做 binder 调用，绑定丢到后台；几秒内只催一次，免得打字时每颗键都催。 */
+    private fun requestBindAsync() {
+        val now = System.currentTimeMillis()
+        if (now - lastBindNudgeMs < BIND_NUDGE_INTERVAL_MS) return
+        lastBindNudgeMs = now
+        scope.launch(Dispatchers.IO) { bindIfPossible() }
     }
 
     /** 拿到特权服务；不可用或绑不上时返回 null。 */

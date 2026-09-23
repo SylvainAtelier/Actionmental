@@ -50,10 +50,11 @@ data class SystemStatus(
 
     val rotationControlHealth: Health
         get() = when {
-            !shizuku.usable -> Health.UNAVAILABLE
             rotation.mode == com.actionmental.core.rotation.RotationMode.UNKNOWN -> Health.ERROR
+            !rotation.tier.writable -> Health.UNAVAILABLE
+            rotation.tier != com.actionmental.core.rotation.RotationTier.SHELL -> Health.DEGRADED
             else -> Health.OK
         }
 
-    enum class Health(val label: String) { OK("正常"), UNAVAILABLE("不可用"), ERROR("异常") }
+    enum class Health(val label: String) { OK("正常"), DEGRADED("降级"), UNAVAILABLE("不可用"), ERROR("异常") }
 }

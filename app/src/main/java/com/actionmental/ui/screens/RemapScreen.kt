@@ -40,7 +40,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.actionmental.core.key.KeyCatalog
 import com.actionmental.core.key.SystemKeyPolicy
+import android.os.Build
+import com.actionmental.core.key.KeyChannel
+import com.actionmental.core.key.KeyRouting
 import com.actionmental.core.remap.KeyRemap
+import com.actionmental.ui.components.DataRow
 import com.actionmental.core.remap.isModifierRemap
 import com.actionmental.ui.RemapViewModel
 import com.actionmental.ui.components.AmCard
@@ -64,8 +68,9 @@ import com.actionmental.ui.theme.amColors
  * 键位映射（与快捷键并列的第二个模块）。
  *
  * 快捷键把一颗键换成一个动作，映射把一颗键换成另一颗键 —— 两件事分开放，
- * 是因为它们的失败方式完全不同：快捷键由应用自己执行，映射必须把事件发回系统，
- * 没有 Shizuku 就一定不工作。所以这一页最上面永远先回答「现在能不能用」。
+ * 是因为它们的失败方式完全不同：快捷键由应用自己执行，映射必须把事件发回系统。
+ * 只有 Shizuku 能把任意键发回任意窗口；它不在时按目标键分流到几条无特权的出口，
+ * 各自只覆盖一部分。所以这一页最上面永远先回答「现在能不能用、用到什么程度」。
  */
 @Composable
 fun RemapScreen(modifier: Modifier = Modifier) {
@@ -77,6 +82,7 @@ fun RemapScreen(modifier: Modifier = Modifier) {
     val draft by vm.draft.collectAsStateWithLifecycle()
     val injectError by vm.injectError.collectAsStateWithLifecycle()
     val selfTest by vm.selfTest.collectAsStateWithLifecycle()
+    val injectReady = status.shizuku.usable && status.shizuku.serviceBound
 
     // 被快捷键占用的源键：快捷键优先，映射不会生效，必须让用户看见
     val shadowed = remember(remaps, shortcuts) {
@@ -101,7 +107,9 @@ fun RemapScreen(modifier: Modifier = Modifier) {
                 item {
                     InjectionStatusCard(
                         usable = status.shizuku.usable,
+                        bound = status.shizuku.serviceBound,
                         conclusion = status.shizuku.conclusion,
+                        accessibilityConnected = status.accessibilityConnected,
                         injectError = injectError,
                         selfTest = selfTest,
                         onSelfTest = vm::runSelfTest,
@@ -113,6 +121,7 @@ fun RemapScreen(modifier: Modifier = Modifier) {
                         remap = remap,
                         compact = compact,
                         shadowed = remap.id in shadowed,
+                        degradedHint = if (injectReady) null else degradedHint(remap),
                         onClick = { vm.edit(remap.id) },
                         onToggle = { vm.setEnabled(remap.id, it) },
                         onDelete = { vm.delete(remap.id) },
@@ -157,6 +166,8 @@ private fun RemapRow(
     remap: KeyRemap,
     compact: Boolean,
     shadowed: Boolean,
+    /** 没有注入时这一条会怎样；null 表示照常（或 Shizuku 就绪）。 */
+    degradedHint: String?,
     onClick: () -> Unit,
     onToggle: (Boolean) -> Unit,
     onDelete: () -> Unit,
@@ -216,6 +227,11 @@ private fun RemapRow(
             )
         }
 
+        if (degradedHint != null) {
+            Spacer(Modifier.height(4.dp))
+            Text(degradedHint, style = AmType.secondary, color = c.inkMid)
+        }
+
         if (shadowed) {
             Spacer(Modifier.height(4.dp))
             Text(
@@ -238,37 +254,79 @@ private fun RemapRow(
     }
 }
 
+/** 没有 Shizuku 注入时，这一条映射落到哪条路上。 */
+private fun degradedHint(remap: KeyRemap): String {
+    val target = if (remap.isModifierRemap) null else remap.to
+    val channel = if (target == null) {
+        if (Build.VERSION.SDK_INT >= 33) KeyChannel.INPUT_CONNECTION else null
+    } else {
+        KeyRouting.fallbackChannel(target, Build.VERSION.SDK_INT)
+    }
+    return when (channel) {
+        KeyChannel.GLOBAL_ACTION, KeyChannel.MEDIA -> "无 Shizuku · 经" + channel.label + "照常生效"
+        KeyChannel.INPUT_CONNECTION -> "无 Shizuku · 只在输入框获得焦点时生效"
+        else -> "无 Shizuku · 这一条不生效（原键照常）"
+    }
+}
+
 @Composable
 private fun InjectionStatusCard(
     usable: Boolean,
+    bound: Boolean,
     conclusion: String,
+    accessibilityConnected: Boolean,
     injectError: String?,
     selfTest: String?,
     onSelfTest: () -> Unit,
 ) {
     val c = amColors
-    val healthy = usable && injectError == null
+    val injectReady = usable && bound
+    val inputChannel = Build.VERSION.SDK_INT >= 33
+    val healthy = accessibilityConnected && injectReady && injectError == null
     AmCard(Modifier.fillMaxWidth(), alert = !healthy) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            StatusDot(if (healthy) c.ok else c.accent)
+            StatusDot(
+                when {
+                    healthy -> c.ok
+                    accessibilityConnected -> c.warn
+                    else -> c.accent
+                },
+            )
             Column(Modifier.weight(1f)) {
                 Text(
                     when {
-                        !usable -> "映射不可用：" + conclusion
-                        injectError != null -> "上次注入失败"
-                        else -> "注入链路就绪"
+                        !accessibilityConnected -> "映射不可用：无障碍服务未连接"
+                        injectError != null -> "上次发送失败"
+                        injectReady -> "注入链路就绪"
+                        else -> "降级运行 · 按目标键分流"
                     },
                     style = AmType.body,
                     color = if (healthy) c.ink else c.accent,
                 )
                 Text(
-                    injectError ?: "映射靠 Shizuku 把新的按键发回系统，普通权限做不到这件事。",
+                    injectError ?: if (injectReady) {
+                        "任意键都经 Shizuku 发回系统，系统级组合键也认。"
+                    } else {
+                        "Shizuku " + (if (usable) "特权服务未连接" else conclusion) +
+                            "。发不出去的键不会被拦下，原键照常工作。"
+                    },
                     style = AmType.secondary,
                     color = c.inkMid,
                 )
             }
             AmSecondaryButton("自检", onSelfTest, enabled = usable)
         }
+        Spacer(Modifier.height(AmSpace.s1))
+        DataRow("Shizuku 注入", if (injectReady) "就绪" else if (usable) "特权服务未连接" else conclusion)
+        DataRow("系统键 / 媒体键", if (accessibilityConnected) "可用 · 返回、主页、截屏、锁屏、方向键、音量…" else "不可用")
+        DataRow(
+            "无障碍输入通道",
+            when {
+                !inputChannel -> "需要 Android 13"
+                !accessibilityConnected -> "不可用"
+                else -> "可用 · 仅输入框获得焦点时"
+            },
+        )
         if (selfTest != null) {
             Spacer(Modifier.height(6.dp))
             Text(selfTest, style = AmType.data, color = c.inkMid)
@@ -297,7 +355,7 @@ private fun HowItWorksCard() {
         )
         Spacer(Modifier.height(4.dp))
         Text(
-            "注入链路不可用时映射不生效，但也绝不吞键 —— 原键照常工作，事件流里会写明原因。",
+            "没有 Shizuku 时，系统键（返回、主页、最近任务、截屏、锁屏、方向键）与媒体、音量键经系统接口照常生效；其余的键在 Android 13 以上经无障碍输入通道发给当前输入框，没有输入框获得焦点时不生效。任何一条路都走不通时映射不生效，但也绝不吞键 —— 原键照常工作，事件流里会写明原因。",
             style = AmType.secondary,
             color = c.inkMid,
         )

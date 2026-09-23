@@ -233,7 +233,7 @@ private fun StepPermissionList(accessibility: Boolean, shizuku: Boolean, keyboar
         Spacer(Modifier.height(AmSpace.s2))
         PermissionRow("无障碍键盘服务", "必需", "用于接收实体键盘按键。没有它无法监听快捷键。",
             "AccessibilityService · 仅读取按键事件", accessibility)
-        PermissionRow("Shizuku", "旋转控制需要", "用于强制屏幕方向与启动部分系统动作。可以稍后再配。",
+        PermissionRow("Shizuku", "完整能力需要", "屏幕方向的完整强制、键位映射的任意键注入、Shell 动作。没有它时旋转与映射会降级运行。可以稍后再配。",
             "adb shell 权限 · 不需要 Root", shizuku)
         PermissionRow("实体键盘", "检测", "USB 或蓝牙键盘。稍后会做一次按键确认。",
             "InputDevice · KEYBOARD_TYPE_ALPHABETIC", keyboard)
@@ -354,7 +354,7 @@ private fun StepShizuku(vm: AppViewModel, copy: (AnnotatedString) -> Unit) {
         }
         Spacer(Modifier.height(AmSpace.s1))
         Text(
-            "跳过后：快捷键与按键检测正常工作，屏幕方向相关动作与磁贴显示为「不可用」。",
+            "跳过后：快捷键与按键检测正常工作，屏幕方向由无障碍悬浮层强制，键位映射只覆盖系统键、媒体键与输入框。",
             style = AmType.secondary,
             color = c.inkMid,
         )
@@ -447,7 +447,7 @@ private fun StepTiles() {
         }
         Spacer(Modifier.height(AmSpace.s2))
         Text(
-            "磁贴打开时读取真实状态 → 执行 → 再读一次 → 更新显示。Shizuku 不可用时显示「不可用」，不会显示为已关闭。",
+            "磁贴打开时读取真实状态 → 执行 → 再读一次 → 更新显示。一级写入通道都没有时显示「不可用」，不会显示为已关闭。",
             style = AmType.secondary,
             color = c.inkMid,
         )

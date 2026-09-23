@@ -247,10 +247,15 @@ class InputDeviceBackend(context: Context) {
     }
 }
 
-/** 无需特权即可读取的系统设置。写入才需要 Shizuku。 */
-class SettingsReader(private val context: Context) {
+/** 读 system 表里的一个整数。旋转控制器只要这一条，单测里换成一张表即可。 */
+fun interface SystemIntSource {
+    fun systemInt(key: String): Int?
+}
 
-    fun systemInt(key: String): Int? =
+/** 无需特权即可读取的系统设置。写入才需要 Shizuku。 */
+class SettingsReader(private val context: Context) : SystemIntSource {
+
+    override fun systemInt(key: String): Int? =
         runCatching { Settings.System.getInt(context.contentResolver, key) }.getOrNull()
 
     fun globalInt(key: String): Int? =

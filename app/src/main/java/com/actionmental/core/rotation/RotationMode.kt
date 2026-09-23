@@ -80,8 +80,13 @@ data class RotationState(
     val fixedToUserRotation: Int?,
     val verifiedAtMs: Long,
     val failure: String? = null,
+    /** 此刻能用哪一级去写。读是不要特权的，所以「读得到」不代表「写得了」。 */
+    val tier: RotationTier = RotationTier.NONE,
 ) {
     val available: Boolean get() = mode != RotationMode.UNKNOWN
+
+    /** 磁贴与界面能不能下发写入：读得到，且有一级写得了。 */
+    val writable: Boolean get() = available && tier.writable
 
     companion object {
         fun unknown(reason: String) = RotationState(

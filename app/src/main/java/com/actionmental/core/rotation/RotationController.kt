@@ -3,7 +3,7 @@ package com.actionmental.core.rotation
 import com.actionmental.core.action.ActionResult
 import com.actionmental.platform.PrivilegedBackend
 import com.actionmental.platform.ShellResult
-import com.actionmental.platform.SettingsReader
+import com.actionmental.platform.SystemIntSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -80,8 +80,15 @@ internal fun parseBatch(count: Int, output: String): List<ShellResult> {
 class RotationController(
     private val scope: CoroutineScope,
     private val backend: () -> PrivilegedBackend,
-    private val settings: SettingsReader,
+    private val settings: SystemIntSource,
     private val persistGlobalMode: suspend (RotationMode) -> Unit,
+    /**
+     * Shizuku 不在时的降级出口（悬浮层 + 系统设置）。null 表示只有 shell 这一级。
+     *
+     * 分级是按次挑的，不是开机定死：Shizuku 随时会掉、无障碍服务随时会重绑，
+     * 每一次写入都按那一刻最强的一级去做（见 [tier]）。
+     */
+    private val local: LocalRotationBackend? = null,
     /** 真的把命令写下去了。 */
     private val onWrite: () -> Unit = {},
     /** 因为系统已经是这个模式而整条写入被省掉了。去重省下多少，只看得见这一对。 */
@@ -127,7 +134,14 @@ class RotationController(
     suspend fun setPaused(on: Boolean, lockPortrait: Boolean = false): ActionResult {
         if (on) return mutex.withLock {
             paused = true
-            if (lockPortrait) lockPortraitLocked() else ActionResult.OK
+            if (lockPortrait) {
+                lockPortraitLocked()
+            } else {
+                // 悬浮层是「还在管屏幕」最直接的那一种形式，暂停时无论如何都撤掉。
+                // 它只是一个窗口，撤掉不写任何系统设置。
+                local?.forceOverlay(null)
+                ActionResult.OK
+            }
         }
         if (!paused) return ActionResult.OK
         paused = false
@@ -143,10 +157,13 @@ class RotationController(
      * 只锁不强制时，自带方向要求的应用照样能转过去，用户在快捷设置里也拨得动。
      */
     private suspend fun lockPortraitLocked(): ActionResult {
-        val availability = backend().availability()
-        if (availability is ActionResult.Failed) return availability
+        val tier = tier()
+        if (!tier.writable) {
+            local?.forceOverlay(null)
+            return unavailable()
+        }
         onWrite()
-        val result = write(RotationMode.CUSTOM)
+        val result = write(RotationMode.CUSTOM, tier)
         publish(readState())
         return result
     }
@@ -206,6 +223,17 @@ class RotationController(
         scope.launch { refresh() }
     }
 
+    /**
+     * 写入通道变了（Shizuku 连上 / 掉了，无障碍服务重绑了），按当前意图重新落一次。
+     *
+     * 悬浮层跟着服务实例走：服务一重绑，旧窗口连同它压着的方向一起作废，
+     * 不重新落一次，强制方向就在用户不知情时悄悄没了。暂停期间照样被闸门挡住。
+     */
+    fun reapplyAsync() {
+        invalidateObservedState()
+        scope.launch { applyEffective() }
+    }
+
     /** 用户 / 快捷键 / 磁贴设置全局模式。 */
     suspend fun setGlobal(mode: RotationMode): ActionResult {
         if (paused) return pausedResult()
@@ -224,7 +252,7 @@ class RotationController(
     suspend fun toggleLandscape(): ActionResult {
         if (paused) return pausedResult()
         val current = refresh()
-        if (!current.available) return ActionResult.Failed(unavailableReason(), current.failure.orEmpty())
+        if (!current.writable) return notWritable(current)
         val target = if (current.mode == RotationMode.FORCE_LANDSCAPE) RotationMode.NORMAL
         else RotationMode.FORCE_LANDSCAPE
         return withTransition(current.mode, target, setGlobal(target))
@@ -234,7 +262,7 @@ class RotationController(
     suspend fun toggle(mode: RotationMode): ActionResult {
         if (paused) return pausedResult()
         val current = refresh()
-        if (!current.available) return ActionResult.Failed(unavailableReason(), current.failure.orEmpty())
+        if (!current.writable) return notWritable(current)
         val target = RotationMode.toggleTarget(current.mode, mode)
         return withTransition(current.mode, target, setGlobal(target))
     }
@@ -256,7 +284,7 @@ class RotationController(
     suspend fun cycle(): ActionResult {
         if (paused) return pausedResult()
         val current = refresh()
-        if (!current.available) return ActionResult.Failed(unavailableReason(), current.failure.orEmpty())
+        if (!current.writable) return notWritable(current)
         val next = when (current.mode) {
             RotationMode.NORMAL -> RotationMode.FORCE_LANDSCAPE
             RotationMode.FORCE_LANDSCAPE -> RotationMode.FORCE_PORTRAIT
@@ -271,30 +299,147 @@ class RotationController(
         // 闸门在锁里再判一次：排队等锁的写入可能是在暂停落地之前发起的
         if (paused) return@withLock ActionResult.OK
         val target = effectiveMode()
-        val availability = backend().availability()
-        if (availability is ActionResult.Failed) {
-            _state.value = RotationState.unknown(availability.reason.message)
-            appliedMode = null
-            return@withLock availability
+        val tier = tier()
+        if (!tier.writable) {
+            // 读不需要特权：写不了也照样把系统事实交给界面，而不是一句「未知」
+            publish(readState())
+            return@withLock unavailable()
         }
 
         // 不知道系统现在是什么样就先读一次。一次读（一个 shell）换掉一次白写
         // （三到四条命令 + 一次回读），而「压上来的 override 其实没改变结果」
         // 恰恰是最常见的情形：每切一次应用都会走到这里。
         val current = cachedMode() ?: publish(readState()).mode
-        if (current == target) {
+        if (satisfied(current, target, tier)) {
             onSkipped()
             return@withLock ActionResult.OK
         }
 
         onWrite()
-        val result = write(target)
+        val result = write(target, tier)
         // 写完必须回读，UI 与磁贴显示的一律是系统事实
         publish(readState())
         result
     }
 
-    private suspend fun write(mode: RotationMode): ActionResult {
+    /**
+     * 系统现在的样子是否已经满足目标。
+     *
+     * 降级到只有悬浮层、又写不了系统设置时，「系统默认」与「自动旋转关闭」之间的差别
+     * 根本不归我们管 —— 能做的只有「不再强制」。否则每切一次应用都会去撤一个
+     * 本来就不存在的悬浮层，然后回读到一个永远对不上的模式。
+     */
+    private fun satisfied(current: RotationMode, target: RotationMode, tier: RotationTier): Boolean {
+        if (current == target) return true
+        if (tier == RotationTier.SHELL || local?.settingsWritable() == true) return false
+        return !current.isForced && !target.isForced && current != RotationMode.UNKNOWN
+    }
+
+    /**
+     * 此刻能用的最强一级。
+     *
+     * 每次现挑：Shizuku 与无障碍服务都可能在两次写入之间来去。
+     */
+    private fun tier(): RotationTier {
+        if (backend().availability().succeeded) return RotationTier.SHELL
+        val l = local ?: return RotationTier.NONE
+        return when {
+            l.overlayAvailable() -> RotationTier.OVERLAY
+            l.settingsWritable() -> RotationTier.SETTINGS
+            else -> RotationTier.NONE
+        }
+    }
+
+    /** 一级都写不了时的失败：原因里既有 Shizuku 的，也有两条降级路各缺什么。 */
+    private fun unavailable(): ActionResult {
+        val reason = (backend().availability() as? ActionResult.Failed)?.reason
+            ?: ActionResult.Reason.UNSUPPORTED
+        return ActionResult.Failed(reason, "无障碍服务未连接，且未授予「修改系统设置」权限")
+    }
+
+    /**
+     * 降级到只写系统设置时，我们锁上的那个角度。
+     *
+     * 那一级写下去的只是「自动旋转关 + user_rotation」，读回来与「用户自己关掉自动旋转」
+     * 一模一样。不记这一笔，切换类快捷键就永远看不出自己已经转过去了、没法再按一下转回来。
+     * 它不是本地状态机：回读时仍要与系统里的 user_rotation 对上才算数。
+     */
+    @Volatile
+    private var settingsLocked: Int? = null
+
+    private suspend fun write(mode: RotationMode, tier: RotationTier): ActionResult =
+        if (tier == RotationTier.SHELL) writeShell(mode) else writeLocal(mode, tier)
+
+    /**
+     * 不经 shell 的写入。
+     *
+     * 强制角度两条腿一起走：能写系统设置就先把 user_rotation 锁过去（系统里残留着
+     * 以前经 Shizuku 设下的 fix-to-user-rotation 时，这一步本身就能把屏幕转过去），
+     * 再挂悬浮层去压住应用自带的方向。
+     */
+    private suspend fun writeLocal(mode: RotationMode, tier: RotationTier): ActionResult {
+        val l = local ?: return unavailable()
+        val canWriteSettings = l.settingsWritable()
+        return when (mode) {
+            RotationMode.NORMAL, RotationMode.CUSTOM -> {
+                settingsLocked = null
+                l.forceOverlay(null)
+                when {
+                    canWriteSettings -> l.writeSettings(
+                        autoRotate = mode == RotationMode.NORMAL,
+                        userRotation = if (mode == RotationMode.CUSTOM) android.view.Surface.ROTATION_0 else null,
+                    ).fold(
+                        onSuccess = { ActionResult.OK },
+                        onFailure = { ActionResult.Failed(ActionResult.Reason.EXECUTION_FAILED, it.message.orEmpty()) },
+                    )
+                    mode == RotationMode.NORMAL -> ActionResult.Ok("已撤销强制方向")
+                    else -> ActionResult.Ok("已撤销强制方向 · 锁定 0° 需要「修改系统设置」权限")
+                }
+            }
+
+            else -> {
+                val rotation = mode.surfaceRotation
+                    ?: return ActionResult.Failed(ActionResult.Reason.UNSUPPORTED, mode.technical)
+                val settingsWrite = if (canWriteSettings) l.writeSettings(false, rotation) else null
+
+                if (tier == RotationTier.SETTINGS) {
+                    val failure = settingsWrite?.exceptionOrNull()
+                    if (settingsWrite == null || failure != null) {
+                        return ActionResult.Failed(ActionResult.Reason.EXECUTION_FAILED, failure?.message.orEmpty())
+                    }
+                    settingsLocked = rotation
+                    return ActionResult.Ok("已锁定 " + mode.label + " · 应用自带的方向要求仍然优先")
+                }
+
+                settingsLocked = null
+                when (l.forceOverlay(rotation)) {
+                    OverlayOutcome.ADOPTED, OverlayOutcome.REMOVED -> ActionResult.Ok(RotationTier.OVERLAY.label)
+                    // 悬浮层被忽略：锁定写下去了就退到那一级，并把「压不住应用」说清楚
+                    OverlayOutcome.IGNORED -> if (settingsWrite?.isSuccess == true) {
+                        settingsLocked = rotation
+                        ActionResult.Ok(
+                            "系统忽略了悬浮层的方向要求（大屏 / 折叠屏上常见），已退回锁定 " + mode.label +
+                                " · 应用自带的方向要求仍然优先",
+                        )
+                    } else {
+                        ActionResult.Failed(
+                            ActionResult.Reason.UNSUPPORTED,
+                            "系统忽略了悬浮层的方向要求（大屏 / 折叠屏上常见），屏幕没有转到 " + mode.label,
+                        )
+                    }
+                    OverlayOutcome.FAILED -> ActionResult.Failed(
+                        ActionResult.Reason.EXECUTION_FAILED,
+                        "强制方向的悬浮层挂不上",
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun writeShell(mode: RotationMode): ActionResult {
+        // 降级时挂上的悬浮层要先撤掉：它压在所有窗口之上，留着会和 shell 的写入各说各话
+        settingsLocked = null
+        local?.forceOverlay(null)
         val b = backend()
         val plan = rotationWritePlan(mode)
             ?: return ActionResult.Failed(ActionResult.Reason.UNSUPPORTED, mode.technical)
@@ -317,9 +462,9 @@ class RotationController(
 
     /** 解析真实系统状态（PRD 21 · RotationStateProvider）。 */
     private suspend fun readState(): RotationState {
+        val tier = tier()
+        if (tier != RotationTier.SHELL) return readLocalState(tier)
         val b = backend()
-        val availability = b.availability()
-        if (availability is ActionResult.Failed) return RotationState.unknown(availability.reason.message)
 
         val userRotation = settings.systemInt("user_rotation")
         val accelerometer = settings.systemInt("accelerometer_rotation")
@@ -356,6 +501,38 @@ class RotationController(
             fixedToUserRotation = fixed,
             verifiedAtMs = System.currentTimeMillis(),
             failure = if (mode == RotationMode.UNKNOWN) "系统旋转设置读取失败" else null,
+            tier = RotationTier.SHELL,
+        )
+    }
+
+    /**
+     * 没有 shell 时的回读。
+     *
+     * 两个旋转设置是公开的 system 表，读不需要任何权限 —— 原来 Shizuku 一掉就整块报「未知」，
+     * 连「自动旋转是开是关」这种手边的事实都不给。强制与否看悬浮层是否真的挂在当前服务上，
+     * 以及只写设置那一级锁下的角度是否还在系统里。
+     */
+    private fun readLocalState(tier: RotationTier): RotationState {
+        val userRotation = settings.systemInt("user_rotation")
+        val accelerometer = settings.systemInt("accelerometer_rotation")
+        val overlay = local?.overlayRotation()
+        val locked = settingsLocked
+        val mode = when {
+            overlay != null -> RotationMode.fromSurfaceRotation(overlay)
+            userRotation == null || accelerometer == null -> RotationMode.UNKNOWN
+            accelerometer != 0 -> RotationMode.NORMAL
+            locked != null && userRotation == locked -> RotationMode.fromSurfaceRotation(userRotation)
+            else -> RotationMode.CUSTOM
+        }
+        return RotationState(
+            mode = mode,
+            userRotation = userRotation,
+            accelerometerRotation = accelerometer,
+            ignoreAppRequest = null,
+            fixedToUserRotation = null,
+            verifiedAtMs = System.currentTimeMillis(),
+            failure = if (mode == RotationMode.UNKNOWN) "系统旋转设置读取失败" else null,
+            tier = tier,
         )
     }
 
@@ -368,6 +545,7 @@ class RotationController(
         if (paused) return@withLock pausedResult()
         val b = backend()
         val availability = b.availability()
+        // 按屏幕设 ignore-orientation-request 只有 shell 做得到，这里没有降级
         if (availability is ActionResult.Failed) return@withLock availability
 
         val ids = displayIds(b)
@@ -429,6 +607,11 @@ class RotationController(
         const val CACHE_TTL_MS = 30_000L
     }
 
-    private fun unavailableReason(): ActionResult.Reason =
-        (backend().availability() as? ActionResult.Failed)?.reason ?: ActionResult.Reason.UNSUPPORTED
+    /** 切换类动作在写不了时的失败。意图不落盘：没写下去的「转过去」不该在下次启动时冒出来。 */
+    private fun notWritable(current: RotationState): ActionResult =
+        if (current.available) unavailable()
+        else ActionResult.Failed(
+            (backend().availability() as? ActionResult.Failed)?.reason ?: ActionResult.Reason.UNSUPPORTED,
+            current.failure.orEmpty(),
+        )
 }

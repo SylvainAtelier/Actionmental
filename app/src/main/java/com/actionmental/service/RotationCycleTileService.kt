@@ -49,7 +49,7 @@ class RotationCycleTileService : TileService() {
         if (graph.paused.value) {
             tile.state = Tile.STATE_UNAVAILABLE
             tile.subtitle = getString(R.string.tile_paused)
-        } else if (!state.available) {
+        } else if (!state.writable) {
             tile.state = Tile.STATE_UNAVAILABLE
             tile.subtitle = getString(R.string.tile_unavailable)
         } else {

@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.actionmental.core.rotation.RotationMode
+import com.actionmental.core.rotation.RotationTier
 import com.actionmental.ui.AppViewModel
 import com.actionmental.ui.components.AmCard
 import com.actionmental.ui.components.AmLabel
@@ -76,7 +77,8 @@ fun RotationScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
 private fun RotationControlSection(vm: AppViewModel, modifier: Modifier = Modifier) {
     val c = amColors
     val state by vm.rotationState.collectAsStateWithLifecycle()
-    val status by vm.status.collectAsStateWithLifecycle()
+    val access by vm.settingsAccess.collectAsStateWithLifecycle()
+    val writable = state.writable
 
     Column(
         modifier
@@ -103,32 +105,28 @@ private fun RotationControlSection(vm: AppViewModel, modifier: Modifier = Modifi
                 )
             }
             Text(
-                state.failure ?: ("已在 " + stamp.format(state.verifiedAtMs) + " 由 WindowManager 校验"),
+                state.failure ?: (
+                    "已在 " + stamp.format(state.verifiedAtMs) +
+                        if (state.tier == RotationTier.SHELL) " 由 WindowManager 校验" else " 回读系统设置"
+                    ),
                 style = AmType.data,
                 color = c.inkFaint,
             )
         }
 
-        if (!status.shizuku.usable) {
-            AmCard(Modifier.fillMaxWidth(), alert = true) {
-                Text("旋转控制不可用：" + status.shizuku.conclusion, style = AmType.body, color = c.accent)
-                Text(
-                    "强制方向需要 Shizuku 的 shell 权限。快捷键与按键检测不受影响。",
-                    style = AmType.secondary,
-                    color = c.inkMid,
-                )
-            }
+        if (state.tier != RotationTier.SHELL) {
+            TierCard(state.tier, access.system, vm::openWriteSettings)
         }
 
         AmLabel("强制角度 · FORCED ANGLE")
         // 四个角度按 0° → 90° → 180° → 270° 顺时针排，位置本身就是提示
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(AmSpace.s1)) {
-            AngleTile(RotationMode.FORCE_PORTRAIT, state.mode, status.shizuku.usable, Modifier.weight(1f), vm::setRotation)
-            AngleTile(RotationMode.FORCE_LANDSCAPE, state.mode, status.shizuku.usable, Modifier.weight(1f), vm::setRotation)
+            AngleTile(RotationMode.FORCE_PORTRAIT, state.mode, writable, Modifier.weight(1f), vm::setRotation)
+            AngleTile(RotationMode.FORCE_LANDSCAPE, state.mode, writable, Modifier.weight(1f), vm::setRotation)
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(AmSpace.s1)) {
-            AngleTile(RotationMode.FORCE_REVERSE_PORTRAIT, state.mode, status.shizuku.usable, Modifier.weight(1f), vm::setRotation)
-            AngleTile(RotationMode.FORCE_REVERSE_LANDSCAPE, state.mode, status.shizuku.usable, Modifier.weight(1f), vm::setRotation)
+            AngleTile(RotationMode.FORCE_REVERSE_PORTRAIT, state.mode, writable, Modifier.weight(1f), vm::setRotation)
+            AngleTile(RotationMode.FORCE_REVERSE_LANDSCAPE, state.mode, writable, Modifier.weight(1f), vm::setRotation)
         }
 
         AmCard(Modifier.fillMaxWidth()) {
@@ -140,7 +138,7 @@ private fun RotationControlSection(vm: AppViewModel, modifier: Modifier = Modifi
                 AmSecondaryButton(
                     "恢复",
                     onClick = { vm.setRotation(RotationMode.NORMAL) },
-                    enabled = status.shizuku.usable,
+                    enabled = writable,
                 )
             }
         }
@@ -152,12 +150,55 @@ private fun RotationControlSection(vm: AppViewModel, modifier: Modifier = Modifi
             DataRow("accelerometer_rotation", state.accelerometerRotation?.toString() ?: "—")
             DataRow("ignore_app_request", state.ignoreAppRequest?.toString() ?: "—")
             DataRow("fixed_to_user_rotation", state.fixedToUserRotation?.toString() ?: "—")
+            DataRow("写入级别 tier", state.tier.technical)
             Spacer(Modifier.height(6.dp))
             Text(
-                "写入方式：Shizuku → WindowManager。失败会显示 UNKNOWN，不会伪装为已关闭。",
+                "写入方式：" + state.tier.label + "。两个旋转设置不需要权限就读得到；读不到会显示 UNKNOWN，不会伪装为已关闭。",
                 style = AmType.secondary,
                 color = c.inkMid,
             )
+        }
+    }
+}
+
+/**
+ * 没有 Shizuku 时说清楚：现在是哪一级在起作用、做得到什么、还差什么。
+ *
+ * 「强制方向不灵」最常见的原因不是坏了，而是退到了只能锁定的那一级 ——
+ * 应用自己声明了竖屏，锁定就压不住它。这张卡片把这件事摆在角度砖上面。
+ */
+@Composable
+private fun TierCard(tier: RotationTier, systemWritable: Boolean, onGrant: () -> Unit) {
+    val c = amColors
+    AmCard(Modifier.fillMaxWidth(), alert = !tier.writable) {
+        Text(
+            if (tier.writable) "降级运行：" + tier.label else "旋转控制不可用",
+            style = AmType.body,
+            color = c.accent,
+        )
+        Text(
+            when (tier) {
+                RotationTier.OVERLAY ->
+                    "Shizuku 不可用，改由无障碍悬浮层强制方向：压得住应用自带的方向，但部分大屏 / 折叠屏会忽略它，转不过去时会如实提示。多屏下发需要 Shizuku。"
+                RotationTier.SETTINGS ->
+                    "Shizuku 与无障碍服务都不可用，只能改系统设置锁定角度：应用自己声明了方向时以应用为准。"
+                else ->
+                    "Shizuku 不可用、无障碍服务未连接，且未授予「修改系统设置」权限。快捷键与按键检测不受影响。"
+            },
+            style = AmType.secondary,
+            color = c.inkMid,
+        )
+        if (!systemWritable) {
+            Spacer(Modifier.height(AmSpace.s1))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "授予「修改系统设置」后，自动旋转开关与 0° 锁定也能照常写入。",
+                    style = AmType.secondary,
+                    color = c.inkMid,
+                    modifier = Modifier.weight(1f),
+                )
+                AmSecondaryButton("去授权", onGrant, accent = true)
+            }
         }
     }
 }

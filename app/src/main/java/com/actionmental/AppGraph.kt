@@ -44,11 +44,15 @@ import com.actionmental.platform.ConfigBackupFile
 import com.actionmental.platform.AudioBackend
 import com.actionmental.platform.HardeningNotifier
 import com.actionmental.platform.InputDeviceBackend
+import com.actionmental.platform.KeyOutputRouter
 import com.actionmental.platform.LoggingBackend
+import com.actionmental.platform.OverlayRotationBackend
 import com.actionmental.platform.PackageBackend
 import com.actionmental.platform.ScreenAwakeBackend
 import com.actionmental.platform.ScreenAwakeNotifier
+import com.actionmental.platform.SettingsFirstBackend
 import com.actionmental.platform.SettingsReader
+import com.actionmental.platform.SystemSettingsAccess
 import com.actionmental.platform.shizuku.ShizukuManager
 import com.actionmental.service.KeepAliveService
 import com.actionmental.service.KeyboardAccessibilityService
@@ -130,6 +134,12 @@ class AppGraph private constructor(context: Context) {
     val inputDevices = InputDeviceBackend(context)
     private val settingsReader = SettingsReader(context)
 
+    /**
+     * 应用自己写系统设置的能力（WRITE_SETTINGS / adb 授予的 WRITE_SECURE_SETTINGS）。
+     * 它接住 Shizuku 里「改设置」的那一部分：旋转降级与无障碍自愈都靠它。
+     */
+    val settingsAccess = SystemSettingsAccess(context)
+
     /** 所有特权调用的公共日志，诊断页直接订阅。 */
     val shellLog = ShellLog()
 
@@ -169,7 +179,17 @@ class AppGraph private constructor(context: Context) {
     private val logged = LoggingBackend(shizuku, shellLog, onCall = { counters.shell.incrementAndGet() })
     private val rotationBackend = logged.tagged("rotation")
     private val actionBackend = logged.tagged("action")
-    private val hardeningBackend = logged.tagged("harden")
+
+    /**
+     * 自愈只读写 secure 表：授过 WRITE_SECURE_SETTINGS 就不必等 Shizuku。
+     * 加固的其余几步（appops、deviceidle）仍然只能走 shell，由同一个组合后端透传过去。
+     */
+    private val hardeningBackend = LoggingBackend(
+        SettingsFirstBackend(settingsAccess, shizuku),
+        shellLog,
+        "harden",
+        onCall = { counters.shell.incrementAndGet() },
+    )
 
     val diagnostics = RotationDiagnostics { logged.tagged("diagnose") }
     val appOverrides = AppOverrideController { logged.tagged("compat") }
@@ -202,6 +222,8 @@ class AppGraph private constructor(context: Context) {
         backend = { rotationBackend },
         settings = settingsReader,
         persistGlobalMode = { mode -> settingsRepository.update { it.copy(globalRotationMode = mode) } },
+        // Shizuku 不在时：无障碍悬浮层压方向，系统设置锁角度
+        local = OverlayRotationBackend(context, accessibility::boundService, settingsAccess),
         // 「被要求设置旋转」与「真的写下去了」是两个数。去重到底省掉了多少，只看得见这一对
         onWrite = { counters.rotationWrite.incrementAndGet() },
         onSkipped = { counters.rotationSkipped.incrementAndGet() },
@@ -231,12 +253,14 @@ class AppGraph private constructor(context: Context) {
     private val remapMatcher = KeyRemapMatcher()
 
     /**
-     * 按键注入直接挂在 shizuku 上而不是包装过的 [logged]。
-     *
+     * 映射的输出口。注入那一路直接挂在 shizuku 上而不是包装过的 [logged]：
      * 注入的内容就是用户的击键，写进 shell 日志等于记录输入 ——
      * 「不记录输入内容」的承诺优先于「每一条特权调用都可查」。
+     *
+     * Shizuku 不在（或特权服务还没连上）时按目标键分流到全局动作、媒体键、无障碍输入通道，
+     * 而不是整个映射一起失效。
      */
-    val keyInjector = KeyInjector(scope, backend = { shizuku })
+    val keyInjector = KeyInjector(scope, output = KeyOutputRouter(shizuku, accessibility, audio))
 
     val executor = ActionExecutor(
         accessibility = accessibility,
@@ -327,7 +351,8 @@ class AppGraph private constructor(context: Context) {
     private data class SwitchSignals(
         val enabled: Boolean,
         val listed: Boolean,
-        val shizukuUsable: Boolean,
+        /** Shizuku 可用，或者授过 WRITE_SECURE_SETTINGS —— 两者任一都写得进 secure 表。 */
+        val settingsWritable: Boolean,
         val paused: Boolean,
         val autoHealAccessibility: Boolean,
         val accessibilityEverEnabled: Boolean,
@@ -607,6 +632,16 @@ class AppGraph private constructor(context: Context) {
                 // 连上时按意图重挂（从唤醒锁兜底升级回悬浮层），掉线时按意图退回唤醒锁。
                 // 常亮不受暂停管，所以这里不看 pausedNow。
                 screenAwake.restore(settingsRepository.load().screenAwake)
+                // 旋转的悬浮层也挂在服务实例上，同理：服务一换就按意图重新落一次
+                //（没有 Shizuku 时它就是强制方向本身）。暂停期间被控制器的闸门挡住。
+                rotation.reapplyAsync()
+            }
+        }
+
+        // Shizuku 来去会换掉旋转的写入级别：连上时从悬浮层升级回 shell，掉了就降级
+        scope.launch {
+            shizuku.status.map { it.usable }.distinctUntilChanged().collect {
+                rotation.reapplyAsync()
             }
         }
 
@@ -712,31 +747,39 @@ class AppGraph private constructor(context: Context) {
         pipeline.onReplacedKey = { keyCode, modifiers, down, device ->
             val source = KeyCombo(keyCode, modifiers)
             val remap = remapMatcher.match(source)
-            val availability = if (remap == null) ActionResult.OK else shizuku.availability()
             when {
                 remap == null -> false
 
                 // 快捷键优先：同一个组合已经绑了动作，就别把这颗键换走
                 matcher.match(source, device, accessibility.foregroundPackage.value) != null -> false
 
-                // 注入断了还拦下源键，这颗键就彻底哑掉了。宁可映射不生效，也不能吞键（PRD 25）
-                !availability.succeeded -> {
-                    if (down) {
-                        pipeline.trace(
-                            KeyTrace.Kind.ERROR,
-                            source.toString(),
-                            "映射未生效 · " + availability.message,
-                        )
-                    }
-                    false
+                // 抬起一律补发：按下时走通了，目标键就必须收到抬起，否则它会一直「按着」。
+                // 这时出口哪怕已经断了也照发 —— 发送失败只会留一条错误，不会多出任何按键
+                !down -> {
+                    keyInjector.enqueueState(remap.to, false)
+                    true
                 }
 
                 else -> {
-                    if (down) {
-                        pipeline.trace(KeyTrace.Kind.MATCH, source.toString(), "→ " + remap.to.toString())
+                    // 在按键线程上同步挑路：这一刻发不出去就绝不拦下源键。
+                    // 原来只看 Shizuku 授没授权，特权服务没连上时照样拦下再注入失败，这颗键就哑了（PRD 25）
+                    val channel = keyInjector.route(remap.to)
+                    if (channel == null) {
+                        pipeline.trace(
+                            KeyTrace.Kind.ERROR,
+                            source.toString(),
+                            "映射未生效 · " + keyInjector.unavailableReason(),
+                        )
+                        false
+                    } else {
+                        pipeline.trace(
+                            KeyTrace.Kind.MATCH,
+                            source.toString(),
+                            "→ " + remap.to.toString() + " · " + channel.label,
+                        )
+                        keyInjector.enqueueState(remap.to, true)
+                        true
                     }
-                    keyInjector.enqueueState(remap.to, down)
-                    true
                 }
             }
         }
@@ -756,19 +799,24 @@ class AppGraph private constructor(context: Context) {
                 else -> null
             }
 
-            val engaged = heldModifier || target != null
-            val availability = if (engaged) shizuku.availability() else ActionResult.OK
+            // 同步挑路：修饰键要的是「之后的键都发得出去」，普通目标要的是「这颗键发得出去」
+            val channel = target?.let { keyInjector.route(it) }
+            val deliverable = when {
+                heldModifier -> keyInjector.canCarryModifiers()
+                target != null -> channel != null
+                else -> false
+            }
 
             when {
-                !engaged -> false
+                !heldModifier && target == null -> false
 
-                // 注入链路断了还拦下源键，等于这颗键彻底哑掉 —— 用户既没有原键也没有目标键，
+                // 出口断了还拦下源键，等于这颗键彻底哑掉 —— 用户既没有原键也没有目标键，
                 // 而且完全看不出原因。宁可映射不生效，也不能吞键（PRD 25）。
-                !availability.succeeded -> {
+                !deliverable -> {
                     pipeline.trace(
                         KeyTrace.Kind.ERROR,
                         original.toString(),
-                        "映射未生效 · " + availability.message,
+                        "映射未生效 · " + keyInjector.unavailableReason(),
                     )
                     false
                 }
@@ -779,7 +827,11 @@ class AppGraph private constructor(context: Context) {
                 }
 
                 else -> {
-                    pipeline.trace(KeyTrace.Kind.MATCH, original.toString(), "→ " + target.toString())
+                    pipeline.trace(
+                        KeyTrace.Kind.MATCH,
+                        original.toString(),
+                        "→ " + target.toString() + " · " + channel!!.label,
+                    )
                     keyInjector.enqueue(target!!)
                     true
                 }
@@ -793,7 +845,7 @@ class AppGraph private constructor(context: Context) {
      * 三道闸门缺一不可，且顺序是刻意的：
      *  1. 用户在设置里开了自愈；
      *  2. 这个开关**曾经**是开的 —— 从没授权过的服务，绝不由应用替用户打开；
-     *  3. Shizuku 可用 —— 没有 shell 身份本来也写不进 secure 设置。
+     *  3. 写得进 secure 设置 —— Shizuku 可用，或者用 adb 授过 WRITE_SECURE_SETTINGS。
      * 冷却与失败退避在 [HardeningController] 内部，这里不重复实现。
      */
     private suspend fun watchAccessibilitySwitch() {
@@ -807,7 +859,7 @@ class AppGraph private constructor(context: Context) {
             SwitchSignals(
                 enabled = enabled,
                 listed = listed,
-                shizukuUsable = shizukuStatus.usable,
+                settingsWritable = shizukuStatus.usable || settingsAccess.secureWritable(),
                 paused = s.paused,
                 autoHealAccessibility = s.autoHealAccessibility,
                 accessibilityEverEnabled = s.accessibilityEverEnabled,
@@ -815,7 +867,7 @@ class AppGraph private constructor(context: Context) {
             // 只留这几个量再去重：设置流每写一次（每转一次屏都会写）都会发射，
             // 不收窄的话每一次都要重跑一遍自愈判断，甚至重新拉起一趟十几秒的绑定复查
         }.distinctUntilChanged().collect { signals ->
-            val (enabled, listed, shizukuUsable) = signals
+            val (enabled, listed, settingsWritable) = signals
             if (enabled) {
                 lastSkip = null
                 // 记下「用户确实授权过」，这是将来允许自动写回的唯一依据
@@ -849,7 +901,7 @@ class AppGraph private constructor(context: Context) {
             val gate = when {
                 !signals.autoHealAccessibility -> "自动恢复未开启"
                 !signals.accessibilityEverEnabled -> "从未授权过，不代为打开"
-                !shizukuUsable -> "Shizuku 不可用 · " + shizuku.status.value.conclusion
+                !settingsWritable -> "Shizuku 不可用（" + shizuku.status.value.conclusion + "），也未授予 WRITE_SECURE_SETTINGS"
                 else -> null
             }
             if (gate != null) {
@@ -904,9 +956,10 @@ class AppGraph private constructor(context: Context) {
         refreshAccessibility()
         if (accessibility.enabledInSettings.value) return false
 
-        // Shizuku 开机后要几秒才起得来；等不到就带着真实原因去尝试，让它留一条记录
+        // Shizuku 开机后要几秒才起得来；等不到就带着真实原因去尝试，让它留一条记录。
+        // 授过 WRITE_SECURE_SETTINGS 就不必等：那条路开机即可用，这正是它最值钱的地方
         withTimeoutOrNull(timeoutMs) {
-            while (!shizuku.status.value.usable) {
+            while (!shizuku.status.value.usable && !settingsAccess.secureWritable()) {
                 shizuku.refresh()
                 delay(500)
             }

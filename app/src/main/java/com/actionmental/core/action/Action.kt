@@ -121,7 +121,9 @@ sealed interface Action {
         enum class Op { SET, RESTORE, TOGGLE_LANDSCAPE, CYCLE }
 
         override val category get() = ActionCategory.ROTATION
-        override val requiresPrivilege get() = true
+
+        // 不再标成必需 Shizuku：没有它时降级到无障碍悬浮层 / 系统设置，
+        // 快捷键能触发就意味着无障碍服务在，悬浮层那一级总是够得着
         override val label
             get() = when (op) {
                 Op.SET -> "切换 · " + mode.label
