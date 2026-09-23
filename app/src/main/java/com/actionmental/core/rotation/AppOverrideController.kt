@@ -31,10 +31,14 @@ class AppOverrideController(private val backend: () -> PrivilegedBackend) {
 
     companion object {
         /**
-         * 顺序即依赖顺序：先允许覆盖方向，再解除尺寸限制，最后放开显示 API 沙箱。
+         * 顺序即依赖顺序：先改写方向，再解除尺寸限制，最后放开显示 API 沙箱。
          * 名称取自 AOSP ActivityInfo 中的 @ChangeId 常量。
          */
         val LANDSCAPE_SET = listOf(
+            // 排第一、也是最管用的一条：显示屏开着忽略方向请求时，把应用请求的任何方向
+            // 改写成 USER。部分 OEM（ColorOS 平板上的红果短剧）对个别应用照样采纳竖屏请求，
+            // 全局开关形同虚设，只有它压得住。忽略开关关着时它不起作用，留着无副作用。
+            Override("OVERRIDE_ANY_ORIENTATION_TO_USER", "忽略开关打开时，把应用请求的任何方向改写成 USER"),
             Override("OVERRIDE_ANY_ORIENTATION", "允许系统覆盖该应用声明的任何方向"),
             Override("OVERRIDE_UNDEFINED_ORIENTATION_TO_NOSENSOR", "未声明方向时按 nosensor 处理"),
             Override("OVERRIDE_LANDSCAPE_ORIENTATION_TO_NOSENSOR", "把横屏请求转为 nosensor，避免被反复拽回"),

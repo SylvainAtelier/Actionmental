@@ -330,7 +330,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun runDiagnosis() = viewModelScope.launch {
         _diagnosing.value = true
         // 直接问源头，不经过 status —— 后者只在有人订阅时才组装，值可能是旧的
-        _diagnosis.value = graph.diagnostics.run(graph.accessibility.foregroundPackage.value)
+        _diagnosis.value = graph.diagnostics.run(graph.accessibility.foregroundPackage.value, graph.rotation.forcedRotation)
         _diagnosing.value = false
     }
 

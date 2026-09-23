@@ -60,6 +60,14 @@ class EventLog(
     private val dir: File?,
     private val capacity: Int = 500,
     private val maxFileBytes: Long = 256 * 1024,
+    /**
+     * 每一条同时交给它（平台层接到 logcat）。
+     *
+     * 盘上那份在应用私有目录里，release 包用 adb 读不到；现场排查时能直接
+     * `adb logcat` 看到的只有这一路。放在构造参数里而不是直接调 android.util.Log，
+     * 是为了这个类在 JVM 单测里照样能跑。
+     */
+    private val mirror: ((LogEntry) -> Unit)? = null,
 ) {
     private val ids = AtomicLong(0)
 
@@ -120,6 +128,7 @@ class EventLog(
 
     fun log(level: LogLevel, tag: String, message: String, detail: String = "") {
         val entry = LogEntry(ids.incrementAndGet(), System.currentTimeMillis(), level, tag, message, detail)
+        mirror?.invoke(entry)
         _entries.update { list ->
             val next = list + entry
             if (next.size > capacity) next.takeLast(capacity) else next
@@ -134,6 +143,7 @@ class EventLog(
      */
     fun logBlocking(level: LogLevel, tag: String, message: String, detail: String) {
         val entry = LogEntry(ids.incrementAndGet(), System.currentTimeMillis(), level, tag, message, detail)
+        mirror?.invoke(entry)
         _entries.update { (it + entry).takeLast(capacity) }
         writeNow(entry)
     }

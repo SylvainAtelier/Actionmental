@@ -27,6 +27,58 @@ data class DiagnosisReport(
 }
 
 /**
+ * 默认屏幕此刻的方向由谁决定，取自 `dumpsys window displays`。
+ *
+ * 角度一律是 Surface.ROTATION_* 的 0..3。解析不到的字段是 null，不猜。
+ */
+data class OrientationProbe(
+    /** 方向来源的包名；来源是系统窗口（通知栏等）时为 null。 */
+    val sourcePackage: String?,
+    val requested: String?,
+    val ignore: Boolean?,
+    val rotation: Int?,
+    val userRotation: Int?,
+    val locked: Boolean,
+    val raw: String,
+) {
+    /**
+     * 忽略开关开着，屏幕却不在该在的角度上：有人的方向请求被系统放行了。
+     *
+     * [expected] 是强制意图要求的角度。不能只拿锁定角度比 —— 屏幕被拉到 0° 后
+     * SystemUI 会把锁定角度也改成 0，两者又对上了，现场就被抹平了。
+     * 不知道意图时才退回用锁定角度比。
+     */
+    fun pulledAway(expected: Int?): Boolean {
+        val target = expected ?: userRotation?.takeIf { locked } ?: return false
+        return ignore == true && rotation != null && rotation != target
+    }
+
+    val summary: String
+        get() = "来源=" + (sourcePackage ?: "系统窗口") + " · 请求=" + (requested ?: "?") +
+            " · ignore=" + (ignore ?: "?") + " · 实际=" + angle(rotation) + " · 锁定=" +
+            (if (locked) angle(userRotation) else "自动")
+
+    companion object {
+        fun parse(out: String): OrientationProbe {
+            val source = Regex("""deepestLastOrientationSource=(.+)""").find(out)?.groupValues?.get(1)
+            return OrientationProbe(
+                // ActivityRecord{46049331 u0 com.phoenix.read/com.dragon…Activity t31796}
+                sourcePackage = source?.let { Regex("""u\d+ ([\w.]+)/""").find(it)?.groupValues?.get(1) },
+                requested = Regex("""mCurrentAppOrientation=SCREEN_ORIENTATION_(\w+)""").find(out)?.groupValues?.get(1),
+                ignore = Regex("""ignoreOrientationRequest=(true|false)""").find(out)?.groupValues?.get(1)?.toBoolean(),
+                rotation = Regex("""mRotation=(\d)""").find(out)?.groupValues?.get(1)?.toIntOrNull(),
+                userRotation = Regex("""mUserRotation=ROTATION_(\d+)""").find(out)?.groupValues?.get(1)
+                    ?.toIntOrNull()?.div(90),
+                locked = out.contains("USER_ROTATION_LOCKED"),
+                raw = out,
+            )
+        }
+
+        private fun angle(rotation: Int?): String = if (rotation == null) "?" else (rotation * 90).toString() + "°"
+    }
+}
+
+/**
  * 回答一个具体问题：全局强制已经打开了，为什么**这个**应用还是竖着的。
  *
  * 只跑只读命令，不改任何系统状态。每条命令的原始输出都会经 [ShellLog] 落到界面上，
@@ -34,7 +86,8 @@ data class DiagnosisReport(
  */
 class RotationDiagnostics(private val backend: () -> PrivilegedBackend) {
 
-    suspend fun run(packageName: String?): DiagnosisReport {
+    /** @param expectedRotation 强制意图要求的角度（Surface.ROTATION_*），不在强制时传 null。 */
+    suspend fun run(packageName: String?, expectedRotation: Int? = null): DiagnosisReport {
         val b = backend()
         val availability = b.availability()
         if (availability is ActionResult.Failed) {
@@ -56,6 +109,7 @@ class RotationDiagnostics(private val backend: () -> PrivilegedBackend) {
         findings += checkGlobalIgnore(b)
         findings += checkDisplays(b)
         if (packageName != null) {
+            findings += checkOrientationSource(b, packageName, expectedRotation)
             findings += checkRequestedOrientation(b, packageName)
             findings += checkResizeability(b, packageName)
             findings += checkCompatOverrides(b, packageName)
@@ -118,6 +172,47 @@ class RotationDiagnostics(private val backend: () -> PrivilegedBackend) {
             )
         }
     }
+
+    /**
+     * 最直接的一问：忽略开关开着，屏幕方向却仍然是这个应用说了算吗。
+     *
+     * ColorOS 平板上实测过：红果短剧的竖屏请求在 ignore=true、锁定 270° 时照样把屏幕拉回 0°，
+     * 而抖音同样的竖屏请求就被压住了 —— 系统按应用放行，没有任何公开开关能看到这份名单。
+     * 能看到的只有结果：显示屏的方向来源就是这个应用，且实际角度不是强制意图要的那个。
+     */
+    private suspend fun checkOrientationSource(b: PrivilegedBackend, pkg: String, expectedRotation: Int?): DiagnosisFinding {
+        val title = "系统是否仍采纳该应用的方向"
+        val probe = probeOrientation(b)
+            ?: return DiagnosisFinding(title, Verdict.UNKNOWN, "dumpsys window displays 读取失败")
+        return when {
+            probe.ignore == null || probe.rotation == null -> DiagnosisFinding(title, Verdict.UNKNOWN, probe.raw.take(400))
+            probe.ignore != true -> DiagnosisFinding(
+                title, Verdict.OK, probe.summary, "忽略开关没开（未处于强制方向），应用自带方向优先是预期行为。",
+            )
+            probe.sourcePackage == pkg && probe.pulledAway(expectedRotation) -> DiagnosisFinding(
+                title, Verdict.BLOCKER, probe.summary,
+                "系统对这个应用网开一面：忽略开关打开，屏幕仍被它的方向请求拉走。" +
+                    "用下面的「应用级兼容覆盖」（含 OVERRIDE_ANY_ORIENTATION_TO_USER）后结束并重开该应用。",
+            )
+            probe.sourcePackage != pkg -> DiagnosisFinding(
+                title, Verdict.UNKNOWN, probe.summary,
+                "此刻主导方向的不是它（诊断页本身就在前台）。事件日志里「方向被应用拉走」那一条记着当时的现场。",
+            )
+            else -> DiagnosisFinding(title, Verdict.OK, probe.summary)
+        }
+    }
+
+    /** 读一次「此刻屏幕方向由谁决定」。null 表示 shell 不可用或 dumpsys 没回来。 */
+    suspend fun probeOrientation(): OrientationProbe? {
+        val b = backend()
+        if (b.availability() is ActionResult.Failed) return null
+        return probeOrientation(b)
+    }
+
+    private suspend fun probeOrientation(b: PrivilegedBackend): OrientationProbe? = text(
+        b,
+        "dumpsys window displays | grep -E 'deepestLastOrientationSource|ignoreOrientationRequest=|mCurrentAppOrientation|mRotation=|mUserRotationMode' | head -12",
+    )?.let(OrientationProbe::parse)
 
     private suspend fun checkRequestedOrientation(b: PrivilegedBackend, pkg: String): DiagnosisFinding {
         val out = text(b, "dumpsys window visible-apps | grep -iE 'mActivityRecord|screenOrientation|mOrientation|mLastReportedConfiguration' | head -40")

@@ -29,6 +29,8 @@ class AppRotationRuleManager(
 
     init {
         scope.launch {
+            // 第一次发射必须走 setOverride：那是进程起来后规则的第一次落地
+            var applied = false
             combine(
                 foregroundPackage,
                 rules.rules,
@@ -37,11 +39,18 @@ class AppRotationRuleManager(
                 // 暂停期间规则一律不成立：前台包在这时本来也不再更新，
                 // 但设置刚被切到暂停的那一刻，这条流会再发一次 —— 必须让它算出 null，
                 // 把已经压着的 override 撤掉。
-                if (config.paused || !config.appRulesEnabled || pkg == null) null
+                val rule = if (config.paused || !config.appRulesEnabled || pkg == null) null
                 else list.firstOrNull { it.packageName == pkg && it.enabled }
+                pkg to rule
             }
                 .distinctUntilChanged()
-                .collect { rule ->
+                .collect { (_, rule) ->
+                    if (applied && rule == _activeRule.value) {
+                        // 规则没变，只是换了前台应用：强制模式下核对一次，被人改掉了就补写
+                        controller.reassertForced()
+                        return@collect
+                    }
+                    applied = true
                     _activeRule.value = rule
                     // 规则里的「系统默认」也是一次明确的 override：
                     // 即使全局是强制横屏，进入这个应用也应该交还系统旋转策略。

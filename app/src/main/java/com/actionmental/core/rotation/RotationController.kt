@@ -93,6 +93,14 @@ class RotationController(
     private val onWrite: () -> Unit = {},
     /** 因为系统已经是这个模式而整条写入被省掉了。去重省下多少，只看得见这一对。 */
     private val onSkipped: () -> Unit = {},
+    /**
+     * 每一次真的写下去都报一条：从什么到什么、走哪一级、结果如何。
+     *
+     * 只在写入时叫，不在去重跳过时叫 —— 后者每切一次应用就有一次。
+     * 「这个应用为什么没转」的现场，缺的往往就是「那一刻到底写没写、写了什么」。
+     */
+    private val onWritten: (from: RotationMode?, to: RotationMode, tier: RotationTier, result: ActionResult) -> Unit =
+        { _, _, _, _ -> },
 ) {
     private val mutex = Mutex()
 
@@ -295,6 +303,12 @@ class RotationController(
 
     private fun effectiveMode(): RotationMode = override ?: globalMode
 
+    /** 此刻是否在强制方向（且没暂停）。给「系统设置被别人改了」那一路判断要不要去查现场。 */
+    val forcing: Boolean get() = !paused && effectiveMode().isForced
+
+    /** 强制意图要求的 Surface.ROTATION_*；不在强制时为 null。 */
+    val forcedRotation: Int? get() = if (forcing) effectiveMode().surfaceRotation else null
+
     private suspend fun applyEffective(): ActionResult = mutex.withLock {
         // 闸门在锁里再判一次：排队等锁的写入可能是在暂停落地之前发起的
         if (paused) return@withLock ActionResult.OK
@@ -319,7 +333,24 @@ class RotationController(
         val result = write(target, tier)
         // 写完必须回读，UI 与磁贴显示的一律是系统事实
         publish(readState())
+        onWritten(current, target, tier, result)
         result
+    }
+
+    /**
+     * 前台应用换了：强制模式下按意图补写一次（系统已经是这个样子时照旧省掉）。
+     *
+     * 强制期间系统的锁定角度会被别人悄悄改掉：某些应用的竖屏请求压不住（OEM 按应用放行）,
+     * 屏幕被它拉回 0° 的那一刻，SystemUI 的 RotationButtonController 会把 user_rotation
+     * 跟着改成 0。离开那个应用之后整机就停在竖屏 —— 而规则流只在规则变化时才写，
+     * override 从 null 到 null 不算变化，强制横屏就再也回不来了。
+     *
+     * 只管强制模式：「系统默认 / 锁定」下用户在快捷设置里拨的开关是用户自己的意思，
+     * 切个应用就改回去等于和用户抢开关。
+     */
+    suspend fun reassertForced(): ActionResult {
+        if (!forcing) return ActionResult.OK
+        return applyEffective()
     }
 
     /**

@@ -5,6 +5,7 @@ import android.hardware.input.InputManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.actionmental.core.action.ActionExecutor
 import com.actionmental.core.action.ActionResult
@@ -59,6 +60,7 @@ import com.actionmental.service.KeyboardAccessibilityService
 import com.actionmental.service.ScreenAwakeReceiver
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -147,7 +149,16 @@ class AppGraph private constructor(context: Context) {
      * 事件日志。落盘，因此进程死了也还在 ——
      * 「服务掉线」的现场就在上一次进程里，只存内存等于没记。
      */
-    val eventLog = EventLog(scope, File(appContext.filesDir, "logs"))
+    val eventLog = EventLog(scope, File(appContext.filesDir, "logs"), mirror = { entry ->
+        val priority = when (entry.level) {
+            LogLevel.DEBUG -> Log.DEBUG
+            LogLevel.INFO -> Log.INFO
+            LogLevel.WARN -> Log.WARN
+            LogLevel.ERROR -> Log.ERROR
+        }
+        val text = "[" + entry.tag + "] " + entry.message
+        Log.println(priority, LOGCAT_TAG, if (entry.detail.isBlank()) text else text + " | " + entry.detail)
+    })
 
     /** 上一次进程的死因。应用自己记不下来的那几种死法，只有系统知道。 */
     val exitReporter = ProcessExitReporter(appContext)
@@ -227,6 +238,12 @@ class AppGraph private constructor(context: Context) {
         // 「被要求设置旋转」与「真的写下去了」是两个数。去重到底省掉了多少，只看得见这一对
         onWrite = { counters.rotationWrite.incrementAndGet() },
         onSkipped = { counters.rotationSkipped.incrementAndGet() },
+        onWritten = { from, to, tier, result ->
+            val message = "写入 " + (from?.label ?: "未知") + " → " + to.label + " · " + tier.label
+            val detail = "前台=" + (accessibility.foregroundPackage.value ?: "?") + " · " + result.message
+            if (result is ActionResult.Failed) eventLog.warn("rotation", message + " 失败", detail)
+            else eventLog.info("rotation", message, detail)
+        },
     )
 
     /**
@@ -452,6 +469,43 @@ class AppGraph private constructor(context: Context) {
         }
     }
 
+    /** 同一次改动两个键各回调一次，SystemUI 也常紧跟着再写一次：合并成一次处理。 */
+    private var rotationChangeJob: Job? = null
+
+    /**
+     * 旋转设置被人改了（我们自己、用户、或者系统）。
+     *
+     * 每次都记一条带值的日志：原来这里只让缓存作废，事后根本看不出 user_rotation
+     * 是什么时候、在哪个应用前台时被改成 0 的。强制期间再多查一步「此刻方向由谁决定」——
+     * 锁定角度被改写而屏幕不在锁定角度上，就是某个应用的方向请求被系统放行了
+     * （ColorOS 平板上的红果短剧），SystemUI 随后把锁定角度跟过去，强制横屏就此丢失。
+     * 这只在设置变动时查一次，不轮询。
+     */
+    private fun onRotationSettingsChanged() {
+        rotationChangeJob?.cancel()
+        rotationChangeJob = scope.launch {
+            delay(ROTATION_SETTLE_MS)
+            val acc = settingsReader.systemInt("accelerometer_rotation")
+            val user = settingsReader.systemInt("user_rotation")
+            val foreground = accessibility.foregroundPackage.value
+            eventLog.debug(
+                "rotation",
+                "系统旋转设置变化 · 自动旋转=" + (acc ?: "?") + " 锁定角度=" + (user?.let { (it * 90).toString() + "°" } ?: "?"),
+                "前台=" + (foreground ?: "?") + " · 意图=" + (if (rotation.forcing) "强制" else "不强制"),
+            )
+            val target = rotation.forcedRotation ?: return@launch
+            val probe = diagnostics.probeOrientation() ?: return@launch
+            if (probe.pulledAway(target) && probe.sourcePackage != null) {
+                eventLog.warn(
+                    "rotation",
+                    "方向被应用拉走 · " + probe.sourcePackage,
+                    probe.summary + "\n忽略方向请求已开，系统仍采纳了它的方向（OEM 按应用放行）。" +
+                        "在旋转诊断里对它施加「应用级兼容覆盖」即可压住；离开它时会按意图补写锁定角度。",
+                )
+            }
+        }
+    }
+
     private fun onDevicesChanged() {
         pipeline.invalidateDevices()
         refreshKeyboards()
@@ -577,6 +631,7 @@ class AppGraph private constructor(context: Context) {
             // 界面正开着就当场读一次真值。这比轮询快（用户拨完开关立刻就对上了），
             // 也比轮询省（不变就一次都不读）—— 界面的定时轮询因此可以放到很疏。
             if (uiForeground) rotation.refreshAsync()
+            onRotationSettingsChanged()
         }
         ContextCompat.registerReceiver(
             appContext,
@@ -1509,6 +1564,12 @@ class AppGraph private constructor(context: Context) {
 
         /** 界面离开多久才真的放掉应用清单。短暂切走再回来不该付重建的代价。 */
         private const val CATALOG_GRACE_MS = 90_000L
+
+        /** 旋转设置一连串改动（两个键 + SystemUI 跟进的那一下）落定所需的时间。 */
+        private const val ROTATION_SETTLE_MS = 400L
+
+        /** 事件日志在 logcat 里的标签：`adb logcat -s Actionmental`。 */
+        private const val LOGCAT_TAG = "Actionmental"
 
         /**
          * 键盘不见了之后等多久才真的自动暂停。

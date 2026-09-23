@@ -192,6 +192,15 @@ Shizuku 是唯一能「向系统注入任意按键」「执行 `cmd window`」�
   更低版本会走到 `UNKNOWN` 分支并如实显示不可用。
 - **`fixed_to_user_rotation` 在部分 OEM 上不存在**：`RotationController.write()`
   把它当作降级而不是失败，返回 `Ok` 并附带说明（能力矩阵页会显示 PARTIAL）。
+- **OEM 会按应用放行方向请求**：ColorOS 16 平板（PKH120）上，`ignore-orientation-request=true`
+  压得住抖音，却压不住红果短剧（`com.phoenix.read`）的竖屏请求，没有公开开关能看到这份名单。
+  屏幕被拉回 0° 的同时，SystemUI 的 `RotationButtonController` 会把 `user_rotation` 改成 0，
+  离开那个应用后强制横屏也跟着丢了。两层处理：
+  前台应用每换一次，`RotationController.reassertForced()` 在强制模式下核对并补写（系统没被动过就不写）；
+  压住那个应用本身要靠应用级兼容覆盖里的 `OVERRIDE_ANY_ORIENTATION_TO_USER`，施加后结束并重开它。
+  强制期间旋转设置一变，事件日志就查一次方向来源，记下「方向被应用拉走 · 包名」。
+- **事件日志同步输出到 logcat**（标签 `Actionmental`），release 包也能 `adb logcat -s Actionmental` 现场抓。
+  部分机型 logcat 缓冲十几秒就被刷满，要边复现边抓，事后 `-d` 多半已经没了。
 - **导入导出走剪贴板**，尚未接 SAF 文件选择器。
 - 第二阶段功能（反向方向的快捷键预设、按键统计、多设备绑定 UI）数据结构已预留，
   `DeviceScope` / `AppScope` 都已经是可表达的形态，只差界面。
