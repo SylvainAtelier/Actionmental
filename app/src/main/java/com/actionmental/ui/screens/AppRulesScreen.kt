@@ -43,7 +43,10 @@ fun AppRulesScreen(vm: AppViewModel, modifier: Modifier = Modifier, embedded: Bo
     val c = amColors
     val rules by vm.rules.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
+    val compat by vm.compatTargets.collectAsStateWithLifecycle()
+    val pulledAway by vm.pulledAwayPackage.collectAsStateWithLifecycle()
     var pickerOpen by remember { mutableStateOf(false) }
+    var compatPickerOpen by remember { mutableStateOf(false) }
 
     Column(modifier.fillMaxSize().padding(AmSpace.screen)) {
         if (embedded) {
@@ -119,6 +122,66 @@ fun AppRulesScreen(vm: AppViewModel, modifier: Modifier = Modifier, embedded: Bo
                     )
                 }
             }
+
+            item {
+                Spacer(Modifier.height(AmSpace.s3))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("压住自带方向", style = AmType.body, color = c.ink)
+                        Text(
+                            "个别应用在强制方向时仍能把屏幕拉回竖屏（系统对它网开一面）。" +
+                                "加入这里的应用会被施加兼容覆盖，只在强制方向期间起作用；结束并重开它后生效。",
+                            style = AmType.secondary,
+                            color = c.inkMid,
+                        )
+                    }
+                    AmSecondaryButton("添加", { compatPickerOpen = true }, accent = true)
+                }
+            }
+
+            // 强制期间检测到的「方向被应用拉走」：给一个一键加入，而不是自动加 ——
+            // 这一步会改另一个应用的系统状态，得用户点头
+            val suggested = pulledAway?.takeIf { pkg -> compat.none { it.packageName == pkg } }
+            if (suggested != null) {
+                item {
+                    val label = remember(suggested) { vm.appLabel(suggested) }
+                    AmCard(Modifier.fillMaxWidth()) {
+                        Text("检测到 " + label + " 在强制方向时把屏幕拉走了", style = AmType.body, color = c.accent)
+                        Text(suggested, style = AmType.data, color = c.inkFaint, maxLines = 1)
+                        Spacer(Modifier.height(6.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            AmSecondaryButton("加入名单", { vm.addCompatTarget(suggested, label) }, accent = true)
+                        }
+                    }
+                }
+            }
+
+            items(compat, key = { "compat:" + it.packageName }) { target ->
+                AmCard(Modifier.fillMaxWidth()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(target.appLabel, style = AmType.body, color = c.ink, maxLines = 1)
+                            Text(target.packageName, style = AmType.data, color = c.inkFaint, maxLines = 1)
+                        }
+                        AmSwitch(target.enabled, { vm.setCompatEnabled(target.packageName, it) })
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End),
+                    ) {
+                        AmSecondaryButton("结束该应用", { vm.forceStopApp(target.packageName) })
+                        AmSecondaryButton("移出", { vm.deleteCompatTarget(target.packageName) }, accent = true)
+                    }
+                }
+            }
+        }
+    }
+
+    if (compatPickerOpen) {
+        CompatPickerSheet(vm, onDismiss = { compatPickerOpen = false }) { app ->
+            vm.addCompatTarget(app.packageName, app.label)
+            compatPickerOpen = false
         }
     }
 
@@ -175,6 +238,43 @@ private fun AppPickerSheet(
             val mode = modeName?.let { name -> RotationMode.selectable.firstOrNull { it.name == name } }
             if (app != null && mode != null) onPick(app, mode)
         },
+        onDismiss = onDismiss,
+        header = {
+            Row(horizontalArrangement = Arrangement.spacedBy(AmSpace.s1)) {
+                AmSecondaryButton("重新扫描应用", vm::refreshApps)
+            }
+        },
+    )
+}
+
+/** 「压住自带方向」只要选应用，没有第二级。 */
+@Composable
+private fun CompatPickerSheet(
+    vm: AppViewModel,
+    onDismiss: () -> Unit,
+    onPick: (PackageBackend.InstalledApp) -> Unit,
+) {
+    val apps by vm.apps.collectAsStateWithLifecycle()
+    val groups = remember(apps) {
+        apps.map { app ->
+            PickerGroup(
+                id = app.packageName,
+                title = app.label,
+                subtitle = app.packageName,
+                badge = if (app.frozen) "已冻结" else null,
+                direct = true,
+            )
+        }
+    }
+    AmPickerSheet(
+        title = "压住自带方向",
+        subtitle = "强制方向期间，把这个应用请求的方向改写为跟随系统",
+        groups = groups,
+        openGroupId = null,
+        onOpenGroup = {},
+        searchPlaceholder = "搜索应用名或包名…",
+        emptyHint = "没有匹配的应用",
+        onPick = { packageName, _ -> apps.firstOrNull { it.packageName == packageName }?.let(onPick) },
         onDismiss = onDismiss,
         header = {
             Row(horizontalArrangement = Arrangement.spacedBy(AmSpace.s1)) {

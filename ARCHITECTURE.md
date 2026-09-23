@@ -197,8 +197,14 @@ Shizuku 是唯一能「向系统注入任意按键」「执行 `cmd window`」�
   屏幕被拉回 0° 的同时，SystemUI 的 `RotationButtonController` 会把 `user_rotation` 改成 0，
   离开那个应用后强制横屏也跟着丢了。两层处理：
   前台应用每换一次，`RotationController.reassertForced()` 在强制模式下核对并补写（系统没被动过就不写）；
-  压住那个应用本身要靠应用级兼容覆盖里的 `OVERRIDE_ANY_ORIENTATION_TO_USER`，施加后结束并重开它。
-  强制期间旋转设置一变，事件日志就查一次方向来源，记下「方向被应用拉走 · 包名」。
+  压住那个应用本身要靠 `OVERRIDE_ANY_ORIENTATION_TO_USER`，做成应用规则页的「压住自带方向」名单
+  （`OrientationCompatRepository` + `OrientationCompatKeeper`）：只施加这一条，因为它只在忽略开关打开
+  （强制方向）时生效，「系统默认」下对应用没有影响；第二级手段里的最小宽高比、NOSENSOR 那几条
+  不强制时也会改应用，不适合常驻。覆盖在重启、应用更新后是否还在不作假设：Shizuku 连上、名单变化、
+  名单上的应用更新时各读一次 `dumpsys platform_compat`，缺了才补。施加后要等它的界面重建才生效，
+  不替用户结束它。
+  强制期间旋转设置一变，事件日志就查一次方向来源，记下「方向被应用拉走 · 包名」，规则页据此提示一键加入名单，
+  诊断页也优先检查这个包（打开诊断页时前台已经是桌面或侧边栏了）。
 - **事件日志同步输出到 logcat**（标签 `Actionmental`），release 包也能 `adb logcat -s Actionmental` 现场抓。
   部分机型 logcat 缓冲十几秒就被刷满，要边复现边抓，事后 `-d` 多半已经没了。
 - **导入导出走剪贴板**，尚未接 SAF 文件选择器。

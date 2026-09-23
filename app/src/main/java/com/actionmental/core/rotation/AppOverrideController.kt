@@ -41,7 +41,6 @@ class AppOverrideController(private val backend: () -> PrivilegedBackend) {
             Override("OVERRIDE_ANY_ORIENTATION_TO_USER", "忽略开关打开时，把应用请求的任何方向改写成 USER"),
             Override("OVERRIDE_ANY_ORIENTATION", "允许系统覆盖该应用声明的任何方向"),
             Override("OVERRIDE_UNDEFINED_ORIENTATION_TO_NOSENSOR", "未声明方向时按 nosensor 处理"),
-            Override("OVERRIDE_LANDSCAPE_ORIENTATION_TO_NOSENSOR", "把横屏请求转为 nosensor，避免被反复拽回"),
             Override("FORCE_RESIZE_APP", "解除不可调整大小，绕开尺寸兼容模式的黑边"),
             Override("OVERRIDE_MIN_ASPECT_RATIO", "打开最小宽高比覆盖的总开关"),
             Override("OVERRIDE_MIN_ASPECT_RATIO_LARGE", "把画面拉到接近全屏的宽高比"),

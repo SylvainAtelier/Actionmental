@@ -12,6 +12,7 @@ import com.actionmental.core.hardening.HardeningState
 import com.actionmental.core.hardening.HealOutcome
 import com.actionmental.core.hardening.HealTrigger
 import com.actionmental.core.rotation.AppRotationRule
+import com.actionmental.core.rotation.OrientationCompatTarget
 import com.actionmental.core.rotation.RotationMode
 import com.actionmental.core.shortcut.Shortcut
 import com.actionmental.data.UserSettings
@@ -48,6 +49,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val settingsLoaded = graph.settingsRepository.loaded
     val shortcuts: StateFlow<List<Shortcut>> = graph.shortcutRepository.shortcuts
     val rules: StateFlow<List<AppRotationRule>> = graph.rotationRuleRepository.rules
+    val compatTargets: StateFlow<List<OrientationCompatTarget>> = graph.orientationCompatRepository.targets
+
+    /** 最近一次在强制期间把方向拉走的应用。规则页据此提示加入名单。 */
+    val pulledAwayPackage: StateFlow<String?> = graph.pulledAwayPackage
     val rotationState = graph.rotation.state
     val screenAwake = graph.screenAwake.state
 
@@ -330,7 +335,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun runDiagnosis() = viewModelScope.launch {
         _diagnosing.value = true
         // 直接问源头，不经过 status —— 后者只在有人订阅时才组装，值可能是旧的
-        _diagnosis.value = graph.diagnostics.run(graph.accessibility.foregroundPackage.value, graph.rotation.forcedRotation)
+        // 优先查最近把方向拉走的那个应用：打开诊断页时前台已经是桌面或侧边栏，
+        // 拿它们去查尺寸、兼容覆盖，结论全是无关的
+        val target = graph.pulledAwayPackage.value ?: graph.accessibility.foregroundPackage.value
+        _diagnosis.value = graph.diagnostics.run(target, graph.rotation.forcedRotation)
         _diagnosing.value = false
     }
 
@@ -416,6 +424,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { graph.rotationRuleRepository.setEnabled(id, enabled) }
 
     fun deleteRule(id: String) = viewModelScope.launch { graph.rotationRuleRepository.delete(id) }
+
+    // --- 压住自带方向 -----------------------------------------------------------
+
+    /** 加入名单。覆盖由图里的名单观察者去施加，这里只落盘。 */
+    fun addCompatTarget(packageName: String, label: String) = viewModelScope.launch {
+        graph.orientationCompatRepository.add(packageName, label)
+        _toast.value = "已加入 · " + label + " · 结束并重开它后生效"
+    }
+
+    fun setCompatEnabled(packageName: String, enabled: Boolean) =
+        viewModelScope.launch { graph.orientationCompatRepository.setEnabled(packageName, enabled) }
+
+    /** 移出名单时把覆盖一并撤掉；名单观察者只管名单上的包，不会替删掉的包收尾。 */
+    fun deleteCompatTarget(packageName: String) = viewModelScope.launch {
+        graph.orientationCompatRepository.delete(packageName)
+        val result = graph.compatKeeper.release(packageName)
+        if (result is ActionResult.Failed) report(result)
+    }
 
     // --- 设置 -----------------------------------------------------------------
 

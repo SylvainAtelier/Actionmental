@@ -250,6 +250,20 @@ object AppTranslations {
         "Shell 命令" to "Shell command",
         "强制角度" to "Forced angle",
         "添加应用规则" to "Add an app rule",
+        "个别应用在强制方向时仍能把屏幕拉回竖屏（系统对它网开一面）。" to
+            "Some apps still pull the screen back to portrait while an orientation is forced (the system exempts them). ",
+        "加入这里的应用会被施加兼容覆盖，只在强制方向期间起作用；结束并重开它后生效。" to
+            "Apps listed here get a compatibility override that only acts while an orientation is forced; stop and reopen the app to apply.",
+        "强制方向期间，把这个应用请求的方向改写为跟随系统" to
+            "While an orientation is forced, rewrite this app's requested orientation to follow the system",
+        " 在强制方向时把屏幕拉走了" to " pulled the screen away from the forced orientation",
+        " · 结束并重开它后生效" to " · stop and reopen it to apply",
+        "压住自带方向" to "Override app orientation",
+        "加入名单" to "Add to list",
+        "结束该应用" to "Stop app",
+        "已加入 · " to "Added · ",
+        "检测到 " to "Detected: ",
+        "移出" to "Remove",
         "修饰键" to "Modifiers",
         "方向与编辑" to "Navigation & editing",
         "媒体与设备" to "Media & device",

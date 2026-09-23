@@ -29,6 +29,7 @@ import com.actionmental.core.key.KeyTrace
 import com.actionmental.core.remap.KeyRemapMatcher
 import com.actionmental.core.rotation.AppOverrideController
 import com.actionmental.core.rotation.AppRotationRuleManager
+import com.actionmental.core.rotation.OrientationCompatKeeper
 import com.actionmental.core.rotation.RotationController
 import com.actionmental.core.shortcut.ShortcutMatcher
 import com.actionmental.core.status.SystemStatus
@@ -36,6 +37,7 @@ import com.actionmental.data.AppStore
 import com.actionmental.data.ConfigTransfer
 import com.actionmental.data.HardeningRepository
 import com.actionmental.data.KeyRemapRepository
+import com.actionmental.data.OrientationCompatRepository
 import com.actionmental.data.RotationRuleRepository
 import com.actionmental.data.SettingsRepository
 import com.actionmental.data.ShortcutRepository
@@ -110,6 +112,7 @@ class AppGraph private constructor(context: Context) {
     val settingsRepository = SettingsRepository(appStore, scope)
     val shortcutRepository = ShortcutRepository(appStore, scope)
     val rotationRuleRepository = RotationRuleRepository(appStore, scope)
+    val orientationCompatRepository = OrientationCompatRepository(appStore, scope)
     val keyRemapRepository = KeyRemapRepository(appStore, scope)
     val hardeningRepository = HardeningRepository(appStore, scope)
 
@@ -204,6 +207,16 @@ class AppGraph private constructor(context: Context) {
 
     val diagnostics = RotationDiagnostics { logged.tagged("diagnose") }
     val appOverrides = AppOverrideController { logged.tagged("compat") }
+    val compatKeeper = OrientationCompatKeeper { logged.tagged("compat") }
+
+    /**
+     * 最近一次在强制期间把方向拉走的应用。
+     *
+     * 规则页拿它提示「加入压住自带方向名单」，诊断页拿它当检查对象 ——
+     * 打开诊断页时前台早已不是它了（诊断过桌面、侧边栏，查不出任何东西）。
+     */
+    private val _pulledAway = MutableStateFlow<String?>(null)
+    val pulledAwayPackage: StateFlow<String?> = _pulledAway.asStateFlow()
 
     /** 无障碍服务的组件名。自愈要把这一串原样写回系统设置。 */
     private val accessibilityComponent =
@@ -495,12 +508,16 @@ class AppGraph private constructor(context: Context) {
             )
             val target = rotation.forcedRotation ?: return@launch
             val probe = diagnostics.probeOrientation() ?: return@launch
-            if (probe.pulledAway(target) && probe.sourcePackage != null) {
+            val culprit = probe.sourcePackage
+            if (probe.pulledAway(target) && culprit != null) {
+                _pulledAway.value = culprit
+                val listed = orientationCompatRepository.targets.value.any { it.packageName == culprit && it.enabled }
                 eventLog.warn(
                     "rotation",
-                    "方向被应用拉走 · " + probe.sourcePackage,
+                    "方向被应用拉走 · " + culprit,
                     probe.summary + "\n忽略方向请求已开，系统仍采纳了它的方向（OEM 按应用放行）。" +
-                        "在旋转诊断里对它施加「应用级兼容覆盖」即可压住；离开它时会按意图补写锁定角度。",
+                        if (listed) "它已在「压住自带方向」名单里：覆盖要等它的界面重新创建才生效，结束并重开它。"
+                        else "把它加入应用规则页的「压住自带方向」名单即可；离开它时会按意图补写锁定角度。",
                 )
             }
         }
@@ -519,7 +536,28 @@ class AppGraph private constructor(context: Context) {
      */
     private val packageReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.data?.schemeSpecificPart == SHIZUKU_PACKAGE) shizuku.refresh()
+            val pkg = intent?.data?.schemeSpecificPart
+            if (pkg == SHIZUKU_PACKAGE) shizuku.refresh()
+            // 应用更新后覆盖可能被系统清掉：名单上的包一装一换就核对一次
+            if (pkg != null && intent.action != Intent.ACTION_PACKAGE_REMOVED &&
+                orientationCompatRepository.targets.value.any { it.packageName == pkg }
+            ) {
+                scope.launch { syncOrientationCompat("应用更新 · " + pkg) }
+            }
+        }
+    }
+
+    /**
+     * 让「压住自带方向」名单上的覆盖都在。缺了才施加，一次读一个 shell。
+     *
+     * Shizuku 连上时（含开机后它姗姗来迟的那一下）、名单变化时、名单上的应用更新后各跑一次。
+     */
+    suspend fun syncOrientationCompat(trigger: String) {
+        val steps = compatKeeper.sync(orientationCompatRepository.targets.value) ?: return
+        steps.forEach { step ->
+            val message = "压住自带方向 · " + step.action + " " + step.packageName
+            val detail = "触发=" + trigger + " · " + step.output
+            if (step.ok) eventLog.info("compat", message, detail) else eventLog.warn("compat", message + " 失败", detail)
         }
     }
 
@@ -691,6 +729,15 @@ class AppGraph private constructor(context: Context) {
                 //（没有 Shizuku 时它就是强制方向本身）。暂停期间被控制器的闸门挡住。
                 rotation.reapplyAsync()
             }
+        }
+
+        // 名单变化、Shizuku 连上：核对一次兼容覆盖。开机后覆盖在不在不作假设
+        scope.launch {
+            combine(
+                orientationCompatRepository.targets,
+                shizuku.status.map { it.usable }.distinctUntilChanged(),
+                ::Pair,
+            ).collect { (_, usable) -> if (usable) syncOrientationCompat("名单或 Shizuku 变化") }
         }
 
         // Shizuku 来去会换掉旋转的写入级别：连上时从悬浮层升级回 shell，掉了就降级
