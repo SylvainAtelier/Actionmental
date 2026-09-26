@@ -14,6 +14,7 @@ enum class ActionCategory(val label: String, val code: String) {
     AWAKE("屏幕常亮", "AWAKE"),
     MEDIA("媒体", "MEDIA"),
     VOLUME("音量", "VOLUME"),
+    DEBUG("调试", "DEBUG"),
     SHELL("Shell", "SHELL"),
 }
 
@@ -168,6 +169,27 @@ sealed interface Action {
         override val detail get() = op.hint
     }
 
+    /**
+     * 把无线调试的连接地址复制到剪贴板，省得每次去开发者选项里抄。
+     *
+     * IP 取 Wi-Fi 网卡，任何时候都读得到；端口在 `service.adb.tls.port` 里，
+     * 普通应用多半读不到，这时退回 Shizuku 的 getprop —— 所以不标必需特权。
+     */
+    @Serializable
+    @SerialName("adb_wifi")
+    data class WirelessDebug(val target: Target) : Action {
+        enum class Target(val label: String, val code: String, val hint: String) {
+            ADDRESS("复制无线调试地址", "ADB_WIFI_ADDRESS", "IP:端口，可直接 adb connect"),
+            IP("复制本机 IP", "ADB_WIFI_IP", "Wi-Fi 网卡的 IPv4 地址"),
+            PORT("复制无线调试端口", "ADB_WIFI_PORT", "只复制端口号"),
+        }
+
+        override val category get() = ActionCategory.DEBUG
+        override val label get() = target.label
+        override val technical get() = target.code
+        override val detail get() = target.hint
+    }
+
     /** 高级动作：必须由用户逐条明确配置命令内容（PRD 26）。 */
     @Serializable
     @SerialName("shell")
@@ -227,6 +249,10 @@ object ActionCatalog {
         Group(
             "volume", "音量", "VOLUME", "加、减、静音",
             Action.Volume.Target.entries.map { Action.Volume(it) },
+        ),
+        Group(
+            "adb_wifi", "无线调试", "WIRELESS DEBUG", "复制 IP、端口到剪贴板",
+            Action.WirelessDebug.Target.entries.map { Action.WirelessDebug(it) },
         ),
         Group(GROUP_APP, "启动应用", "LAUNCH APP", "先选应用，再选入口", direct = true),
         Group(GROUP_URL, "打开链接", "OPEN URL", "用默认浏览器打开网址", direct = true),

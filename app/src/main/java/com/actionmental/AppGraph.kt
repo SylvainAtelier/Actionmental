@@ -56,10 +56,12 @@ import com.actionmental.platform.ScreenAwakeNotifier
 import com.actionmental.platform.SettingsFirstBackend
 import com.actionmental.platform.SettingsReader
 import com.actionmental.platform.SystemSettingsAccess
+import com.actionmental.platform.WirelessDebugBackend
 import com.actionmental.platform.shizuku.ShizukuManager
 import com.actionmental.service.KeepAliveService
 import com.actionmental.service.KeyboardAccessibilityService
 import com.actionmental.service.ScreenAwakeReceiver
+import com.actionmental.ui.i18n.AppTranslations
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -128,6 +130,9 @@ class AppGraph private constructor(context: Context) {
     })
     val audio = AudioBackend(context)
     val packages = PackageBackend(context)
+    private val wirelessDebug = WirelessDebugBackend(context, translate = { text ->
+        AppTranslations.translate(text, settingsRepository.settings.value.language)
+    })
     val appCatalog = AppCatalog(
         packages = packages,
         scope = scope,
@@ -298,6 +303,7 @@ class AppGraph private constructor(context: Context) {
         packages = packages,
         rotation = rotation,
         awake = screenAwake,
+        wirelessDebug = wirelessDebug,
         privileged = { actionBackend },
     )
 

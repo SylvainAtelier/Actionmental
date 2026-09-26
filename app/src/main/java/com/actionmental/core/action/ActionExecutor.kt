@@ -7,6 +7,7 @@ import com.actionmental.platform.AccessibilityBridge
 import com.actionmental.platform.AudioBackend
 import com.actionmental.platform.PackageBackend
 import com.actionmental.platform.PrivilegedBackend
+import com.actionmental.platform.WirelessDebugBackend
 
 /**
  * 唯一的动作执行层（PRD 3.3 / 35.5）。
@@ -21,6 +22,7 @@ class ActionExecutor(
     private val packages: PackageBackend,
     private val rotation: RotationController,
     private val awake: ScreenAwakeController,
+    private val wirelessDebug: WirelessDebugBackend,
     private val privileged: () -> PrivilegedBackend,
 ) {
 
@@ -45,7 +47,49 @@ class ActionExecutor(
             Action.Awake.Op.OFF -> awake.set(false)
             Action.Awake.Op.TOGGLE -> awake.toggle()
         }
+        is Action.WirelessDebug -> copyWirelessDebug(action.target)
         is Action.Shell -> shell(action.command)
+    }
+
+    /**
+     * 复制无线调试的 IP / 端口。
+     *
+     * 开关明确是关的就直接报「未开启」；端口先试普通读取，读不到再走 Shizuku 的 getprop，
+     * 两条都不通时如实说是缺 Shizuku，而不是含糊地报执行失败。
+     */
+    private suspend fun copyWirelessDebug(target: Action.WirelessDebug.Target): ActionResult {
+        val needsPort = target != Action.WirelessDebug.Target.IP
+        val needsIp = target != Action.WirelessDebug.Target.PORT
+        if (needsPort && wirelessDebug.enabled() == false) {
+            return ActionResult.Failed(ActionResult.Reason.WIRELESS_DEBUG_OFF)
+        }
+
+        val ip = if (needsIp) {
+            wirelessDebug.wifiIpv4() ?: return ActionResult.Failed(ActionResult.Reason.WIFI_UNAVAILABLE)
+        } else null
+
+        val port = if (needsPort) {
+            wirelessDebug.portWithoutPrivilege() ?: run {
+                val backend = privileged()
+                val availability = backend.availability()
+                if (availability is ActionResult.Failed) {
+                    return ActionResult.Failed(availability.reason, "读取端口需要 Shizuku")
+                }
+                val read = backend.exec("getprop " + WirelessDebugBackend.PORT_PROPERTY).getOrElse {
+                    return ActionResult.Failed(ActionResult.Reason.EXECUTION_FAILED, it.message.orEmpty())
+                }
+                WirelessDebugBackend.parsePort(read.output)
+                    ?: return ActionResult.Failed(ActionResult.Reason.WIRELESS_DEBUG_OFF)
+            }
+        } else null
+
+        val text = when (target) {
+            Action.WirelessDebug.Target.ADDRESS -> ip + ":" + port
+            Action.WirelessDebug.Target.IP -> ip!!
+            Action.WirelessDebug.Target.PORT -> port.toString()
+        }
+        return if (wirelessDebug.copy(text)) ActionResult.Ok("已复制 " + text)
+        else ActionResult.Failed(ActionResult.Reason.EXECUTION_FAILED, "剪贴板写入失败")
     }
 
     /**

@@ -8,6 +8,7 @@ import com.actionmental.core.key.KeyCombo
 import com.actionmental.core.rotation.RotationMode
 import com.actionmental.core.shortcut.Shortcut
 import com.actionmental.platform.PackageBackend
+import com.actionmental.platform.WirelessDebugBackend
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -69,6 +70,32 @@ class ActionAndKeyCatalogTest {
         )
 
         assertEquals(shortcut, restored)
+    }
+
+    @Test
+    fun `无线调试三条复制动作都不强制 Shizuku 且能原样存回来`() {
+        val group = ActionCatalog.groups.first { it.id == "adb_wifi" }
+        assertEquals(
+            listOf("ADB_WIFI_ADDRESS", "ADB_WIFI_IP", "ADB_WIFI_PORT"),
+            group.actions.map { it.technical },
+        )
+        assertTrue(group.actions.none { it.requiresPrivilege })
+
+        val shortcut = binding("adb", Action.WirelessDebug(Action.WirelessDebug.Target.PORT))
+        val restored = json.decodeFromString(
+            Shortcut.serializer(),
+            json.encodeToString(Shortcut.serializer(), shortcut),
+        )
+        assertEquals(shortcut, restored)
+    }
+
+    @Test
+    fun `无线调试端口只认有效端口号`() {
+        assertEquals(37123, WirelessDebugBackend.parsePort(" 37123\n"))
+        assertNull(WirelessDebugBackend.parsePort("0"))
+        assertNull(WirelessDebugBackend.parsePort("-1"))
+        assertNull(WirelessDebugBackend.parsePort(""))
+        assertNull(WirelessDebugBackend.parsePort(null))
     }
 
     @Test
