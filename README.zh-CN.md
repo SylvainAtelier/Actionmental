@@ -137,35 +137,190 @@ Actionmental 不申请网络权限，也不会自行传输按键事件、配置�
 
 Actionmental 处理的是按键码，不是输入文本。近期按键记录只在内存中，进程退出即消失。配置和日志保存在应用私有目录，但用户主动导出、Android 系统备份或设备迁移时会离开该目录。
 
-## 从源码构建
+## 本地命令
 
-准备 JDK 21、Android SDK 36，以及用于安装验证的 Android 设备。
+以下命令都在仓库根目录执行。Gradle 命令写成 `./gradlew`，在 PowerShell、Git Bash、macOS 和 Linux 下都能用；在 `cmd.exe` 里改用 `gradlew.bat`。`scripts/` 下的脚本是面向 Windows 的 PowerShell 脚本。
 
-```bash
-./gradlew :app:assembleDebug
+| 变体 | 包名 | 启动 Activity | 无障碍服务 |
+| --- | --- | --- | --- |
+| debug | `com.actionmental.debug` | `com.actionmental.debug/com.actionmental.ui.MainActivity` | `com.actionmental.debug/com.actionmental.service.KeyboardAccessibilityService` |
+| release | `com.actionmental` | `com.actionmental/com.actionmental.ui.MainActivity` | `com.actionmental/com.actionmental.service.KeyboardAccessibilityService` |
+
+下面的 adb 示例用的是 debug 包名。操作 release 包时，把 `com.actionmental.debug` 换成 `com.actionmental`。
+
+### 1. 检查环境
+
+需要 JDK 21、带 platform-tools 和 build-tools 的 Android SDK 36，并且 `adb` 在 `PATH` 里。
+
+```powershell
+java -version                # 必须是 21
+adb version
+adb devices                  # 设备状态必须是 device，不能是 unauthorized
+```
+
+Gradle 通过 `ANDROID_HOME` 或 `local.properties` 里的 `sdk.dir` 找到 SDK。`local.properties` 是本机文件，已被 Git 忽略：
+
+```properties
+sdk.dir=C\:/path/to/Android/Sdk
+```
+
+如果 PowerShell 拦截脚本，可以给当前用户放开一次本地脚本，或者只对单次运行绕过策略：
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+powershell -ExecutionPolicy Bypass -File scripts/deploy-debug.ps1
+```
+
+### 2. 构建
+
+```powershell
+./gradlew :app:assembleDebug                           # app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleRelease                         # app/build/outputs/apk/release/app-release.apk
+./gradlew :app:assembleRelease "-PversionName=1.2.3"   # versionCode 自动推导：1.2.3 -> 10203
+./gradlew clean
+```
+
+`assembleRelease` 只有在签名材料存在时才会签名（见第 7 节）。没有签名材料时，Gradle 产出的是未签名的 release APK，既装不上也不能分发。
+
+### 3. 测试与 lint
+
+```powershell
 ./gradlew :app:testDebugUnitTest
+./gradlew :app:testDebugUnitTest --tests "com.actionmental.ActionAndKeyCatalogTest"
 ./gradlew :app:lintDebug
+./gradlew --no-daemon :app:testReleaseUnitTest :app:lintRelease   # CI 发布前跑的同一组检查
 ```
 
-Windows 请使用 `gradlew.bat`。debug APK 位于 `app/build/outputs/apk/debug/app-debug.apk`。
+报告在 `app/build/reports/tests/` 和 `app/build/reports/lint-results-*.html`。
 
-### 在 Windows 上部署并验证
+### 4. 安装到设备
+
+推荐用部署脚本。脚本会构建、安装、比对设备上 `base.apk` 与本地 APK 的 SHA-256，并输出无障碍、Shizuku 和实体键盘的真实状态。
 
 ```powershell
-./scripts/deploy-debug.ps1
-./scripts/deploy-debug.ps1 -Launch
-./scripts/deploy-debug.ps1 -VerifyOnly
+# debug
+./scripts/deploy-debug.ps1                                  # 构建并安装
+./scripts/deploy-debug.ps1 -Launch                          # 安装后打开应用
+./scripts/deploy-debug.ps1 -SkipBuild                       # 直接安装已构建好的 APK
+./scripts/deploy-debug.ps1 -VerifyOnly                      # 不构建不安装，只查看设备状态
+./scripts/deploy-debug.ps1 -Device 192.168.1.5:5555         # 连了多台设备时指定一台
+./scripts/deploy-debug.ps1 -VersionCode 5                   # 给 Gradle 传指定的 versionCode
+./scripts/deploy-debug.ps1 -Adb "C:\path\to\adb.exe"        # 使用不在 PATH 里的 adb
+
+# release：与 GitHub Actions 相同的签名、版本号和 apksigner 校验
+./scripts/deploy-release.ps1                                # 版本号取本地最新的 v* tag
+./scripts/deploy-release.ps1 -VersionName 1.2.0 -Launch
+./scripts/deploy-release.ps1 -VersionName 1.2.0 -VersionCode 10205
+./scripts/deploy-release.ps1 -SkipBuild
+./scripts/deploy-release.ps1 -VerifyOnly
+./scripts/deploy-release.ps1 -Device 192.168.1.5:5555
 ```
 
-部署脚本会构建、安装、比对设备 APK 与本地 APK，并输出无障碍、Shizuku 和实体键盘的真实状态。
+没有签名材料时，`deploy-release.ps1` 拒绝构建。设备上的 versionCode 更高时，脚本会把本次构建的 versionCode 抬到同一档，不会卸载应用。本地 tag 落后于远端时，先运行 `git fetch --tags`。
 
-提交或发布前运行公开文件审计：
+不用脚本时这样安装：
 
 ```powershell
-./scripts/audit-public-files.ps1
+./gradlew :app:installDebug
+adb install --no-streaming -r -d app/build/outputs/apk/debug/app-debug.apk
+adb install --no-streaming -r app/build/outputs/apk/release/app-release.apk
 ```
 
-发布签名材料统一放在已忽略的 `.local/signing/`。本地签名与 GitHub Actions 发布流程见[签名与发布](docs/签名与发布.md)。
+`-d` 允许降级安装，只对可调试的 debug 包有效。`--no-streaming` 用来避开部分 OEM ROM（包括 ColorOS）上的静默安装失败。
+
+无线调试需要先配对再连接：
+
+```powershell
+adb pair 192.168.1.5:37000          # 配对端口和配对码见「开发者选项 > 无线调试」
+adb connect 192.168.1.5:5555
+```
+
+### 5. 用 adb 配置设备
+
+```powershell
+# 打开应用
+adb shell am start -n com.actionmental.debug/com.actionmental.ui.MainActivity
+
+# 开启键盘无障碍服务
+adb shell am start -a android.settings.ACCESSIBILITY_SETTINGS
+adb shell settings put secure enabled_accessibility_services com.actionmental.debug/com.actionmental.service.KeyboardAccessibilityService
+adb shell settings put secure accessibility_enabled 1
+adb shell settings get secure enabled_accessibility_services
+
+# 可选：没有 Shizuku 时启用无障碍自愈（授权一次，重启不丢）
+adb shell pm grant com.actionmental.debug android.permission.WRITE_SECURE_SETTINGS
+
+# 通过 adb 启动 Shizuku（需先安装 Shizuku 并打开过一次）
+adb shell sh /sdcard/Android/data/moe.shizuku.privileged.api/start.sh
+adb shell pm list packages moe.shizuku.privileged.api
+
+# 确认 Android 识别到了实体键盘
+adb shell dumpsys input
+```
+
+`settings put secure enabled_accessibility_services` 会覆盖整个列表。如果还开着别的无障碍服务，先读出当前值，再用 `:` 把 Actionmental 那一项接在后面写回去。
+
+### 6. 诊断与清理
+
+```powershell
+adb logcat --pid=$(adb shell pidof -s com.actionmental.debug)   # 只看本应用的日志
+adb logcat -c                                                    # 清空日志缓冲区
+adb shell dumpsys package com.actionmental.debug                 # versionCode、lastUpdateTime、已授予的权限
+adb shell am force-stop com.actionmental.debug
+adb uninstall com.actionmental.debug                             # 会删除快捷键和键位映射，先在应用里备份
+```
+
+日志 tag 以 `Actionmental` 开头，例如 `Actionmental:rotation` 和 `Actionmental:screen-awake`。`$(...)` 写法在 PowerShell 和 bash 里都能用。
+
+### 7. 发布签名
+
+签名材料放在已被忽略的 `.local/signing/` 目录：
+
+```text
+.local/signing/
+├── actionmental-release.jks
+└── keystore.properties
+```
+
+```properties
+storeFile=actionmental-release.jks
+storePassword=<口令>
+keyAlias=actionmental
+keyPassword=<口令>
+```
+
+`storeFile` 写相对路径时按 `.local/signing/` 解析。没有这个文件时，Gradle 从环境变量读取 `ANDROID_KEYSTORE_PATH`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS` 和 `ANDROID_KEY_PASSWORD`。
+
+```powershell
+# 只生成一次，放在仓库目录以外，并离线备份。
+# PKCS12 格式下密钥口令恒等于库口令。
+keytool -genkeypair -v -keystore actionmental.jks -alias actionmental -keyalg RSA -keysize 4096 -validity 10950 -storetype PKCS12
+
+# 核对别名与口令
+keytool -list -v -keystore actionmental.jks -alias actionmental
+
+# 生成单行 base64，填入 GitHub Secret ANDROID_KEYSTORE_BASE64
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("actionmental.jks")) | Set-Clipboard   # PowerShell
+base64 -w 0 actionmental.jks > actionmental.jks.base64                                     # bash
+
+# 校验已构建 APK 的签名（apksigner 在 SDK 的 build-tools/<版本>/ 下）
+apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk
+```
+
+### 8. 发布 Release
+
+Release 由手动触发的 GitHub Actions 工作流 `Release (Manual)` 产出。它根据最新的 `v*` tag 计算下一个版本号，构建并签名 APK，然后发布 Release。用 GitHub CLI 触发：
+
+```powershell
+./scripts/audit-public-files.ps1                   # 检查 Git 会发布的文件里有没有密钥和个人路径
+./scripts/audit-public-files.ps1 -IncludeIgnored   # 连同已忽略的文件一起检查
+gh workflow run release.yml -f bump=patch          # bump：patch | minor | major
+gh workflow run release.yml -f bump=minor -f prerelease=true
+gh run watch
+git fetch --tags
+```
+
+需要配置的 Secret 以及签名失败的排查方法见[签名与发布](docs/签名与发布.md)。
 
 ## 架构
 

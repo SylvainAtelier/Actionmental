@@ -137,35 +137,190 @@ Actionmental does not request the Internet permission and does not transmit keyb
 
 Actionmental works with key codes, not typed text. Recent key traces stay in memory and are discarded with the process. Configuration and logs stay in the app's private storage, except for user exports and Android-managed backup or device transfer.
 
-## Build from source
+## Local commands
 
-Prerequisites are JDK 21, Android SDK 36, and an Android device for installation checks.
+Every command below runs from the repository root. Gradle commands are shown in the `./gradlew` form, which works in PowerShell, Git Bash, macOS, and Linux. In `cmd.exe`, use `gradlew.bat` instead. The scripts under `scripts/` are PowerShell scripts for Windows.
 
-```bash
-./gradlew :app:assembleDebug
+| Variant | Package | Launcher activity | Accessibility Service |
+| --- | --- | --- | --- |
+| debug | `com.actionmental.debug` | `com.actionmental.debug/com.actionmental.ui.MainActivity` | `com.actionmental.debug/com.actionmental.service.KeyboardAccessibilityService` |
+| release | `com.actionmental` | `com.actionmental/com.actionmental.ui.MainActivity` | `com.actionmental/com.actionmental.service.KeyboardAccessibilityService` |
+
+The adb examples use the debug package. For a release build, replace `com.actionmental.debug` with `com.actionmental`.
+
+### 1. Check the environment
+
+You need JDK 21, Android SDK 36 with platform-tools and build-tools, and `adb` on `PATH`.
+
+```powershell
+java -version                # must report 21
+adb version
+adb devices                  # the device must show as "device", not "unauthorized"
+```
+
+Gradle finds the SDK through `ANDROID_HOME` or the `sdk.dir` entry in `local.properties`. That file is machine-specific and ignored by Git:
+
+```properties
+sdk.dir=C\:/path/to/Android/Sdk
+```
+
+If PowerShell blocks the scripts, allow local scripts for the current user once, or bypass the policy for a single run:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+powershell -ExecutionPolicy Bypass -File scripts/deploy-debug.ps1
+```
+
+### 2. Build
+
+```powershell
+./gradlew :app:assembleDebug                           # app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleRelease                         # app/build/outputs/apk/release/app-release.apk
+./gradlew :app:assembleRelease "-PversionName=1.2.3"   # versionCode is derived: 1.2.3 -> 10203
+./gradlew clean
+```
+
+`assembleRelease` signs the APK only when signing material exists (see section 7). Without it, Gradle produces an unsigned release APK that cannot be installed or distributed.
+
+### 3. Test and lint
+
+```powershell
 ./gradlew :app:testDebugUnitTest
+./gradlew :app:testDebugUnitTest --tests "com.actionmental.ActionAndKeyCatalogTest"
 ./gradlew :app:lintDebug
+./gradlew --no-daemon :app:testReleaseUnitTest :app:lintRelease   # the checks CI runs before a release
 ```
 
-On Windows, use `gradlew.bat`. The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
+Reports are written to `app/build/reports/tests/` and `app/build/reports/lint-results-*.html`.
 
-### Deploy and verify on Windows
+### 4. Install on a device
+
+The deploy scripts are the recommended path. They build, install, compare the device's `base.apk` SHA-256 with the local APK, and report the observed Accessibility, Shizuku, and keyboard states.
 
 ```powershell
-./scripts/deploy-debug.ps1
-./scripts/deploy-debug.ps1 -Launch
-./scripts/deploy-debug.ps1 -VerifyOnly
+# debug
+./scripts/deploy-debug.ps1                                  # build and install
+./scripts/deploy-debug.ps1 -Launch                          # open the app after installing
+./scripts/deploy-debug.ps1 -SkipBuild                       # install the APK that is already built
+./scripts/deploy-debug.ps1 -VerifyOnly                      # no build or install, report device state only
+./scripts/deploy-debug.ps1 -Device 192.168.1.5:5555         # pick a device when several are connected
+./scripts/deploy-debug.ps1 -VersionCode 5                   # pass an explicit versionCode to Gradle
+./scripts/deploy-debug.ps1 -Adb "C:\path\to\adb.exe"        # use an adb that is not on PATH
+
+# release, with the same signing, version, and apksigner check as GitHub Actions
+./scripts/deploy-release.ps1                                # version comes from the newest local v* tag
+./scripts/deploy-release.ps1 -VersionName 1.2.0 -Launch
+./scripts/deploy-release.ps1 -VersionName 1.2.0 -VersionCode 10205
+./scripts/deploy-release.ps1 -SkipBuild
+./scripts/deploy-release.ps1 -VerifyOnly
+./scripts/deploy-release.ps1 -Device 192.168.1.5:5555
 ```
 
-The script builds, installs, compares the installed APK with the local APK, and reports the observed Accessibility, Shizuku, and keyboard states.
+`deploy-release.ps1` refuses to build without signing material. If the device has a higher versionCode, the script raises the new build to that versionCode. It never uninstalls the app. If your local tags are behind the remote, run `git fetch --tags` first.
 
-Before publishing a change, run the repository hygiene check:
+To install without the scripts:
 
 ```powershell
-./scripts/audit-public-files.ps1
+./gradlew :app:installDebug
+adb install --no-streaming -r -d app/build/outputs/apk/debug/app-debug.apk
+adb install --no-streaming -r app/build/outputs/apk/release/app-release.apk
 ```
 
-Release signing material belongs in the ignored `.local/signing/` directory. See [Signing and release notes](docs/签名与发布.md) for the local and GitHub Actions workflows.
+`-d` allows a version downgrade and only works for the debuggable debug build. `--no-streaming` avoids silent install failures on some OEM ROMs, including ColorOS.
+
+For wireless debugging, pair and connect first:
+
+```powershell
+adb pair 192.168.1.5:37000          # pairing port and code: Developer options > Wireless debugging
+adb connect 192.168.1.5:5555
+```
+
+### 5. Set up the device with adb
+
+```powershell
+# Open the app
+adb shell am start -n com.actionmental.debug/com.actionmental.ui.MainActivity
+
+# Enable the keyboard Accessibility Service
+adb shell am start -a android.settings.ACCESSIBILITY_SETTINGS
+adb shell settings put secure enabled_accessibility_services com.actionmental.debug/com.actionmental.service.KeyboardAccessibilityService
+adb shell settings put secure accessibility_enabled 1
+adb shell settings get secure enabled_accessibility_services
+
+# Optional: Accessibility self-healing without Shizuku (grant once, survives reboot)
+adb shell pm grant com.actionmental.debug android.permission.WRITE_SECURE_SETTINGS
+
+# Start Shizuku over adb (Shizuku must be installed and opened once)
+adb shell sh /sdcard/Android/data/moe.shizuku.privileged.api/start.sh
+adb shell pm list packages moe.shizuku.privileged.api
+
+# Check that Android recognizes the physical keyboard
+adb shell dumpsys input
+```
+
+`settings put secure enabled_accessibility_services` replaces the whole list. If other Accessibility Services are enabled, read the current value first, then write it back with the Actionmental entry appended after a `:` separator.
+
+### 6. Diagnose and clean up
+
+```powershell
+adb logcat --pid=$(adb shell pidof -s com.actionmental.debug)   # this app's log only
+adb logcat -c                                                    # clear the log buffer
+adb shell dumpsys package com.actionmental.debug                 # versionCode, lastUpdateTime, granted permissions
+adb shell am force-stop com.actionmental.debug
+adb uninstall com.actionmental.debug                             # deletes shortcuts and remaps, back up in the app first
+```
+
+Log tags start with `Actionmental`, for example `Actionmental:rotation` and `Actionmental:screen-awake`. The `$(...)` syntax works in both PowerShell and bash.
+
+### 7. Release signing
+
+Put signing material in the ignored `.local/signing/` directory:
+
+```text
+.local/signing/
+├── actionmental-release.jks
+└── keystore.properties
+```
+
+```properties
+storeFile=actionmental-release.jks
+storePassword=<password>
+keyAlias=actionmental
+keyPassword=<password>
+```
+
+A relative `storeFile` is resolved against `.local/signing/`. If this file is missing, Gradle reads `ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD` from the environment.
+
+```powershell
+# Generate a keystore once, outside the repository, and back it up offline.
+# In a PKCS12 keystore the key password is always the store password.
+keytool -genkeypair -v -keystore actionmental.jks -alias actionmental -keyalg RSA -keysize 4096 -validity 10950 -storetype PKCS12
+
+# Check the alias and password
+keytool -list -v -keystore actionmental.jks -alias actionmental
+
+# Single-line base64 for the ANDROID_KEYSTORE_BASE64 GitHub secret
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("actionmental.jks")) | Set-Clipboard   # PowerShell
+base64 -w 0 actionmental.jks > actionmental.jks.base64                                     # bash
+
+# Verify a built APK's signature (apksigner is in the SDK's build-tools/<version>/)
+apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk
+```
+
+### 8. Publish a release
+
+Releases come from the manual `Release (Manual)` GitHub Actions workflow. It computes the next version from the newest `v*` tag, builds and signs the APK, then publishes the release. To run it with the GitHub CLI:
+
+```powershell
+./scripts/audit-public-files.ps1                   # scan files Git would publish for secrets and personal paths
+./scripts/audit-public-files.ps1 -IncludeIgnored   # also scan ignored files
+gh workflow run release.yml -f bump=patch          # bump: patch | minor | major
+gh workflow run release.yml -f bump=minor -f prerelease=true
+gh run watch
+git fetch --tags
+```
+
+See [Signing and release notes](docs/签名与发布.md) for the required secrets and for troubleshooting signing failures.
 
 ## Architecture
 
