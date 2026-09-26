@@ -75,10 +75,10 @@ class ActionExecutor(
                 if (availability is ActionResult.Failed) {
                     return ActionResult.Failed(availability.reason, "读取端口需要 Shizuku")
                 }
-                val read = backend.exec("getprop " + WirelessDebugBackend.PORT_PROPERTY).getOrElse {
+                val read = backend.exec(WirelessDebugBackend.PORT_COMMAND).getOrElse {
                     return ActionResult.Failed(ActionResult.Reason.EXECUTION_FAILED, it.message.orEmpty())
                 }
-                WirelessDebugBackend.parsePort(read.output)
+                WirelessDebugBackend.parsePortOutput(read.output)
                     ?: return ActionResult.Failed(ActionResult.Reason.WIRELESS_DEBUG_OFF)
             }
         } else null

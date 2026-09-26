@@ -99,6 +99,15 @@ class ActionAndKeyCatalogTest {
     }
 
     @Test
+    fun `Android 16 属性为空时从 dumpsys 的 tls_port 取端口`() {
+        assertEquals(44331, WirelessDebugBackend.parsePortOutput("\ntls_port=44331\n"))
+        assertEquals(37123, WirelessDebugBackend.parsePortOutput("37123\ntls_port=44331\n"))
+        assertEquals(44331, WirelessDebugBackend.parsePortOutput("0\ntls_port=44331"))
+        assertNull(WirelessDebugBackend.parsePortOutput("\ntls_port=-1\n"))
+        assertNull(WirelessDebugBackend.parsePortOutput(""))
+    }
+
+    @Test
     fun `要另开编辑流程的动作不带固定清单`() {
         val direct = ActionCatalog.groups.filter { it.direct }.map { it.id }
         assertEquals(

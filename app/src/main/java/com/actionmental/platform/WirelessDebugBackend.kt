@@ -78,7 +78,22 @@ class WirelessDebugBackend(
     companion object {
         const val PORT_PROPERTY = "service.adb.tls.port"
 
+        /**
+         * 特权读端口：先 getprop，再看 AdbService 自己报的 tls_port。
+         *
+         * Android 16 起系统不再写 [PORT_PROPERTY]，端口只剩 `dumpsys adb` 里的
+         * `adb_wifi.tls_port` 一处。那段输出里还有所有已授权电脑的公钥，
+         * 所以只 grep 出这一行 —— shell 日志会记下输出，公钥不该落进去。
+         */
+        const val PORT_COMMAND = "getprop " + PORT_PROPERTY +
+            "; dumpsys adb 2>/dev/null | grep -m1 -o 'tls_port=[0-9-]*'"
+
         /** 关掉无线调试后属性可能残留成 0 或 -1，只认真正的端口号。 */
         fun parsePort(raw: String?): Int? = raw?.trim()?.toIntOrNull()?.takeIf { it in 1..65535 }
+
+        /** [PORT_COMMAND] 的输出：逐行取第一个有效端口，属性空行与 `tls_port=` 前缀都容得下。 */
+        fun parsePortOutput(output: String): Int? = output.lineSequence()
+            .map { it.trim().removePrefix("tls_port=") }
+            .firstNotNullOfOrNull { parsePort(it) }
     }
 }
