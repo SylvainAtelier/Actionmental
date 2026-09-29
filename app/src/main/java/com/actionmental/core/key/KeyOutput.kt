@@ -103,6 +103,19 @@ object KeyRouting {
     }
 
     /**
+     * 只发半边（按住）的目标键走哪条路。
+     *
+     * 修饰键有输入框时优先走输入通道：注入的按键和实体键一样先交给输入法，
+     * 而 Gboard 拼音把「单独轻点 Shift」当作中英文切换，会吞掉 Shift 的抬起 ——
+     * 前台应用只收到按下，TeamViewer 这类远控就把远端的 Shift 一直按着。
+     * 输入通道的事件在输入法之后投递，输入法看不到这颗修饰键，也就吞不掉。
+     * 没有输入框时输入法本来就不拦按键，照常注入。
+     */
+    fun routeHeld(combo: KeyCombo, sdk: Int, injectReady: Boolean, inputConnectionReady: Boolean): KeyChannel? =
+        if (combo.isModifierKey && sdk >= 33 && inputConnectionReady) KeyChannel.INPUT_CONNECTION
+        else route(combo, sdk, injectReady, inputConnectionReady)
+
+    /**
      * 没有 Shizuku 时这颗目标键最好能走到哪条路。映射页据此提前告诉用户：
      * 这一条降级后是「照常」、「只在输入框里」还是「失效」。
      */

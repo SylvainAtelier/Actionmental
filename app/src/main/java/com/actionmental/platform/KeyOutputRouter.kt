@@ -46,9 +46,26 @@ class KeyOutputRouter(
         )
     }
 
+    /**
+     * 按住中的键是从哪条路按下的。抬起必须走同一条路 ——
+     * 按下经输入通道、抬起却去注入的话，抬起会被输入法拦下，等于没修。
+     */
+    private val heldChannels = ConcurrentHashMap<Int, KeyChannel>()
+
+    private fun routeHeld(combo: KeyCombo): KeyChannel? =
+        KeyRouting.routeHeld(combo, Build.VERSION.SDK_INT, shizuku.injectReady(), inputConnectionReady())
+
     override suspend fun send(combo: KeyCombo, down: Boolean?): Result<Unit> {
         // 发送时按那一刻重新挑路：从按下到真正发出之间焦点可能换了、Shizuku 可能刚连上
-        return when (route(combo)) {
+        val channel = when (down) {
+            null -> route(combo)
+            true -> routeHeld(combo)?.also { heldChannels[combo.keyCode] = it }
+            // 按下时的输入框已经没了（焦点换走），抬起只能退回普通路由，总比不发强
+            false -> heldChannels.remove(combo.keyCode)
+                ?.takeIf { it != KeyChannel.INPUT_CONNECTION || inputConnectionReady() }
+                ?: route(combo)
+        }
+        return when (channel) {
             KeyChannel.INJECT -> when (down) {
                 null -> shizuku.injectKey(combo.keyCode, combo.metaState())
                 else -> shizuku.injectKeyState(combo.keyCode, combo.metaState(down), down)
