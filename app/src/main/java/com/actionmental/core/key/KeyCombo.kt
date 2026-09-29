@@ -42,6 +42,18 @@ data class KeyCombo(
         return state
     }
 
+    /**
+     * 只发半边时的 metaState：修饰键自己的位在按下时点亮、抬起时熄灭，和实体键盘一致。
+     *
+     * 只用 [metaState] 的话，单独注入的 Shift 按下带的是 0 ——
+     * TeamViewer 这类按 metaState 变化同步修饰键的应用看不到 Shift 亮过，
+     * 抬起时也就不会发 Shift 抬起，远端的 Shift 一直按着。
+     */
+    fun metaState(down: Boolean): Int {
+        val self = selfMetaState(keyCode)
+        return if (down) metaState() or self else metaState() and self.inv()
+    }
+
     override fun toString(): String = tokens().joinToString(" + ")
 
     companion object {
@@ -102,6 +114,19 @@ data class KeyCombo(
             KeyEvent.KEYCODE_ALT_LEFT, KeyEvent.KEYCODE_ALT_RIGHT -> MOD_ALT
             KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_SHIFT_RIGHT -> MOD_SHIFT
             KeyEvent.KEYCODE_META_LEFT, KeyEvent.KEYCODE_META_RIGHT -> MOD_META
+            else -> 0
+        }
+
+        /** 这颗修饰键按下时实体键盘会带上的 metaState 位（左右分开）。非修饰键为 0。 */
+        fun selfMetaState(keyCode: Int): Int = when (keyCode) {
+            KeyEvent.KEYCODE_CTRL_LEFT -> KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
+            KeyEvent.KEYCODE_CTRL_RIGHT -> KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_RIGHT_ON
+            KeyEvent.KEYCODE_ALT_LEFT -> KeyEvent.META_ALT_ON or KeyEvent.META_ALT_LEFT_ON
+            KeyEvent.KEYCODE_ALT_RIGHT -> KeyEvent.META_ALT_ON or KeyEvent.META_ALT_RIGHT_ON
+            KeyEvent.KEYCODE_SHIFT_LEFT -> KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON
+            KeyEvent.KEYCODE_SHIFT_RIGHT -> KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_RIGHT_ON
+            KeyEvent.KEYCODE_META_LEFT -> KeyEvent.META_META_ON or KeyEvent.META_META_LEFT_ON
+            KeyEvent.KEYCODE_META_RIGHT -> KeyEvent.META_META_ON or KeyEvent.META_META_RIGHT_ON
             else -> 0
         }
 

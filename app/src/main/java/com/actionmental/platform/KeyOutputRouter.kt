@@ -51,7 +51,7 @@ class KeyOutputRouter(
         return when (route(combo)) {
             KeyChannel.INJECT -> when (down) {
                 null -> shizuku.injectKey(combo.keyCode, combo.metaState())
-                else -> shizuku.injectKeyState(combo.keyCode, combo.metaState(), down)
+                else -> shizuku.injectKeyState(combo.keyCode, combo.metaState(down), down)
             }
             KeyChannel.GLOBAL_ACTION -> onPress(down) {
                 val action = KeyRouting.globalActionFor(combo, Build.VERSION.SDK_INT)
@@ -91,20 +91,20 @@ class KeyOutputRouter(
         val connection = inputConnection(accessibility.boundService())
             ?: error("当前没有输入框获得焦点")
         val keyCode = combo.keyCode
-        val meta = combo.metaState()
         when (down) {
             null -> {
                 val now = SystemClock.uptimeMillis()
+                val meta = combo.metaState()
                 connection.sendKeyEvent(event(now, KeyEvent.ACTION_DOWN, keyCode, meta))
                 connection.sendKeyEvent(event(now, KeyEvent.ACTION_UP, keyCode, meta))
             }
             true -> {
                 val downTime = downTimes[keyCode] ?: SystemClock.uptimeMillis().also { downTimes[keyCode] = it }
-                connection.sendKeyEvent(event(downTime, KeyEvent.ACTION_DOWN, keyCode, meta))
+                connection.sendKeyEvent(event(downTime, KeyEvent.ACTION_DOWN, keyCode, combo.metaState(true)))
             }
             false -> {
                 val downTime = downTimes.remove(keyCode) ?: SystemClock.uptimeMillis()
-                connection.sendKeyEvent(event(downTime, KeyEvent.ACTION_UP, keyCode, meta))
+                connection.sendKeyEvent(event(downTime, KeyEvent.ACTION_UP, keyCode, combo.metaState(false)))
             }
         }
     }

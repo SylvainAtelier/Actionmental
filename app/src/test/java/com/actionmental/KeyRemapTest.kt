@@ -25,6 +25,25 @@ class KeyRemapTest {
     private val caps = KeyCombo(KeyEvent.KEYCODE_CAPS_LOCK)
     private val esc = KeyCombo(KeyEvent.KEYCODE_ESCAPE)
 
+    /**
+     * 只发半边的修饰键要像实体键盘：按下带上自己的位，抬起清掉。
+     * 按下带 0 时，TeamViewer 看不到 Shift 亮过，抬起就不往远端发，远端 Shift 卡住。
+     */
+    @Test
+    fun `半边注入的修饰键按下点亮自己的位，抬起熄灭`() {
+        val shiftL = KeyCombo(KeyEvent.KEYCODE_SHIFT_LEFT)
+        assertEquals(KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON, shiftL.metaState(true))
+        assertEquals(0, shiftL.metaState(false))
+
+        val altR = KeyCombo(KeyEvent.KEYCODE_ALT_RIGHT, KeyCombo.MOD_CTRL)
+        val ctrl = KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
+        assertEquals(ctrl or KeyEvent.META_ALT_ON or KeyEvent.META_ALT_RIGHT_ON, altR.metaState(true))
+        assertEquals(ctrl, altR.metaState(false))
+
+        // 普通键不受影响
+        assertEquals(esc.metaState(), esc.metaState(true))
+        assertEquals(esc.metaState(), esc.metaState(false))
+    }
     @Test
     fun `源键唯一，禁用的映射不进索引`() {
         val matcher = KeyRemapMatcher()
