@@ -37,6 +37,7 @@ Actionmental 可以把 Android 识别到的实体键盘变成系统控制器。�
 | 屏幕方向 | 四种固定方向、横屏切换、模式循环、恢复系统默认 | Shizuku；不可用时降级为无障碍悬浮层或系统设置 |
 | 屏幕常亮 | 开启、关闭或切换唤醒锁 | Android WakeLock |
 | Shell | 执行用户逐条明确配置的命令 | Shizuku |
+| Termux | 在 Termux 里执行命令（`bash -c`），后台执行并通知结果，或新开终端会话前台执行 | Termux `RUN_COMMAND` 权限，以及 `allow-external-apps=true` |
 
 ### 键位映射
 

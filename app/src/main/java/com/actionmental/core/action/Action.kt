@@ -16,6 +16,7 @@ enum class ActionCategory(val label: String, val code: String) {
     VOLUME("音量", "VOLUME"),
     DEBUG("调试", "DEBUG"),
     SHELL("Shell", "SHELL"),
+    TERMUX("Termux", "TERMUX"),
 }
 
 /**
@@ -190,6 +191,29 @@ sealed interface Action {
         override val detail get() = target.hint
     }
 
+    /**
+     * 在 Termux 里执行一条命令（经 Termux 的 RUN_COMMAND 接口）。
+     *
+     * 和 [Shell] 是两回事：那条走 Shizuku、以 shell 用户身份跑，进不了 Termux 的私有目录；
+     * 这条交给 Termux 自己执行，`pkg` 装的工具、`~/` 下的脚本都能用，也不需要 Shizuku。
+     * [background] 为真时静默执行，跑完把输出回传、发一条结果通知；
+     * 为假时在 Termux 里新开一个终端会话，结果就在屏幕上，不再发通知。
+     */
+    @Serializable
+    @SerialName("termux")
+    data class Termux(
+        val command: String,
+        val title: String = "",
+        val background: Boolean = true,
+    ) : Action {
+        val displayName: String get() = title.ifBlank { command }
+
+        override val category get() = ActionCategory.TERMUX
+        override val label get() = "Termux · " + displayName
+        override val technical get() = if (background) "TERMUX_RUN" else "TERMUX_SESSION"
+        override val detail get() = command
+    }
+
     /** 高级动作：必须由用户逐条明确配置命令内容（PRD 26）。 */
     @Serializable
     @SerialName("shell")
@@ -234,6 +258,7 @@ object ActionCatalog {
     const val GROUP_APP = "app"
     const val GROUP_URL = "url"
     const val GROUP_SHELL = "shell"
+    const val GROUP_TERMUX = "termux"
 
     val groups: List<Group> = listOf(
         Group("rotation", "屏幕方向", "ROTATION", "角度、切换与循环", rotation),
@@ -256,6 +281,7 @@ object ActionCatalog {
         ),
         Group(GROUP_APP, "启动应用", "LAUNCH APP", "先选应用，再选入口", direct = true),
         Group(GROUP_URL, "打开链接", "OPEN URL", "用默认浏览器打开网址", direct = true),
+        Group(GROUP_TERMUX, "Termux 命令", "TERMUX", "在 Termux 里执行，完成后通知结果", direct = true),
         Group(GROUP_SHELL, "Shell 命令", "SHELL", "逐条明确配置，不做通用包装", direct = true),
     )
 

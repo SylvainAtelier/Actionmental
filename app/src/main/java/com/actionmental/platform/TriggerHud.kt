@@ -6,12 +6,14 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
@@ -106,7 +108,7 @@ class TriggerHud(
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             // 状态栏下方留一点空：贴着状态栏会被当成系统通知，离太远又要额外移动视线
-            y = statusBarHeight(service) + dp(service, 10f).toInt()
+            y = statusBarHeight(wm) + dp(service, 10f).toInt()
             windowAnimations = 0
             title = TAG
         }
@@ -190,9 +192,14 @@ class TriggerHud(
         runCatching { service?.getSystemService(WindowManager::class.java)?.removeViewImmediate(view) }
     }
 
-    private fun statusBarHeight(context: Context): Int {
-        val id = context.resources.getIdentifier("status_bar_height", "dimen", "android")
-        return if (id > 0) context.resources.getDimensionPixelSize(id) else 0
+    /** 读真实的窗口边衬：横屏、隐藏状态栏的沉浸模式下它会变，资源里那个常量不会。 */
+    private fun statusBarHeight(wm: WindowManager): Int {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return 0
+        return runCatching {
+            wm.currentWindowMetrics.windowInsets
+                .getInsetsIgnoringVisibility(WindowInsets.Type.statusBars() or WindowInsets.Type.displayCutout())
+                .top
+        }.getOrDefault(0)
     }
 
     private fun dp(context: Context, value: Float): Float =

@@ -111,7 +111,7 @@ class ActionAndKeyCatalogTest {
     fun `要另开编辑流程的动作不带固定清单`() {
         val direct = ActionCatalog.groups.filter { it.direct }.map { it.id }
         assertEquals(
-            listOf(ActionCatalog.GROUP_APP, ActionCatalog.GROUP_URL, ActionCatalog.GROUP_SHELL),
+            listOf(ActionCatalog.GROUP_APP, ActionCatalog.GROUP_URL, ActionCatalog.GROUP_TERMUX, ActionCatalog.GROUP_SHELL),
             direct,
         )
         assertTrue(ActionCatalog.groups.filter { it.direct }.all { it.actions.isEmpty() })

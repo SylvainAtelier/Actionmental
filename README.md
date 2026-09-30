@@ -37,6 +37,7 @@ The data model and matcher understand device and foreground-app scopes. The curr
 | Screen orientation | Set four forced orientations, toggle landscape, cycle modes, restore Android defaults | Shizuku; falls back to an accessibility overlay or system settings |
 | Screen awake | Turn on, turn off, or toggle a wake lock | Android wake lock |
 | Shell | Run a command configured explicitly by the user | Shizuku |
+| Termux | Run a command inside Termux (`bash -c`), in the background with a result notification or in a new terminal session | Termux `RUN_COMMAND` permission and `allow-external-apps=true` |
 
 ### Key remapping
 

@@ -55,6 +55,11 @@ class ShortcutEditorViewModel(application: Application) : AndroidViewModel(appli
 
     val recording = graph.pipeline.recording
 
+    /** Termux 动作的前提。都不是流：编辑页回到前台时重查一次（用户可能刚从设置页回来）。 */
+    fun termuxInstalled(): Boolean = graph.termux.installed()
+    fun termuxPermissionGranted(): Boolean = graph.termux.permissionGranted()
+    fun notificationsAllowed(): Boolean = graph.notifier.canNotify()
+
     /** 预热过的应用清单：选择器打开时已经在内存里，不必等 PackageManager。 */
     val apps: StateFlow<List<PackageBackend.InstalledApp>> = graph.appCatalog.apps
     val appsLoading: StateFlow<Boolean> = graph.appCatalog.loading

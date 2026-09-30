@@ -17,6 +17,8 @@ sealed interface ActionResult {
         UNSUPPORTED("系统不支持该操作"),
         WIRELESS_DEBUG_OFF("无线调试未开启"),
         WIFI_UNAVAILABLE("未连接 Wi-Fi"),
+        TERMUX_NOT_INSTALLED("Termux 未安装"),
+        TERMUX_PERMISSION_DENIED("未授予 Termux 执行权限"),
         EXECUTION_FAILED("执行失败"),
     }
 

@@ -31,6 +31,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
+    <!-- 「Termux 命令」动作：经 Termux 的 RUN_COMMAND 接口执行用户配置的命令。运行时权限，编辑页里申请。 -->
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <queries>
@@ -45,6 +48,7 @@
             <data android:scheme="https" />
         </intent>
         <package android:name="moe.shizuku.privileged.api" />
+        <package android:name="com.termux" />
     </queries>
 
     <application
@@ -150,6 +154,12 @@
         <!-- 常亮通知上的「关闭常亮」按钮。只有本应用发得出这条广播。 -->
         <receiver
             android:name=".service.ScreenAwakeReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
+        <!-- Termux 命令跑完后的结果回传。只经本应用交给 Termux 的 PendingIntent 触发。 -->
+        <receiver
+            android:name=".service.TermuxResultReceiver"
             android:enabled="true"
             android:exported="false" />
 

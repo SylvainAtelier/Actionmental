@@ -1,5 +1,10 @@
 package com.actionmental.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import android.view.KeyEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -29,7 +34,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -39,7 +49,9 @@ import com.actionmental.core.key.KeyCatalog
 import com.actionmental.core.key.KeyCombo
 import com.actionmental.core.key.SystemKeyPolicy
 import com.actionmental.core.shortcut.AppScope
+import com.actionmental.platform.HardeningNotifier
 import com.actionmental.platform.PackageBackend
+import com.actionmental.platform.TermuxBackend
 import com.actionmental.ui.ShortcutEditorViewModel
 import com.actionmental.ui.components.AmCard
 import com.actionmental.ui.components.AmComboField
@@ -63,7 +75,7 @@ import com.actionmental.ui.theme.AmType
 import com.actionmental.ui.theme.amColors
 
 /** 编辑页里同一时刻最多打开一个弹层。 */
-private enum class EditorSheet { KEY, ACTION, APP, URL, SHELL }
+private enum class EditorSheet { KEY, ACTION, APP, URL, SHELL, TERMUX }
 
 /**
  * 编辑 + 录制 + 冲突确认（PRD 15）。
@@ -275,6 +287,7 @@ fun ShortcutEditorScreen(
                 sheet = when (groupId) {
                     ActionCatalog.GROUP_APP -> EditorSheet.APP
                     ActionCatalog.GROUP_URL -> EditorSheet.URL
+                    ActionCatalog.GROUP_TERMUX -> EditorSheet.TERMUX
                     else -> EditorSheet.SHELL
                 }
             },
@@ -307,6 +320,13 @@ fun ShortcutEditorScreen(
         EditorSheet.SHELL -> ShellSheet(
             current = draft.action as? Action.Shell,
             onConfirm = { command, title -> vm.setAction(Action.Shell(command, title)); sheet = null },
+            onDismiss = { sheet = null },
+        )
+
+        EditorSheet.TERMUX -> TermuxSheet(
+            current = draft.action as? Action.Termux,
+            vm = vm,
+            onConfirm = { action -> vm.setAction(action); sheet = null },
             onDismiss = { sheet = null },
         )
 
@@ -486,6 +506,148 @@ private fun ShellSheet(
         LabeledField("命令 · COMMAND", command, "例如 wm density reset") { command = it }
         Spacer(Modifier.height(AmSpace.s2))
         LabeledField("名称 · 可选", title, "列表里显示的名字") { title = it }
+    }
+}
+
+/**
+ * Termux 命令。前提写在表单上方，而不是等用户按下快捷键才发现跑不起来：
+ * 装没装、给没给执行权限、给没给通知权限，各一行，缺哪一项就在那一行上补。
+ * allow-external-apps 从外面查不到，只能把那条命令摆出来让用户复制。
+ */
+@Composable
+private fun TermuxSheet(
+    current: Action.Termux?,
+    vm: ShortcutEditorViewModel,
+    onConfirm: (Action.Termux) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val c = amColors
+    val context = LocalContext.current
+    var command by remember { mutableStateOf(current?.command.orEmpty()) }
+    var title by remember { mutableStateOf(current?.title.orEmpty()) }
+    var background by remember { mutableStateOf(current?.background ?: true) }
+
+    var installed by remember { mutableStateOf(vm.termuxInstalled()) }
+    var granted by remember { mutableStateOf(vm.termuxPermissionGranted()) }
+    var canNotify by remember { mutableStateOf(vm.notificationsAllowed()) }
+    // 系统对拒绝过两次的权限不再弹框，申请过一轮之后再点就直接送去应用详情页
+    var asked by remember { mutableStateOf(false) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        installed = vm.termuxInstalled()
+        granted = vm.termuxPermissionGranted()
+        canNotify = vm.notificationsAllowed()
+    }
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        asked = true
+        granted = vm.termuxPermissionGranted()
+        canNotify = vm.notificationsAllowed()
+    }
+    val requestPermissions: () -> Unit = {
+        val wanted = buildList {
+            if (!granted) add(TermuxBackend.PERMISSION)
+            if (!canNotify && HardeningNotifier.requiresRuntimePermission) add(HardeningNotifier.permission)
+        }
+        if (asked || wanted.isEmpty()) {
+            context.startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        } else {
+            launcher.launch(wanted.toTypedArray())
+        }
+    }
+
+    InputSheet(
+        title = "Termux 命令",
+        subtitle = "交给 Termux 执行，pkg 装的工具与 ~/ 下的脚本都能用。不需要 Shizuku。",
+        confirmText = "设为 Termux 动作",
+        confirmEnabled = command.isNotBlank(),
+        footnote = if (background) {
+            "以 bash -c 执行，工作目录为 Termux 主目录。跑完发一条通知：成功静默，失败提醒，正文是输出的最后几行"
+        } else {
+            "以 bash -c 执行，工作目录为 Termux 主目录。在 Termux 里新开一个会话，输出直接显示在终端里"
+        },
+        onConfirm = { onConfirm(Action.Termux(command.trim(), title.trim(), background)) },
+        onDismiss = onDismiss,
+    ) {
+        TermuxRequirement(
+            ok = installed,
+            text = if (installed) "Termux 已安装" else "未安装 Termux · 请从 F-Droid 或 GitHub 安装",
+        )
+        TermuxRequirement(
+            ok = granted,
+            text = if (granted) "已授予执行权限" else "未授予 Termux 执行权限",
+            action = if (installed && !granted) "去授权" else null,
+            onAction = requestPermissions,
+        )
+        if (background) {
+            TermuxRequirement(
+                ok = canNotify,
+                warnOnly = true,
+                text = if (canNotify) "可以发送结果通知" else "通知被关闭 · 结果只记在日志里",
+                action = if (!canNotify) "允许通知" else null,
+                onAction = requestPermissions,
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text("还需在 Termux 里执行一次：", style = AmType.secondary, color = c.inkMid)
+        Spacer(Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                TermuxBackend.PROPERTIES_HINT,
+                style = AmType.data,
+                color = c.ink,
+                modifier = Modifier
+                    .weight(1f)
+                    .background(c.surfaceSunken, RoundedCornerShape(AmShape.key))
+                    .padding(8.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            AmSecondaryButton("复制", {
+                context.getSystemService(ClipboardManager::class.java)
+                    ?.setPrimaryClip(ClipData.newPlainText("termux", TermuxBackend.PROPERTIES_HINT))
+            })
+        }
+        Spacer(Modifier.height(AmSpace.s3))
+        LabeledField("命令 · COMMAND", command, "例如 ~/bin/sync.sh 或 pkg upgrade -y") { command = it }
+        Spacer(Modifier.height(AmSpace.s2))
+        LabeledField("名称 · 可选", title, "列表与通知里显示的名字") { title = it }
+        Spacer(Modifier.height(AmSpace.s2))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("后台执行", style = AmType.body, color = c.ink)
+                Text(
+                    if (background) "不打开 Termux，完成后通知结果" else "关闭 · 打开 Termux 新会话前台执行",
+                    style = AmType.data,
+                    color = c.inkFaint,
+                )
+            }
+            AmSwitch(background, onCheckedChange = { background = it })
+        }
+    }
+}
+
+@Composable
+private fun TermuxRequirement(
+    ok: Boolean,
+    text: String,
+    warnOnly: Boolean = false,
+    action: String? = null,
+    onAction: () -> Unit = {},
+) {
+    val c = amColors
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
+        StatusDot(
+            when {
+                ok -> c.ok
+                warnOnly -> c.warn
+                else -> c.accent
+            }
+        )
+        Text(text, style = AmType.data, color = if (ok) c.inkMid else c.ink, modifier = Modifier.weight(1f))
+        if (action != null) AmSecondaryButton(action, onAction)
     }
 }
 

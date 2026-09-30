@@ -57,6 +57,7 @@ import com.actionmental.platform.ScreenAwakeNotifier
 import com.actionmental.platform.SettingsFirstBackend
 import com.actionmental.platform.SettingsReader
 import com.actionmental.platform.SystemSettingsAccess
+import com.actionmental.platform.TermuxBackend
 import com.actionmental.platform.TriggerHud
 import com.actionmental.platform.WirelessDebugBackend
 import com.actionmental.platform.shizuku.ShizukuManager
@@ -134,6 +135,9 @@ class AppGraph private constructor(context: Context) {
     val packages = PackageBackend(context)
     private val wirelessDebug = WirelessDebugBackend(context)
     private val triggerHud = TriggerHud(accessibility::boundService)
+    val termux = TermuxBackend(context, translate = { text ->
+        AppTranslations.translate(text, settingsRepository.settings.value.language)
+    })
     val appCatalog = AppCatalog(
         packages = packages,
         scope = scope,
@@ -305,6 +309,7 @@ class AppGraph private constructor(context: Context) {
         rotation = rotation,
         awake = screenAwake,
         wirelessDebug = wirelessDebug,
+        termux = termux,
         privileged = { actionBackend },
     )
 
@@ -1355,6 +1360,22 @@ class AppGraph private constructor(context: Context) {
      * 就该跟着走。留着它们不但没用，还会让进程在后台限制策略的名单上排得更靠前：
      * 那类策略基本按占用挑目标，而实测被杀那次进程占了将近 1GB。
      */
+    /**
+     * Termux 在后台跑完一条命令，结果经 [com.actionmental.service.TermuxResultReceiver] 送到这里。
+     * 日志与通知各留一份：通知会被划掉，日志是事后唯一能对上时间线的地方。
+     */
+    fun onTermuxResult(intent: android.content.Intent) {
+        val (name, outcome) = termux.parse(intent)
+        val command = intent.getStringExtra(TermuxBackend.EXTRA_COMMAND).orEmpty()
+        val summary = outcome.summary { it }
+        if (outcome.succeeded) {
+            eventLog.debug("termux", name + " · 完成", command + " · " + summary)
+        } else {
+            eventLog.error("termux", outcome.title(name) { it }, command + " · " + summary)
+        }
+        termux.notify(name, outcome)
+    }
+
     fun onTrimMemory(level: Int) {
         if (level < TRIM_MEMORY_UI_HIDDEN) return
 

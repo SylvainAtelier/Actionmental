@@ -7,6 +7,7 @@ import com.actionmental.platform.AccessibilityBridge
 import com.actionmental.platform.AudioBackend
 import com.actionmental.platform.PackageBackend
 import com.actionmental.platform.PrivilegedBackend
+import com.actionmental.platform.TermuxBackend
 import com.actionmental.platform.WirelessDebugBackend
 
 /**
@@ -23,6 +24,7 @@ class ActionExecutor(
     private val rotation: RotationController,
     private val awake: ScreenAwakeController,
     private val wirelessDebug: WirelessDebugBackend,
+    private val termux: TermuxBackend,
     private val privileged: () -> PrivilegedBackend,
 ) {
 
@@ -48,6 +50,7 @@ class ActionExecutor(
             Action.Awake.Op.TOGGLE -> awake.toggle()
         }
         is Action.WirelessDebug -> copyWirelessDebug(action.target)
+        is Action.Termux -> termux.run(action)
         is Action.Shell -> shell(action.command)
     }
 
