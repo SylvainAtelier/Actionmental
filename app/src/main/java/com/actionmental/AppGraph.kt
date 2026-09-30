@@ -951,7 +951,7 @@ class AppGraph private constructor(context: Context) {
                         original.toString(),
                         "→ " + target.toString() + " · " + channel!!.label,
                     )
-                    keyInjector.enqueue(target!!)
+                    keyInjector.enqueue(target)
                     true
                 }
             }

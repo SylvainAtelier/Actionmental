@@ -1,5 +1,6 @@
 package com.actionmental.ui.screens
 
+import android.content.ClipData
 import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.background
@@ -24,17 +25,20 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.toClipEntry
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
 import com.actionmental.R
 import com.actionmental.core.action.Action
 import com.actionmental.core.key.KeyCombo
@@ -61,7 +65,11 @@ import com.actionmental.ui.theme.amColors
 fun OnboardingScreen(vm: AppViewModel) {
     val c = amColors
     val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
+    val copyText: (AnnotatedString) -> Unit = { text ->
+        scope.launch { clipboard.setClipEntry(ClipData.newPlainText(null, text).toClipEntry()) }
+    }
     val status by vm.status.collectAsStateWithLifecycle()
     val snapshot by vm.keySnapshot.collectAsStateWithLifecycle()
     val device by vm.lastDevice.collectAsStateWithLifecycle()
@@ -104,7 +112,7 @@ fun OnboardingScreen(vm: AppViewModel) {
                     Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 )
             }
-            3 -> StepShizuku(vm, clipboard::setText)
+            3 -> StepShizuku(vm, copyText)
             4 -> StepKeyboard(snapshot.displayTokens(), device)
             5 -> StepPresets(presetSelection)
             6 -> StepTiles()
