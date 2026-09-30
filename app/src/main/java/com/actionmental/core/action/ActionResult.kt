@@ -19,6 +19,7 @@ sealed interface ActionResult {
         WIFI_UNAVAILABLE("未连接 Wi-Fi"),
         TERMUX_NOT_INSTALLED("Termux 未安装"),
         TERMUX_PERMISSION_DENIED("未授予 Termux 执行权限"),
+        TERMUX_OVERLAY_DENIED("Termux 缺少「显示在其他应用上层」权限"),
         EXECUTION_FAILED("执行失败"),
     }
 

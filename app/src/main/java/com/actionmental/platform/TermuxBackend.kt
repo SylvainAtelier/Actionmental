@@ -1,6 +1,8 @@
 package com.actionmental.platform
 
+import android.Manifest
 import android.annotation.SuppressLint
+import android.app.AppOpsManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -8,7 +10,9 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -42,18 +46,51 @@ class TermuxBackend(
         true
     }.getOrDefault(false)
 
+    /**
+     * Termux 自己有没有「显示在其他应用上层」。
+     *
+     * 前台执行要由 Termux 打开终端界面，而 Android 10 起后台应用只有拿着这项权限才能打开界面 ——
+     * 缺它时 Termux 收到了命令却弹不出来，看上去就是「按了没反应」。
+     * 查的是 Termux 的 appop；系统不让查时返回 null，界面照样给出去设置的入口。
+     */
+    fun overlayGranted(): Boolean? = runCatching {
+        val uid = context.packageManager.getApplicationInfo(PACKAGE, 0).uid
+        val ops = context.getSystemService(AppOpsManager::class.java)
+        when (ops.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW, uid, PACKAGE)) {
+            AppOpsManager.MODE_ALLOWED -> true
+            AppOpsManager.MODE_IGNORED, AppOpsManager.MODE_ERRORED -> false
+            // DEFAULT：跟着权限本身走（预装或 adb 授予的情况）
+            else -> context.packageManager.checkPermission(
+                Manifest.permission.SYSTEM_ALERT_WINDOW,
+                PACKAGE,
+            ) == PackageManager.PERMISSION_GRANTED
+        }
+    }.getOrNull()
+
+    /** 直达 Termux 的悬浮窗授权页；个别 ROM 不认带包名的入口，退回 Termux 的应用详情页。 */
+    fun overlaySettingsIntent(): Intent {
+        val direct = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.fromParts("package", PACKAGE, null))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (direct.resolveActivity(context.packageManager) != null) return direct
+        return Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", PACKAGE, null))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+
     fun permissionGranted(): Boolean =
         ContextCompat.checkSelfPermission(context, PERMISSION) == PackageManager.PERMISSION_GRANTED
 
     fun run(action: Action.Termux): ActionResult {
         if (!installed()) return ActionResult.Failed(ActionResult.Reason.TERMUX_NOT_INSTALLED)
         if (!permissionGranted()) return ActionResult.Failed(ActionResult.Reason.TERMUX_PERMISSION_DENIED)
+        // 只拦「确定没有」：查不到时照发，交给 Termux 自己去试
+        if (!action.background && overlayGranted() == false) {
+            return ActionResult.Failed(ActionResult.Reason.TERMUX_OVERLAY_DENIED)
+        }
 
         val intent = Intent(ACTION_RUN_COMMAND)
             .setComponent(ComponentName(PACKAGE, SERVICE))
             .putExtra(EXTRA_PATH, BASH)
-            // 整条交给 bash -c：管道、重定向、`~/bin/x.sh arg` 都按用户在终端里敲的样子生效
-            .putExtra(EXTRA_ARGUMENTS, arrayOf("-c", action.command))
+            .putExtra(EXTRA_ARGUMENTS, arguments(action.command))
             .putExtra(EXTRA_WORKDIR, HOME)
             .putExtra(EXTRA_BACKGROUND, action.background)
             .putExtra(EXTRA_COMMAND_LABEL, action.displayName)
@@ -167,6 +204,19 @@ class TermuxBackend(
     companion object {
         const val PACKAGE = "com.termux"
         const val PERMISSION = "com.termux.permission.RUN_COMMAND"
+        /**
+         * `bash -c` 是非交互 shell，不读 `~/.bashrc` —— 用户在那里定义的函数、别名、PATH
+         * 一概不存在，终端里能跑的 `ncm` 到这里就成了 command not found。
+         * 所以先显式加载 `~/.bashrc`（它的输出丢掉，免得混进结果通知），再 eval 用户的命令。
+         * 别名要在解析前打开 expand_aliases；eval 的那一行是加载之后才解析的，所以别名也生效。
+         * 命令经 `$1` 传入而不是拼进脚本，引号、`$`、换行都不用转义。
+         */
+        const val WRAPPER =
+            "shopt -s expand_aliases; [ -r ~/.bashrc ] && . ~/.bashrc >/dev/null 2>&1; eval \"\$1\""
+
+        /** 交给 bash 的参数：`bash -c WRAPPER actionmental <command>`，`$0` 只是个名字。 */
+        fun arguments(command: String): Array<String> = arrayOf("-c", WRAPPER, "actionmental", command)
+
         const val PROPERTIES_HINT = "echo \"allow-external-apps=true\" >> ~/.termux/termux.properties && termux-reload-settings"
 
         private const val SERVICE = "com.termux.app.RunCommandService"

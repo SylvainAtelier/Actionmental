@@ -530,12 +530,14 @@ private fun TermuxSheet(
     var installed by remember { mutableStateOf(vm.termuxInstalled()) }
     var granted by remember { mutableStateOf(vm.termuxPermissionGranted()) }
     var canNotify by remember { mutableStateOf(vm.notificationsAllowed()) }
+    var overlay by remember { mutableStateOf(vm.termuxOverlayGranted()) }
     // 系统对拒绝过两次的权限不再弹框，申请过一轮之后再点就直接送去应用详情页
     var asked by remember { mutableStateOf(false) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         installed = vm.termuxInstalled()
         granted = vm.termuxPermissionGranted()
         canNotify = vm.notificationsAllowed()
+        overlay = vm.termuxOverlayGranted()
     }
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -565,9 +567,9 @@ private fun TermuxSheet(
         confirmText = "设为 Termux 动作",
         confirmEnabled = command.isNotBlank(),
         footnote = if (background) {
-            "以 bash -c 执行，工作目录为 Termux 主目录。跑完发一条通知：成功静默，失败提醒，正文是输出的最后几行"
+            "先加载 ~/.bashrc 再执行，其中的函数与别名可用；工作目录为 Termux 主目录。跑完发一条通知：成功静默，失败提醒，正文是输出的最后几行"
         } else {
-            "以 bash -c 执行，工作目录为 Termux 主目录。在 Termux 里新开一个会话，输出直接显示在终端里"
+            "先加载 ~/.bashrc 再执行，其中的函数与别名可用；工作目录为 Termux 主目录。在 Termux 里新开一个会话，输出直接显示在终端里"
         },
         onConfirm = { onConfirm(Action.Termux(command.trim(), title.trim(), background)) },
         onDismiss = onDismiss,
@@ -582,6 +584,20 @@ private fun TermuxSheet(
             action = if (installed && !granted) "去授权" else null,
             onAction = requestPermissions,
         )
+        if (!background && installed) {
+            // 缺的是 Termux 的权限，不是本应用的：按钮直接送到 Termux 那一页
+            TermuxRequirement(
+                ok = overlay == true,
+                warnOnly = overlay == null,
+                text = when (overlay) {
+                    true -> "Termux 可显示在其他应用上层"
+                    false -> "Termux 未获「显示在其他应用上层」权限 · 前台执行打不开终端"
+                    null -> "无法确认 Termux 的「显示在其他应用上层」权限 · 前台执行需要它"
+                },
+                action = if (overlay != true) "去设置" else null,
+                onAction = vm::openTermuxOverlaySettings,
+            )
+        }
         if (background) {
             TermuxRequirement(
                 ok = canNotify,

@@ -59,6 +59,10 @@ class ShortcutEditorViewModel(application: Application) : AndroidViewModel(appli
     fun termuxInstalled(): Boolean = graph.termux.installed()
     fun termuxPermissionGranted(): Boolean = graph.termux.permissionGranted()
     fun notificationsAllowed(): Boolean = graph.notifier.canNotify()
+    fun termuxOverlayGranted(): Boolean? = graph.termux.overlayGranted()
+    fun openTermuxOverlaySettings() {
+        runCatching { getApplication<Application>().startActivity(graph.termux.overlaySettingsIntent()) }
+    }
 
     /** 预热过的应用清单：选择器打开时已经在内存里，不必等 PackageManager。 */
     val apps: StateFlow<List<PackageBackend.InstalledApp>> = graph.appCatalog.apps

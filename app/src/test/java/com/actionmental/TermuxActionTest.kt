@@ -5,6 +5,7 @@ import com.actionmental.core.action.ActionCatalog
 import com.actionmental.core.action.ActionResult
 import com.actionmental.core.action.TermuxOutcome
 import com.actionmental.core.action.TriggerFeedback
+import com.actionmental.platform.TermuxBackend
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -28,6 +29,17 @@ class TermuxActionTest {
         val decoded = json.decodeFromString(Action.serializer(), """{"type":"termux","command":"date"}""")
         assertEquals(Action.Termux("date"), decoded)
         assertTrue((decoded as Action.Termux).background)
+    }
+
+    @Test
+    fun `命令先加载 bashrc 再执行，原文经参数传入不拼接`() {
+        val command = "ncm \"a b\" | tail -n 1"
+        val args = TermuxBackend.arguments(command)
+        assertEquals("-c", args[0])
+        assertTrue(args[1].contains(". ~/.bashrc"))
+        assertTrue(args[1].contains("expand_aliases"))
+        assertEquals(command, args.last())
+        assertFalse(args[1].contains(command))
     }
 
     @Test
