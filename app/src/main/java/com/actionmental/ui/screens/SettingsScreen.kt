@@ -183,6 +183,14 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                 }
                 AmSwitch(settings.showRawKeyCodes, onCheckedChange = { on -> vm.updateSettings { it.copy(showRawKeyCodes = on) } })
             }
+            Spacer(Modifier.height(AmSpace.s2))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("触发提示", style = AmType.body, color = c.ink)
+                    Text("快捷键启动应用时显示应用名，复制 IP / 端口时显示内容", style = AmType.data, color = c.inkFaint)
+                }
+                AmSwitch(settings.triggerHud, onCheckedChange = { on -> vm.updateSettings { it.copy(triggerHud = on) } })
+            }
         }
 
         AmCard(Modifier.fillMaxWidth()) {

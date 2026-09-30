@@ -88,7 +88,7 @@ class ActionExecutor(
             Action.WirelessDebug.Target.IP -> ip!!
             Action.WirelessDebug.Target.PORT -> port.toString()
         }
-        return if (wirelessDebug.copy(text)) ActionResult.Ok("已复制 " + text)
+        return if (wirelessDebug.copy(text)) ActionResult.Ok("已复制 " + text, copied = text)
         else ActionResult.Failed(ActionResult.Reason.EXECUTION_FAILED, "剪贴板写入失败")
     }
 

@@ -3,7 +3,8 @@ package com.actionmental.core.action
 /** 动作执行结果。系统不得静默失败（PRD 25 / 35.14）。 */
 sealed interface ActionResult {
 
-    data class Ok(val detail: String = "") : ActionResult
+    /** [copied] 是这一次写进剪贴板的原文，触发提示要原样显示它，不从 [detail] 里反解。 */
+    data class Ok(val detail: String = "", val copied: String? = null) : ActionResult
 
     data class Failed(val reason: Reason, val detail: String = "") : ActionResult
 

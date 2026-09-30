@@ -17,6 +17,8 @@ data class UserSettings(
     val theme: Theme = Theme.SYSTEM,
     val language: Language = Language.CHINESE,
     val showRawKeyCodes: Boolean = true,
+    /** 快捷键启动应用、复制无线调试地址后，在屏幕顶部浮一枚提示说明结果。 */
+    val triggerHud: Boolean = true,
     val onboardingDone: Boolean = false,
     /** 用户表达的全局旋转意图，进程重启后用它重建，而不是沿用旧的系统缓存值（PRD 28）。 */
     val globalRotationMode: RotationMode = RotationMode.NORMAL,

@@ -9,6 +9,7 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import com.actionmental.core.action.ActionExecutor
 import com.actionmental.core.action.ActionResult
+import com.actionmental.core.action.TriggerFeedback
 import com.actionmental.core.awake.ScreenAwakeController
 import com.actionmental.core.diag.CrashSink
 import com.actionmental.core.diag.EventLog
@@ -56,6 +57,7 @@ import com.actionmental.platform.ScreenAwakeNotifier
 import com.actionmental.platform.SettingsFirstBackend
 import com.actionmental.platform.SettingsReader
 import com.actionmental.platform.SystemSettingsAccess
+import com.actionmental.platform.TriggerHud
 import com.actionmental.platform.WirelessDebugBackend
 import com.actionmental.platform.shizuku.ShizukuManager
 import com.actionmental.service.KeepAliveService
@@ -130,9 +132,8 @@ class AppGraph private constructor(context: Context) {
     })
     val audio = AudioBackend(context)
     val packages = PackageBackend(context)
-    private val wirelessDebug = WirelessDebugBackend(context, translate = { text ->
-        AppTranslations.translate(text, settingsRepository.settings.value.language)
-    })
+    private val wirelessDebug = WirelessDebugBackend(context)
+    private val triggerHud = TriggerHud(accessibility::boundService)
     val appCatalog = AppCatalog(
         packages = packages,
         scope = scope,
@@ -823,6 +824,11 @@ class AppGraph private constructor(context: Context) {
                     counters.action.incrementAndGet()
                     val result = executor.execute(shortcut.action)
                     lastActionResult.value = shortcut.displayLabel to result
+                    val settings = settingsRepository.settings.value
+                    if (settings.triggerHud) {
+                        TriggerFeedback.of(shortcut.action, result) { AppTranslations.translate(it, settings.language) }
+                            ?.let(triggerHud::show)
+                    }
                     // 触发与结果都留一条：排查「连按几下就失灵」时，这条时间线是唯一的线索
                     if (result.succeeded) {
                         // 结果要跟着写：切换类动作的标签永远是同一句，只有结果说得出

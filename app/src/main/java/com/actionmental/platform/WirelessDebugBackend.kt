@@ -3,9 +3,7 @@ package com.actionmental.platform
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.os.Build
 import android.provider.Settings
-import android.widget.Toast
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import kotlinx.coroutines.Dispatchers
@@ -15,12 +13,8 @@ import kotlinx.coroutines.withContext
  * 无线调试的地址读取与剪贴板写入。
  *
  * 这里只做不需要特权的部分；端口读不到时由 ActionExecutor 决定是否退回 Shizuku。
- * [translate] 把提示文案换成当前界面语言 —— 快捷键在后台触发，拿不到 Compose 的 localize。
  */
-class WirelessDebugBackend(
-    private val context: Context,
-    private val translate: (String) -> String,
-) {
+class WirelessDebugBackend(private val context: Context) {
 
     /**
      * 开发者选项里的「无线调试」开关。
@@ -60,17 +54,11 @@ class WirelessDebugBackend(
         parsePort(value)
     }.getOrNull()
 
-    /**
-     * 写剪贴板。Android 13 起系统会自己弹出复制提示，再弹一次 Toast 就重复了；
-     * 更早的系统上什么都不显示，快捷键按下去没有任何反馈，所以补一条。
-     */
+    /** 写剪贴板。复制了什么由快捷键的触发提示（TriggerHud）或界面的 snackbar 负责显示。 */
     suspend fun copy(text: String): Boolean = withContext(Dispatchers.Main) {
         runCatching {
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             clipboard.setPrimaryClip(ClipData.newPlainText("adb", text))
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-                Toast.makeText(context, translate("已复制") + " " + text, Toast.LENGTH_SHORT).show()
-            }
             true
         }.getOrDefault(false)
     }
