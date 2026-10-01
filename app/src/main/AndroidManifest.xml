@@ -75,6 +75,18 @@
             </intent-filter>
         </activity>
 
+        <!--
+            后台写剪贴板的跳板：ROM 把 WRITE_CLIPBOARD 限成仅前台时，快捷键复制要借它进一下前台。
+            独立空 taskAffinity + 不进最近任务，写完即退，不会把主界面带到前台。
+        -->
+        <activity
+            android:name=".platform.ClipboardTrampolineActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Actionmental.Trampoline" />
+
         <service
             android:name=".service.KeyboardAccessibilityService"
             android:exported="true"

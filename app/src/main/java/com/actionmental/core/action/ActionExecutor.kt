@@ -91,6 +91,11 @@ class ActionExecutor(
             Action.WirelessDebug.Target.IP -> ip!!
             Action.WirelessDebug.Target.PORT -> port.toString()
         }
+        // 后台写剪贴板被 ROM 拦着时，有 Shizuku 就一次性放开，之后都不用再走跳板。
+        if (!wirelessDebug.clipboardWritable()) {
+            val backend = privileged()
+            if (backend.availability() !is ActionResult.Failed) backend.exec(wirelessDebug.grantClipboardCommand)
+        }
         return if (wirelessDebug.copy(text)) ActionResult.Ok("已复制 " + text, copied = text)
         else ActionResult.Failed(ActionResult.Reason.EXECUTION_FAILED, "剪贴板写入失败")
     }

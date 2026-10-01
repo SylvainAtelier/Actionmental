@@ -1,8 +1,10 @@
 package com.actionmental.platform
 
+import android.app.AppOpsManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Process
 import android.provider.Settings
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -54,17 +56,46 @@ class WirelessDebugBackend(private val context: Context) {
         parsePort(value)
     }.getOrNull()
 
-    /** 写剪贴板。复制了什么由快捷键的触发提示（TriggerHud）或界面的 snackbar 负责显示。 */
-    suspend fun copy(text: String): Boolean = withContext(Dispatchers.Main) {
-        runCatching {
-            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            clipboard.setPrimaryClip(ClipData.newPlainText("adb", text))
-            true
-        }.getOrDefault(false)
+    /**
+     * 此刻直接写剪贴板会不会被放行。
+     *
+     * ColorOS 把所有应用的 WRITE_CLIPBOARD 默认设成 foreground，快捷键又总在后台触发：
+     * 这时 setPrimaryClip 会被静默丢弃。unsafeCheckOpNoThrow 返回的是按当前进程状态
+     * 折算后的模式，后台时会是 IGNORED。查不了就当放行，退回原来的直接写。
+     */
+    fun clipboardWritable(): Boolean = runCatching {
+        context.getSystemService(AppOpsManager::class.java)
+            .unsafeCheckOpNoThrow(OPSTR_WRITE_CLIPBOARD, Process.myUid(), context.packageName) ==
+            AppOpsManager.MODE_ALLOWED
+    }.getOrDefault(true)
+
+    /** 经特权把 WRITE_CLIPBOARD 永久放开。uid 级和包级都要改：uid 级一旦设了就优先生效。 */
+    val grantClipboardCommand: String
+        get() = "cmd appops set --uid " + context.packageName + " WRITE_CLIPBOARD allow; " +
+            "cmd appops set " + context.packageName + " WRITE_CLIPBOARD allow"
+
+    /**
+     * 写剪贴板。复制了什么由快捷键的触发提示（TriggerHud）或界面的 snackbar 负责显示。
+     *
+     * 后台写不进去时借透明跳板 Activity 短暂进前台再写，见 [ClipboardTrampolineActivity]。
+     */
+    suspend fun copy(text: String): Boolean {
+        if (!clipboardWritable()) return ClipboardTrampolineActivity.write(context, CLIP_LABEL, text)
+        return withContext(Dispatchers.Main) {
+            runCatching {
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText(CLIP_LABEL, text))
+                true
+            }.getOrDefault(false)
+        }
     }
 
     companion object {
         const val PORT_PROPERTY = "service.adb.tls.port"
+        private const val CLIP_LABEL = "adb"
+
+        /** AppOpsManager.OPSTR_WRITE_CLIPBOARD 是隐藏常量，按字面量写。 */
+        private const val OPSTR_WRITE_CLIPBOARD = "android:write_clipboard"
 
         /**
          * 特权读端口：先 getprop，再看 AdbService 自己报的 tls_port。
