@@ -15,6 +15,7 @@ enum class ActionCategory(val label: String, val code: String) {
     MEDIA("媒体", "MEDIA"),
     VOLUME("音量", "VOLUME"),
     DEBUG("调试", "DEBUG"),
+    CLIPBOARD("剪贴板", "CLIPBOARD"),
     SHELL("Shell", "SHELL"),
     TERMUX("Termux", "TERMUX"),
 }
@@ -192,6 +193,22 @@ sealed interface Action {
     }
 
     /**
+     * 打开 / 关闭剪贴板历史面板。
+     *
+     * 面板浮在当前应用上面但不抢焦点，选中的条目经无障碍输入通道直接写进原来的输入框。
+     * 记录本身要 Shizuku（只有 shell 身份能在后台读剪贴板），面板不要：没有 Shizuku 时
+     * 照样能翻看已有的、置顶的条目。
+     */
+    @Serializable
+    @SerialName("clip_history")
+    data object ClipboardHistory : Action {
+        override val category get() = ActionCategory.CLIPBOARD
+        override val label get() = "剪贴板历史"
+        override val technical get() = "CLIPBOARD_HISTORY"
+        override val detail get() = "搜索、置顶、选中即输入"
+    }
+
+    /**
      * 在 Termux 里执行一条命令（经 Termux 的 RUN_COMMAND 接口）。
      *
      * 和 [Shell] 是两回事：那条走 Shizuku、以 shell 用户身份跑，进不了 Termux 的私有目录；
@@ -279,6 +296,7 @@ object ActionCatalog {
             "adb_wifi", "无线调试", "WIRELESS DEBUG", "复制 IP、端口到剪贴板",
             Action.WirelessDebug.Target.entries.map { Action.WirelessDebug(it) },
         ),
+        Group("clipboard", "剪贴板", "CLIPBOARD", "历史记录面板", listOf(Action.ClipboardHistory)),
         Group(GROUP_APP, "启动应用", "LAUNCH APP", "先选应用，再选入口", direct = true),
         Group(GROUP_URL, "打开链接", "OPEN URL", "用默认浏览器打开网址", direct = true),
         Group(GROUP_TERMUX, "Termux 命令", "TERMUX", "在 Termux 里执行，完成后通知结果", direct = true),

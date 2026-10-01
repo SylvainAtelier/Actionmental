@@ -31,6 +31,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.actionmental.core.key.KeyCombo
+import com.actionmental.ui.screens.ClipHistoryScreen
 import com.actionmental.ui.screens.DashboardScreen
 import com.actionmental.ui.screens.KeyMonitorScreen
 import com.actionmental.ui.screens.LogScreen
@@ -169,6 +170,7 @@ fun AppRoot(vm: AppViewModel) {
 
                 Destination.REMAP -> RemapScreen(modifier)
                 Destination.ROTATION -> RotationScreen(vm, modifier)
+                Destination.CLIPBOARD -> ClipHistoryScreen(vm, modifier)
                 Destination.PRIVILEGE -> PrivilegeScreen(vm, modifier)
                 Destination.LOGS -> LogScreen(vm, modifier)
                 Destination.SETTINGS -> SettingsScreen(vm, modifier)

@@ -17,9 +17,15 @@ import com.actionmental.core.rotation.RotationMode
 import com.actionmental.core.shortcut.Shortcut
 import com.actionmental.data.UserSettings
 import com.actionmental.platform.PackageBackend
+import com.actionmental.core.clip.ClipEntry
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -448,6 +454,84 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun updateSettings(transform: (UserSettings) -> UserSettings) =
         viewModelScope.launch { graph.settingsRepository.update(transform) }
 
+    // --- 剪贴板历史 -----------------------------------------------------------
+
+    private val _clipQuery = MutableStateFlow("")
+    val clipQuery: StateFlow<String> = _clipQuery.asStateFlow()
+
+    /** 要了多少条。列表滚到底时加一页；换搜索词时回到第一页。 */
+    private val _clipLimit = MutableStateFlow(CLIP_PAGE)
+    val clipLimit: StateFlow<Int> = _clipLimit.asStateFlow()
+
+    /** 搜索词、页数或库一变就重查；页面不在时停掉（WhileSubscribed）。列表里只有预览。 */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val clips: StateFlow<List<ClipEntry>> =
+        combine(_clipQuery, _clipLimit, graph.clipHistoryStore.version) { query, limit, _ -> query to limit }
+            .mapLatest { (query, limit) -> graph.clipHistoryStore.search(query, limit) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val clipWatching: StateFlow<Boolean> = graph.clipCapture.watchingState
+
+    fun setClipQuery(query: String) {
+        _clipQuery.value = query
+        _clipLimit.value = CLIP_PAGE
+    }
+
+    /** 列表末尾露出来了：还有没取的才加一页（上一页没取满就说明到底了）。 */
+    fun loadMoreClips() {
+        if (clips.value.size >= _clipLimit.value) _clipLimit.value += CLIP_PAGE
+    }
+
+    /** 详情页要全文；列表里的只是预览。 */
+    suspend fun clipText(entry: ClipEntry): String = graph.clipHistoryStore.fullText(entry)
+
+    fun setClipHistory(on: Boolean) = updateSettings { it.copy(clipHistory = on) }
+
+    /** 未置顶条目的保留数，0 为不限。调小时由 AppGraph 当场删掉超出的部分。 */
+    fun setClipCapacity(count: Int) = updateSettings { it.copy(clipHistoryCapacity = count.coerceAtLeast(0)) }
+
+    /** 自动清理天数，0 为不清理。改了之后由 AppGraph 当场按新天数清一次。 */
+    fun setClipRetention(days: Int) = updateSettings { it.copy(clipHistoryRetentionDays = days.coerceAtLeast(0)) }
+
+    /**
+     * 历史页在前台、拿着焦点：这时普通应用也读得到剪贴板，没有 Shizuku 也能补上当前这一条。
+     * 收录规则照常走 [com.actionmental.core.clip.ClipRecorder]（开关、敏感、去重）。
+     */
+    fun offerForegroundClip(text: String?) = viewModelScope.launch {
+        graph.clipRecorder.offer(text, sensitive = false, source = null)
+    }
+
+    fun toggleClipPin(entry: ClipEntry) = viewModelScope.launch {
+        graph.clipHistoryStore.setPinned(entry.id, !entry.pinned)
+    }
+
+    fun deleteClip(entry: ClipEntry) = viewModelScope.launch {
+        graph.clipHistoryStore.delete(entry.id)
+        graph.clipRecorder.forget()
+    }
+
+    fun clearClips() = viewModelScope.launch {
+        graph.clipHistoryStore.clear(keepPinned = true)
+        graph.clipRecorder.forget()
+    }
+
+    fun copyClip(entry: ClipEntry) = viewModelScope.launch {
+        val ok = graph.clipboardWriter.write("clip", graph.clipHistoryStore.fullText(entry))
+        if (ok) graph.clipHistoryStore.markUsed(entry.id)
+        _toast.value = if (ok) "已复制" else "剪贴板写入失败"
+    }
+
+    /** 不再记录这个应用，并删掉它以前留下的未置顶条目。 */
+    fun excludeClipSource(packageName: String) = viewModelScope.launch {
+        graph.settingsRepository.update { it.copy(clipHistoryExcluded = it.clipHistoryExcluded + packageName) }
+        graph.clipHistoryStore.deleteFrom(packageName)
+        graph.clipRecorder.forget()
+    }
+
+    fun includeClipSource(packageName: String) = updateSettings {
+        it.copy(clipHistoryExcluded = it.clipHistoryExcluded - packageName)
+    }
+
     // --- 其他 -----------------------------------------------------------------
 
     fun runAction(action: Action) = viewModelScope.launch {
@@ -464,5 +548,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun report(result: ActionResult) {
         _toast.value = result.message
+    }
+
+    private companion object {
+        /** 历史页一页多少条；滚到底再取下一页。 */
+        const val CLIP_PAGE = 100
     }
 }

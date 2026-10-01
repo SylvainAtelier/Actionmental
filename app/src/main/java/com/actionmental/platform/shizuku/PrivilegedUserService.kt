@@ -10,7 +10,8 @@ import java.io.BufferedReader
 /**
  * 运行在 Shizuku 授予的 shell 进程中的特权服务。
  *
- * 只提供两种受控能力：执行一条命令、注入一次按键。业务逻辑一律不放在这里（PRD 21 · PrivilegedService）。
+ * 只提供三种受控能力：执行一条命令、注入一次按键、以 shell 身份读写与监听剪贴板。
+ * 业务逻辑一律不放在这里（PRD 21 · PrivilegedService）。
  * [exec] 的返回值统一编码为 "exitCode\n输出"，避免再定义一套 AIDL 数据类型。
  */
 class PrivilegedUserService : IPrivilegedService.Stub() {
@@ -80,6 +81,52 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
         } catch (t: Throwable) {
             t.message ?: t.javaClass.simpleName
         }
+    }
+
+    // --- 剪贴板 ------------------------------------------------------------
+    //
+    // 内容一律不进 exec 那条路，也不写任何日志：剪贴板里是用户的私人文本。
+
+    private val clipboard by lazy { ShellClipboard() }
+
+    override fun watchClipboard(sink: IClipSink, userId: Int): String = try {
+        clipboard.watch(userId) {
+            val clip = clipboard.read(userId)
+            val text = ShellClipboard.textOf(clip) ?: return@watch
+            try {
+                sink.onClip(text, ShellClipboard.isSensitive(clip))
+            } catch (_: android.os.DeadObjectException) {
+                // 主进程没了：特权进程随后也会被 Shizuku 收掉，先把监听摘下来
+                clipboard.unwatch(userId)
+            }
+        }
+        // 主进程死掉时 binder 讣告比上面那次失败的推送来得早
+        sink.asBinder().linkToDeath({ clipboard.unwatch(userId) }, 0)
+        ""
+    } catch (t: Throwable) {
+        describe(t)
+    }
+
+    override fun unwatchClipboard() {
+        runCatching { clipboard.unwatch() }
+    }
+
+    override fun readClipboard(userId: Int): String? = runCatching {
+        val clip = clipboard.read(userId)
+        if (ShellClipboard.isSensitive(clip)) null else ShellClipboard.textOf(clip)
+    }.getOrNull()
+
+    override fun writeClipboard(text: String, userId: Int): String = try {
+        clipboard.write(text, userId)
+        ""
+    } catch (t: Throwable) {
+        describe(t)
+    }
+
+    /** 反射调用的异常包在 InvocationTargetException 里，取出真正的原因。 */
+    private fun describe(t: Throwable): String {
+        val cause = (t as? java.lang.reflect.InvocationTargetException)?.targetException ?: t
+        return cause.message ?: cause.javaClass.simpleName
     }
 
     private fun event(downTime: Long, action: Int, keyCode: Int, metaState: Int) = KeyEvent(

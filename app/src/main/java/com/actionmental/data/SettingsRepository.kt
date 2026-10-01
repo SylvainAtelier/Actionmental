@@ -89,6 +89,22 @@ data class UserSettings(
      * 系统保留的是一份历史列表，不去重就会每次启动都把同样几条崩溃重刷一遍。
      */
     val lastReportedExitMs: Long = 0L,
+    /**
+     * 记录剪贴板历史。
+     *
+     * 默认关闭：这是本应用唯一会保存用户文字内容的地方，必须由用户明确打开一次。
+     * 内容只落在本机的 databases/ 下，不进系统备份。
+     */
+    val clipHistory: Boolean = false,
+    /** 不记录这些应用里复制的内容（按包名）。密码管理器之类放这里。 */
+    val clipHistoryExcluded: Set<String> = emptySet(),
+    /**
+     * 未置顶条目多少天没用过就自动删掉。0 表示不清理（默认）。
+     * 置顶的永远不过期 —— 那是用户明确说过要留的。
+     */
+    val clipHistoryRetentionDays: Int = 0,
+    /** 未置顶条目最多留多少条，0 为不限。默认值的由来见 ClipPolicy.DEFAULT_CAPACITY。 */
+    val clipHistoryCapacity: Int = com.actionmental.core.clip.ClipPolicy.DEFAULT_CAPACITY,
 ) {
     enum class Theme(val label: String) { LIGHT("浅色"), DARK("深色"), SYSTEM("跟随系统") }
     enum class Language { CHINESE, ENGLISH }

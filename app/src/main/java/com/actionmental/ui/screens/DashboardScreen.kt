@@ -54,6 +54,7 @@ fun DashboardScreen(
     val paused by vm.paused.collectAsStateWithLifecycle()
     val pauseReason by vm.pauseReason.collectAsStateWithLifecycle()
     val shortcuts by vm.shortcuts.collectAsStateWithLifecycle()
+    val settings by vm.settings.collectAsStateWithLifecycle()
     val unread by vm.hardeningUnread.collectAsStateWithLifecycle()
     val latestNotice by vm.hardeningLatest.collectAsStateWithLifecycle()
 
@@ -62,6 +63,7 @@ fun DashboardScreen(
         Destination.REMAP to status.remapCount.takeIf { it > 0 }?.toString().orEmpty(),
         Destination.MONITOR to "",
         Destination.ROTATION to status.ruleCount.takeIf { it > 0 }?.let { it.toString() + " 条规则" }.orEmpty(),
+        Destination.CLIPBOARD to if (settings.clipHistory) "" else "未开启",
         Destination.PRIVILEGE to "",
         Destination.LOGS to "",
         Destination.SETTINGS to "",

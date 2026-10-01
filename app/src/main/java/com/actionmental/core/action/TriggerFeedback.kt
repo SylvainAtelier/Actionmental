@@ -50,6 +50,10 @@ data class TriggerFeedback(
                         failed = true,
                     )
                 }
+                // 面板本身就是反馈；只有没开出来时要说清为什么
+                is Action.ClipboardHistory -> (result as? ActionResult.Failed)?.let {
+                    TriggerFeedback(translate(action.label), value = translate(it.message), failed = true)
+                }
                 else -> null
             }
     }

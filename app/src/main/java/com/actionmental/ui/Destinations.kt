@@ -2,6 +2,7 @@ package com.actionmental.ui
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Article
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Security
@@ -22,6 +23,7 @@ enum class Destination(
     REMAP("键位映射", "Key remap", Icons.Filled.SwapHoriz, true),
     MONITOR("按键检测", "Monitor", Icons.Filled.Speed, true),
     ROTATION("屏幕方向", "Rotation", Icons.Filled.ScreenRotation, true),
+    CLIPBOARD("剪贴板历史", "Clipboard", Icons.Filled.ContentPaste, false),
     PRIVILEGE("Shizuku 与磁贴", "Privilege", Icons.Filled.Security, false),
     LOGS("运行日志", "Logs", Icons.Filled.Article, false),
     SETTINGS("设置", "Settings", Icons.Filled.Settings, false),

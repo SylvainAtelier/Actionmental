@@ -52,6 +52,17 @@ class KeyPipeline(
      */
     var onReplacedKey: ((keyCode: Int, modifiers: Int, down: Boolean, device: KeyboardDevice) -> Boolean)? = null
 
+    /**
+     * 模态接管：剪贴板面板这类浮层打开期间，按键先交给它，快捷键与映射一概不参与。
+     *
+     * 第二个参数是这颗键按当前修饰状态打出的字符（打不出字就是 null），面板拿它做搜索输入。
+     * 返回 true 表示吃掉。被吃掉的按下会记进 [consumedKeyCodes]：面板在按下时就关了的话，
+     * 那颗键的抬起照样要拦住 —— 单行输入框在 Enter 抬起时触发「发送」，放出去就把消息发走了。
+     * 运行在按键线程，必须非阻塞。
+     */
+    @Volatile
+    var modal: ((NormalizedKeyEvent, Char?) -> Boolean)? = null
+
     private val _snapshot = MutableStateFlow(KeyPressSnapshot())
     val snapshot: StateFlow<KeyPressSnapshot> = _snapshot.asStateFlow()
 
@@ -144,10 +155,13 @@ class KeyPipeline(
      */
     fun dispatch(event: KeyEvent): Boolean {
         if (paused) return false
-        return dispatch(normalize(event))
+        val normalized = normalize(event)
+        // 字符只在面板开着时才算：平时每颗键多一次查表没有意义
+        val typed = if (modal != null && normalized.down) typedChar(event) else null
+        return dispatch(normalized, typed)
     }
 
-    internal fun dispatch(normalized: NormalizedKeyEvent): Boolean {
+    internal fun dispatch(normalized: NormalizedKeyEvent, typed: Char? = null): Boolean {
         if (paused) return false
         // 自己注入的按键原样放行：既不触发快捷键，也不再被映射改写一次
         if (normalized.virtual) {
@@ -158,6 +172,20 @@ class KeyPipeline(
         _lastDevice.value = normalized.device
         updateSnapshot(normalized)
         appendTrace(normalized)
+
+        // 整颗替换中的键不归面板管：它的抬起必须补给目标键，否则目标键会卡住
+        val handler = modal
+        if (handler != null && normalized.keyCode !in replacedKeys) {
+            tapCandidate = null
+            // 面板打开之前就被拦下的键（比如唤出面板的那个快捷键），抬起照旧吞掉
+            if (!normalized.down && consumedKeyCodes.remove(normalized.keyCode)) {
+                activeRemaps -= normalized.keyCode
+                return true
+            }
+            val consumed = handler(normalized, typed)
+            if (consumed && normalized.down) consumedKeyCodes += normalized.keyCode
+            return consumed
+        }
 
         if (normalized.keyCode in consumedKeyCodes) {
             if (!normalized.down) {
@@ -291,6 +319,15 @@ class KeyPipeline(
         device = deviceOf(event.deviceId),
         virtual = event.deviceId == KeyCharacterMap.VIRTUAL_KEYBOARD,
     )
+
+    /** 这颗键打出的可见字符。Ctrl / Alt 组合、死键、控制字符都不算。 */
+    private fun typedChar(event: KeyEvent): Char? {
+        if (event.isCtrlPressed || event.isAltPressed || event.isMetaPressed) return null
+        val code = event.unicodeChar
+        if (code == 0 || code and KeyCharacterMap.COMBINING_ACCENT != 0) return null
+        val char = code.toChar()
+        return if (Character.isISOControl(char)) null else char
+    }
 
     private fun deviceOf(deviceId: Int): KeyboardDevice =
         deviceCache.getOrPut(deviceId) { KeyboardDevice.from(InputDevice.getDevice(deviceId)) }

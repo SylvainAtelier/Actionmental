@@ -326,7 +326,7 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
             AmLabel("隐私 · PRIVACY · LOCAL ONLY")
             Spacer(Modifier.height(4.dp))
             Text(
-                "按键仅在内存中处理，不记录文本输入，不联网上传。应用不申请网络、通讯录、存储、位置权限。",
+                "按键仅在内存中处理，不记录文本输入，不联网上传。剪贴板历史默认关闭，开启后只存在本机。应用不申请网络、通讯录、存储、位置权限。",
                 style = AmType.secondary,
                 color = c.inkMid,
             )

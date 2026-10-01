@@ -7,8 +7,9 @@
     canRetrieveWindowContent 同样保持 false：从不读界面内容（PRD 26）。
 
     flagInputMethodEditor（Android 13+）让系统在输入框获得焦点时给这个服务一条输入连接，
-    与用户自己的输入法并存。它只用来做一件事：Shizuku 不在时，把键位映射的目标键
-    （Esc、Backspace、Ctrl 组合……）经这条连接发给前台输入框。从不读取、不提交文字。
+    与用户自己的输入法并存。它只用来做两件事：Shizuku 不在时，把键位映射的目标键
+    （Esc、Backspace、Ctrl 组合……）经这条连接发给前台输入框；用户在剪贴板历史面板里
+    选中一条时，把那一条写进输入框。从不读取输入框里的文字，也不会自己提交任何文字。
     更早的系统不认识这一位，会直接忽略。
 
     notificationTimeout 是同类事件的合并窗口。连着切几个应用时，中间那些一闪而过的

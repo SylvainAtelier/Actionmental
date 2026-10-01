@@ -76,6 +76,9 @@ class ShizukuManager(
         const val PERMISSION_REQUEST_CODE = 1101
         private const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
         private const val BIND_NUDGE_INTERVAL_MS = 5_000L
+
+        /** UserHandle.PER_USER_RANGE：uid / 100000 就是用户 id。 */
+        private const val PER_USER_RANGE = 100_000
     }
 
     private val _status = MutableStateFlow(ShizukuStatus())
@@ -99,7 +102,7 @@ class ShizukuManager(
 
     private val userServiceArgs = Shizuku.UserServiceArgs(
         ComponentName(context.packageName, PrivilegedUserService::class.java.name)
-    ).daemon(false).processNameSuffix("privileged").debuggable(false).version(3)
+    ).daemon(false).processNameSuffix("privileged").debuggable(false).version(4)
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -287,6 +290,44 @@ class ShizukuManager(
                 if (error.isNotEmpty()) throw IllegalStateException(error)
             }
         }
+
+    // --- 剪贴板 --------------------------------------------------------------
+    //
+    // 和按键注入一样直接挂在这里、不经 LoggingBackend：内容是用户的私人文本，不进 shell 日志。
+
+    /** 此刻能不能立刻走特权通道读写剪贴板（不等绑定）。 */
+    fun clipboardReady(): Boolean = _status.value.reason == null && service != null
+
+    private val userId: Int get() = android.os.Process.myUid() / PER_USER_RANGE
+
+    suspend fun watchClipboard(sink: IClipSink): Result<Unit> = withContext(Dispatchers.IO) {
+        val svc = awaitService()
+            ?: return@withContext Result.failure(IllegalStateException(unavailableMessage()))
+        runCatching {
+            val error = svc.watchClipboard(sink, userId)
+            if (error.isNotEmpty()) throw IllegalStateException(error)
+        }
+    }
+
+    suspend fun unwatchClipboard() = withContext(Dispatchers.IO) {
+        service?.let { runCatching { it.unwatchClipboard() } }
+        Unit
+    }
+
+    suspend fun readClipboard(): Result<String?> = withContext(Dispatchers.IO) {
+        val svc = awaitService()
+            ?: return@withContext Result.failure(IllegalStateException(unavailableMessage()))
+        runCatching { svc.readClipboard(userId) }
+    }
+
+    suspend fun writeClipboard(text: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val svc = awaitService()
+            ?: return@withContext Result.failure(IllegalStateException(unavailableMessage()))
+        runCatching {
+            val error = svc.writeClipboard(text, userId)
+            if (error.isNotEmpty()) throw IllegalStateException(error)
+        }
+    }
 
     override suspend fun getSetting(namespace: String, key: String): Result<String?> =
         exec("settings get " + namespace + " " + key).mapCatching { result ->

@@ -5,9 +5,15 @@ import android.hardware.input.InputManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.res.Configuration
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.actionmental.core.action.Action
 import com.actionmental.core.action.ActionExecutor
+import com.actionmental.core.clip.ClipEntry
+import com.actionmental.core.clip.ClipPolicy
+import com.actionmental.core.clip.ClipRecorder
+import com.actionmental.core.clip.SearchKey
 import com.actionmental.core.action.ActionResult
 import com.actionmental.core.action.TriggerFeedback
 import com.actionmental.core.awake.ScreenAwakeController
@@ -35,18 +41,24 @@ import com.actionmental.core.rotation.RotationController
 import com.actionmental.core.shortcut.ShortcutMatcher
 import com.actionmental.core.status.SystemStatus
 import com.actionmental.data.AppStore
+import com.actionmental.data.ClipHistoryStore
 import com.actionmental.data.ConfigTransfer
 import com.actionmental.data.HardeningRepository
 import com.actionmental.data.KeyRemapRepository
 import com.actionmental.data.OrientationCompatRepository
 import com.actionmental.data.RotationRuleRepository
 import com.actionmental.data.SettingsRepository
+import com.actionmental.data.UserSettings
 import com.actionmental.data.ShortcutRepository
 import com.actionmental.platform.AccessibilityBridge
 import com.actionmental.platform.AppCatalog
+import com.actionmental.platform.ClipCapture
+import com.actionmental.platform.ClipPanel
+import com.actionmental.platform.ClipboardWriter
 import com.actionmental.platform.ConfigBackupFile
 import com.actionmental.platform.AudioBackend
 import com.actionmental.platform.HardeningNotifier
+import com.actionmental.platform.IcuPinyin
 import com.actionmental.platform.InputDeviceBackend
 import com.actionmental.platform.KeyOutputRouter
 import com.actionmental.platform.LoggingBackend
@@ -80,6 +92,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import kotlinx.coroutines.delay
@@ -292,6 +305,50 @@ class AppGraph private constructor(context: Context) {
     private val matcher = ShortcutMatcher()
     private val remapMatcher = KeyRemapMatcher()
 
+    /** 写剪贴板的唯一出口：后台写不进去时由 shell 代写或借跳板进前台。 */
+    val clipboardWriter = ClipboardWriter(context, shizuku)
+
+    /** 剪贴板历史。库、收录规则、钩子、面板四件分开，规则只在 [clipRecorder] 一处。 */
+    private val pinyin = IcuPinyin()
+    val clipHistoryStore = ClipHistoryStore(context) { text -> SearchKey.build(text, pinyin::readings) }
+    val clipRecorder = ClipRecorder(
+        enabled = { settingsRepository.settings.value.clipHistory },
+        excluded = { settingsRepository.settings.value.clipHistoryExcluded },
+        foreground = { accessibility.foregroundPackage.value },
+        store = { text, source -> clipHistoryStore.record(text, source) },
+        retentionDays = { settingsRepository.settings.value.clipHistoryRetentionDays },
+    )
+    val clipCapture = ClipCapture(scope, shizuku, clipRecorder, onEvent = { warn, message, detail ->
+        if (warn) eventLog.warn("clip", message, detail) else eventLog.debug("clip", message, detail)
+    })
+    private val clipPanel = ClipPanel(
+        serviceProvider = accessibility::boundService,
+        pipeline = pipeline,
+        store = clipHistoryStore,
+        scope = scope,
+        capturing = { settingsRepository.settings.value.clipHistory },
+        isToggle = { e ->
+            e.asTrigger()?.let { combo ->
+                val effective = remapMatcher.rewrite(combo, pipeline.snapshot.value.pressedKeyCodes)
+                matcher.match(effective, e.device, accessibility.foregroundPackage.value)?.action ==
+                    Action.ClipboardHistory
+            } ?: false
+        },
+        onInsert = ::insertClip,
+        onEdited = clipRecorder::forget,
+        translate = { AppTranslations.translate(it, settingsRepository.settings.value.language) },
+        // 跟应用的外观设置走；默认的「跟随系统」就是看系统此刻是不是深色模式
+        dark = {
+            when (settingsRepository.settings.value.theme) {
+                UserSettings.Theme.LIGHT -> false
+                UserSettings.Theme.DARK -> true
+                UserSettings.Theme.SYSTEM ->
+                    appContext.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
+                        Configuration.UI_MODE_NIGHT_YES
+            }
+        },
+    )
+
     /**
      * 映射的输出口。注入那一路直接挂在 shizuku 上而不是包装过的 [logged]：
      * 注入的内容就是用户的击键，写进 shell 日志等于记录输入 ——
@@ -310,8 +367,35 @@ class AppGraph private constructor(context: Context) {
         awake = screenAwake,
         wirelessDebug = wirelessDebug,
         termux = termux,
+        clipboard = clipboardWriter,
+        toggleClipboardHistory = clipPanel::toggle,
         privileged = { actionBackend },
     )
+
+    /**
+     * 面板里选中了一条：直接写进原来的输入框。
+     *
+     * 面板不抢焦点，所以输入连接一直是原来那个框的。没有输入框获得焦点（停在桌面上）时
+     * 退一步放进剪贴板，由提示说清楚要用户自己粘贴 —— 不静默失败。
+     */
+    private fun insertClip(entry: ClipEntry) {
+        scope.launch {
+            // 面板里拿着的只是预览，上屏要全文
+            val text = clipHistoryStore.fullText(entry)
+            val committed = withContext(Dispatchers.Main) { accessibility.commitText(text) }
+            clipHistoryStore.markUsed(entry.id)
+            if (committed) return@launch
+            val copied = clipboardWriter.write("clip", text)
+            val language = settingsRepository.settings.value.language
+            triggerHud.show(
+                TriggerFeedback(
+                    AppTranslations.translate(if (copied) "没有输入框 · 已复制" else "没有输入框，复制也失败了", language),
+                    value = ClipPolicy.preview(entry.text, 40),
+                    failed = !copied,
+                ),
+            )
+        }
+    }
 
     val appRotationRules = AppRotationRuleManager(
         scope = scope,
@@ -461,6 +545,14 @@ class AppGraph private constructor(context: Context) {
      */
     private val screenOnReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
+            // 熄屏收起剪贴板面板：无障碍悬浮层压得住锁屏，不能让历史留在锁屏上
+            if (intent?.action == Intent.ACTION_SCREEN_OFF) {
+                clipPanel.dismiss()
+                return
+            }
+            // 锁屏期间系统对谁都不给剪贴板内容，期间的复制在解锁时补读一次
+            if (intent?.action == Intent.ACTION_USER_PRESENT) scope.launch { clipCapture.catchUp() }
+
             // 先重新数一遍键盘，且不受暂停影响。
             //
             // 蓝牙键盘熄屏时断连是常态，「没有键盘就自动暂停」会因此落地；
@@ -649,6 +741,7 @@ class AppGraph private constructor(context: Context) {
             screenOnReceiver,
             IntentFilter().apply {
                 addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_SCREEN_OFF)
                 addAction(Intent.ACTION_USER_PRESENT)
             },
             ContextCompat.RECEIVER_NOT_EXPORTED,
@@ -812,6 +905,31 @@ class AppGraph private constructor(context: Context) {
             }
         }
 
+        // 剪贴板历史：开关开着且特权服务连着就挂监听，任一条件没了就摘下。
+        // 没有轮询 —— 这条流只在用户拨开关、特权服务连上 / 断开时动一下。
+        scope.launch {
+            combine(
+                settingsRepository.settings.map { it.clipHistory }.distinctUntilChanged(),
+                shizuku.status.map { it.usable && it.serviceBound }.distinctUntilChanged(),
+                ::Pair,
+            ).collect { (enabled, bound) -> clipCapture.sync(enabled, bound) }
+        }
+        // 自动清理：天数或条数一变（包括进程启动时读出盘上的值）就当场删一次，平时跟着记录顺手删
+        scope.launch {
+            settingsRepository.settings
+                .map { it.clipHistoryRetentionDays to it.clipHistoryCapacity }
+                .distinctUntilChanged()
+                .collect { (days, capacity) ->
+                    clipHistoryStore.retentionDays = days
+                    clipHistoryStore.capacity = capacity
+                    clipHistoryStore.prune()
+                }
+        }
+        // 面板靠管线的模态接管收按键：暂停后管线不再转发，服务断开后窗口也没了主人，
+        // 两种情况下面板都得收起，否则它停在屏幕上却按什么都没反应
+        scope.launch { paused.collect { if (it) clipPanel.dismiss() } }
+        scope.launch { accessibility.connected.collect { if (!it) clipPanel.dismiss() } }
+
         // 无障碍自愈：开关被 ROM 抹掉时写回去（P2）
         scope.launch { watchAccessibilitySwitch() }
 
@@ -829,6 +947,8 @@ class AppGraph private constructor(context: Context) {
                     counters.action.incrementAndGet()
                     val result = executor.execute(shortcut.action)
                     lastActionResult.value = shortcut.displayLabel to result
+                    // 应用自己复制的内容（IP、端口）直接入历史：没有 Shizuku 时监听收不到它
+                    (result as? ActionResult.Ok)?.copied?.let { clipRecorder.offer(it, false, packageName) }
                     val settings = settingsRepository.settings.value
                     if (settings.triggerHud) {
                         TriggerFeedback.of(shortcut.action, result) { AppTranslations.translate(it, settings.language) }

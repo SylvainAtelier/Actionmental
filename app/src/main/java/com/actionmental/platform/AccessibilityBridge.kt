@@ -201,6 +201,22 @@ class AccessibilityBridge(private val context: Context) {
     fun performGlobalAction(action: Int): Boolean =
         service?.performGlobalAction(action) ?: false
 
+    /**
+     * 把一段文字写进当前获得焦点的输入框，等同于输入法上屏。
+     *
+     * 走的是 flagInputMethodEditor 给这个服务的那条输入连接（Android 13+），不经剪贴板：
+     * 不触发「已读取剪贴板」提示，也不受 ROM 对后台写剪贴板的限制。没有输入框获得焦点时返回 false。
+     */
+    fun commitText(text: String): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
+        val connection = service?.inputMethod?.currentInputConnection ?: return false
+        // AccessibilityInputConnection.commitText 没有返回值，没抛异常就算送到了
+        return runCatching {
+            connection.commitText(text, 1, null)
+            true
+        }.getOrDefault(false)
+    }
+
     /** 重新读一次系统设置，刷新三个开关状态。主线程的观察者与后台协程都会走这里。 */
     @Synchronized
     fun refresh(serviceClass: Class<*>) {

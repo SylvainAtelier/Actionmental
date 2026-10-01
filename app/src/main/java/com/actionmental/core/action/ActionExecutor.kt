@@ -5,6 +5,7 @@ import com.actionmental.core.awake.ScreenAwakeController
 import com.actionmental.core.rotation.RotationController
 import com.actionmental.platform.AccessibilityBridge
 import com.actionmental.platform.AudioBackend
+import com.actionmental.platform.ClipboardWriter
 import com.actionmental.platform.PackageBackend
 import com.actionmental.platform.PrivilegedBackend
 import com.actionmental.platform.TermuxBackend
@@ -25,6 +26,9 @@ class ActionExecutor(
     private val awake: ScreenAwakeController,
     private val wirelessDebug: WirelessDebugBackend,
     private val termux: TermuxBackend,
+    private val clipboard: ClipboardWriter,
+    /** 剪贴板面板挂在无障碍服务的窗口上，开关它由平台层做；这里只转一手。 */
+    private val toggleClipboardHistory: () -> ActionResult,
     private val privileged: () -> PrivilegedBackend,
 ) {
 
@@ -50,6 +54,7 @@ class ActionExecutor(
             Action.Awake.Op.TOGGLE -> awake.toggle()
         }
         is Action.WirelessDebug -> copyWirelessDebug(action.target)
+        is Action.ClipboardHistory -> toggleClipboardHistory()
         is Action.Termux -> termux.run(action)
         is Action.Shell -> shell(action.command)
     }
@@ -91,12 +96,7 @@ class ActionExecutor(
             Action.WirelessDebug.Target.IP -> ip!!
             Action.WirelessDebug.Target.PORT -> port.toString()
         }
-        // 后台写剪贴板被 ROM 拦着时，有 Shizuku 就一次性放开，之后都不用再走跳板。
-        if (!wirelessDebug.clipboardWritable()) {
-            val backend = privileged()
-            if (backend.availability() !is ActionResult.Failed) backend.exec(wirelessDebug.grantClipboardCommand)
-        }
-        return if (wirelessDebug.copy(text)) ActionResult.Ok("已复制 " + text, copied = text)
+        return if (clipboard.write("adb", text)) ActionResult.Ok("已复制 " + text, copied = text)
         else ActionResult.Failed(ActionResult.Reason.EXECUTION_FAILED, "剪贴板写入失败")
     }
 
