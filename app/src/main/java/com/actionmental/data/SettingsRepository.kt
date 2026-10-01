@@ -110,6 +110,8 @@ data class UserSettings(
     /** 按钮贴在哪一侧，以及竖直位置（可用高度的比例，0 顶、1 底）。拖动松手后记下。 */
     val clipBubbleOnRight: Boolean = true,
     val clipBubbleY: Float = 0.6f,
+    /** 面板里直选第几条用哪组键。默认 Ctrl + 数字；光按数字永远是搜索。 */
+    val clipPickKeys: com.actionmental.core.clip.PickKeys = com.actionmental.core.clip.PickKeys.CTRL_DIGITS,
 ) {
     enum class Theme(val label: String) { LIGHT("浅色"), DARK("深色"), SYSTEM("跟随系统") }
     enum class Language { CHINESE, ENGLISH }

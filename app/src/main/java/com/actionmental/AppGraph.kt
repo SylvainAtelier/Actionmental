@@ -339,6 +339,7 @@ class AppGraph private constructor(context: Context) {
         store = clipHistoryStore,
         scope = scope,
         capturing = { settingsRepository.settings.value.clipHistory },
+        pickKeys = { settingsRepository.settings.value.clipPickKeys },
         isToggle = { e ->
             e.asTrigger()?.let { combo ->
                 val effective = remapMatcher.rewrite(combo, pipeline.snapshot.value.pressedKeyCodes)

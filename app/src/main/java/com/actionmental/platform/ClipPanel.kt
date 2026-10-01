@@ -34,6 +34,7 @@ import com.actionmental.core.clip.ClipPolicy
 import com.actionmental.core.clip.PanelEffect
 import com.actionmental.core.clip.PanelKey
 import com.actionmental.core.clip.PanelKeys
+import com.actionmental.core.clip.PickKeys
 import com.actionmental.core.key.KeyPipeline
 import com.actionmental.core.key.NormalizedKeyEvent
 import com.actionmental.data.ClipHistoryStore
@@ -65,6 +66,8 @@ class ClipPanel(
     private val scope: CoroutineScope,
     /** 记录开着没有。没开时空列表要说清楚为什么是空的。 */
     private val capturing: () -> Boolean,
+    /** 直选用哪组键。每次打开时问一次，和 [dark] 一样：面板开着的那几秒里不会变。 */
+    private val pickKeys: () -> PickKeys,
     /** 这颗键是不是唤出面板的那个快捷键：再按一次就是关上。 */
     private val isToggle: (NormalizedKeyEvent) -> Boolean,
     private val onInsert: (ClipEntry) -> Unit,
@@ -85,6 +88,7 @@ class ClipPanel(
     private var root: PanelRoot? = null
     private var owner: AccessibilityService? = null
     private var palette = Palette.of(dark = true)
+    private var pick = PickKeys.CTRL_DIGITS
     private var state = ClipPanelState()
     private var generation = 0L
 
@@ -132,6 +136,7 @@ class ClipPanel(
     private fun show(service: AccessibilityService) {
         val wm = service.getSystemService(WindowManager::class.java) ?: return
         palette = Palette.of(dark())
+        pick = pickKeys()
         lastLoadedQuery = ""
         state = ClipPanelState()
         limit = ClipPanelState.PAGE_SIZE
@@ -184,8 +189,8 @@ class ClipPanel(
             close()
             return true
         }
-        val key = PanelKeys.map(e.keyCode, modifiers, typed) ?: return true
-        // Ctrl + 数字选的是角标上那个数：从第一条完整可见的开始数
+        val key = PanelKeys.map(e.keyCode, modifiers, typed, pick) ?: return true
+        // 直选键选的是角标上那个数：从第一条完整可见的开始数
         val absolute = if (key is PanelKey.Pick) {
             if (key.index >= visibleBadges()) return true
             PanelKey.Pick(badgeBase() + key.index)
@@ -315,7 +320,7 @@ class ClipPanel(
         return if (top.top < listView.paddingTop - top.height / 3) first + 1 else first
     }
 
-    /** 屏幕上编了号的有几条（至多 9 条，对应 Ctrl + 1…9）。 */
+    /** 屏幕上编了号的有几条（至多 9 条，对应直选键的 1…9）。 */
     private fun visibleBadges(): Int =
         (listView.lastVisiblePosition - badgeBase() + 1).coerceIn(0, MAX_BADGES)
 
@@ -331,8 +336,10 @@ class ClipPanel(
     private fun bindBadge(holder: RowHolder, position: Int, base: Int) {
         val number = position - base + 1
         val selected = position == state.selected
-        holder.badge.visibility = if (number in 1..MAX_BADGES) View.VISIBLE else View.INVISIBLE
-        holder.badge.text = number.toString()
+        val numbered = number in 1..MAX_BADGES
+        holder.badge.visibility = if (numbered) View.VISIBLE else View.INVISIBLE
+        // 没编号的行照样占同样宽的位：写成「10」会把这一行的正文挤得和别的行对不齐
+        holder.badge.text = pick.badge(if (numbered) number else 1)
         holder.badge.setTextColor(if (selected) palette.onAccent else palette.mid)
         holder.badgeBg.setColor(if (selected) palette.accent else palette.field)
     }
@@ -384,14 +391,19 @@ class ClipPanel(
             layoutParams = LinearLayout.LayoutParams(dp(context, 3f).toInt(), ViewGroup.LayoutParams.MATCH_PARENT)
                 .apply { marginEnd = dp(context, 9f).toInt() }
         }
-        val badgeBg = GradientDrawable().apply { shape = GradientDrawable.OVAL }
+        // 胶囊而不是正圆：一位数时宽高相等就是圆，「F1」这种两位的自然撑宽，不挤不裁
+        val badgeBg = GradientDrawable().apply { cornerRadius = dp(context, 11f) }
         val badge = TextView(context).apply {
             background = badgeBg
             gravity = Gravity.CENTER
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            includeFontPadding = false
             val size = dp(context, 22f).toInt()
-            layoutParams = LinearLayout.LayoutParams(size, size).apply { marginEnd = dp(context, 11f).toInt() }
+            minWidth = size
+            setPadding(dp(context, 5f).toInt(), 0, dp(context, 5f).toInt(), 0)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, size)
+                .apply { marginEnd = dp(context, 11f).toInt() }
         }
         val preview = TextView(context).apply {
             setTextColor(palette.ink)
@@ -585,7 +597,7 @@ class ClipPanel(
             val wanted = translate(
                 if (px2dp(lp.width) < 420) "↑↓ 选择 · Enter 输入 · Ctrl+1…9 直选 · Esc 关闭"
                 else "↑↓ 选择 · Enter 输入 · Ctrl+1…9 直选 · Ctrl+P 置顶 · Del 删除 · Esc 关闭",
-            )
+            ).replace(PickKeys.TEMPLATE, pick.hint)
             if (hint.text.toString() != wanted) hint.text = wanted
             super.onMeasure(widthMeasureSpec, heightMeasureSpec)
         }
@@ -617,7 +629,7 @@ class ClipPanel(
         /** 出现在 `dumpsys window` 里。 */
         const val TAG = "Actionmental:clips"
 
-        /** 角标最多编到 9，对应 Ctrl + 1…9。 */
+        /** 角标最多编到 9，对应直选键的 1…9。 */
         const val MAX_BADGES = 9
 
         /** 光标离可见区超过这么多条就直接跳，不做平滑滚动。 */

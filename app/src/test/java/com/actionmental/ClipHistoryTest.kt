@@ -14,6 +14,7 @@ import com.actionmental.core.clip.ClipRecorder
 import com.actionmental.core.clip.PanelEffect
 import com.actionmental.core.clip.PanelKey
 import com.actionmental.core.clip.PanelKeys
+import com.actionmental.core.clip.PickKeys
 import com.actionmental.core.clip.Polyphones
 import com.actionmental.core.clip.SearchKey
 import com.actionmental.core.key.KeyCombo
@@ -398,6 +399,31 @@ class ClipHistoryTest {
         // 没定义的 Ctrl 组合不当成字符输入
         assertNull(PanelKeys.map(KeyEvent.KEYCODE_Q, ctrl, 'q'))
         assertNull(PanelKeys.map(KeyEvent.KEYCODE_F5, 0, null))
+    }
+
+    @Test
+    fun `直选键三选一，没选中的那几组都不直选`() {
+        val ctrl = KeyCombo.MOD_CTRL
+        val alt = KeyCombo.MOD_ALT
+        val altKeys = PickKeys.ALT_DIGITS
+        assertEquals(PanelKey.Pick(0), PanelKeys.map(KeyEvent.KEYCODE_1, alt, null, altKeys))
+        assertEquals(PanelKey.Pick(4), PanelKeys.map(KeyEvent.KEYCODE_NUMPAD_5, alt, null, altKeys))
+        assertNull(PanelKeys.map(KeyEvent.KEYCODE_1, ctrl, null, altKeys))
+        assertNull(PanelKeys.map(KeyEvent.KEYCODE_1, ctrl or alt, null, altKeys))
+
+        val fn = PickKeys.FUNCTION_KEYS
+        assertEquals(PanelKey.Pick(0), PanelKeys.map(KeyEvent.KEYCODE_F1, 0, null, fn))
+        assertEquals(PanelKey.Pick(8), PanelKeys.map(KeyEvent.KEYCODE_F9, 0, null, fn))
+        assertNull(PanelKeys.map(KeyEvent.KEYCODE_F10, 0, null, fn))
+        assertNull(PanelKeys.map(KeyEvent.KEYCODE_F1, ctrl, null, fn))
+        assertNull(PanelKeys.map(KeyEvent.KEYCODE_1, ctrl, null, fn))
+        // 不管选哪组，光按数字都是搜索
+        PickKeys.entries.forEach { assertEquals(PanelKey.Type('1'), PanelKeys.map(KeyEvent.KEYCODE_1, 0, '1', it)) }
+
+        assertEquals("F3", fn.badge(3))
+        assertEquals("3", altKeys.badge(3))
+        assertEquals(listOf("Alt", "3"), altKeys.tokens(3))
+        assertEquals(listOf("F3"), fn.tokens(3))
     }
 
     // --- 悬浮按钮的位置 -------------------------------------------------------

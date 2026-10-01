@@ -51,6 +51,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.material3.Text as RawText
 import com.actionmental.core.clip.ClipEntry
 import com.actionmental.core.clip.ClipPolicy
+import com.actionmental.core.clip.PickKeys
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import com.actionmental.ui.components.AmSegmented
+import com.actionmental.ui.components.KeyTokensRow
 import com.actionmental.ui.AppViewModel
 import com.actionmental.ui.components.AmCard
 import com.actionmental.ui.components.AmLabel
@@ -141,10 +146,12 @@ fun ClipHistoryScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                     AmSwitch(settings.clipBubble, onCheckedChange = vm::setClipBubble)
                 }
                 Spacer(Modifier.height(AmSpace.s2))
-                Text(
-                    "在快捷键里添加「剪贴板 → 剪贴板历史」动作，就能在任意应用里唤出面板：" +
-                        "直接打字搜索（中文可用全拼或首字母，如 zw 找「中文」），↑↓ 选择，" +
-                        "Enter 写进当前输入框，Ctrl+1…9 直选，Ctrl+P 置顶，Del 删除，Esc 关闭。",
+                RawText(
+                    localize(
+                        "在快捷键里添加「剪贴板 → 剪贴板历史」动作，就能在任意应用里唤出面板：" +
+                            "直接打字搜索（中文可用全拼或首字母，如 zw 找「中文」），↑↓ 选择，" +
+                            "Enter 写进当前输入框，Ctrl+1…9 直选，Ctrl+P 置顶，Del 删除，Esc 关闭。",
+                    ).replace(PickKeys.TEMPLATE, settings.clipPickKeys.hint),
                     style = AmType.secondary,
                     color = c.inkMid,
                 )
@@ -157,6 +164,8 @@ fun ClipHistoryScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                 )
             }
         }
+
+        item { PickKeysCard(settings.clipPickKeys, vm::setClipPickKeys) }
 
         item {
             StorageCard(
@@ -241,6 +250,67 @@ fun ClipHistoryScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
     opened?.let { picked ->
         val current = clips.firstOrNull { it.id == picked.id } ?: picked
         ClipDetailSheet(current, vm, ownPackage = context.packageName, onDismiss = { opened = null })
+    }
+}
+
+/**
+ * 面板直选键：三选一的分段控件，下面用键帽把「按什么 → 选哪条」直接画出来。
+ *
+ * 选项标签本身就是键位（Ctrl + 1…9），不用再读一遍说明才知道是什么意思；
+ * 分段控件按宽度均分，手机到平板都是一行，不会折行也不用横滑。
+ * 只有一句说明跟着选项变，讲的是这一组的代价，而不是重复它是什么。
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PickKeysCard(selected: PickKeys, onSelect: (PickKeys) -> Unit) {
+    val c = amColors
+    val options = PickKeys.entries
+    AmCard(Modifier.fillMaxWidth()) {
+        AmLabel("面板按键 · KEYS")
+        Spacer(Modifier.height(6.dp))
+        Text("直选第几条", style = AmType.body, color = c.ink)
+        Spacer(Modifier.height(AmSpace.s2))
+        AmSegmented(
+            options = options.map { it.hint.replace("+", " + ") },
+            selectedIndex = options.indexOf(selected),
+            onSelect = { onSelect(options[it]) },
+        )
+        Spacer(Modifier.height(AmSpace.s3))
+        // 窄屏放不下一行时整组换行，键帽不会被拆开
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(AmSpace.s2),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            PickExample(selected, 1)
+            PickExample(selected, 2)
+            Text("…", style = AmType.body, color = c.inkFaint, modifier = Modifier.align(Alignment.CenterVertically))
+            PickExample(selected, 9)
+        }
+        Spacer(Modifier.height(AmSpace.s2))
+        Text(
+            when (selected) {
+                PickKeys.CTRL_DIGITS -> "面板开着时临时盖住同名的全局快捷键，面板一关就恢复"
+                PickKeys.ALT_DIGITS -> "Ctrl 已被映射占用，或离数字键太远时换它"
+                PickKeys.FUNCTION_KEYS -> "单键直达，不用组合；部分键盘的 F 行默认是媒体键，需按住 Fn 或开启 Fn 锁"
+            },
+            style = AmType.data,
+            color = c.inkFaint,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text("光按数字始终是搜索：验证码、手机号这类内容要能直接搜到", style = AmType.data, color = c.inkFaint)
+    }
+}
+
+/** 一组「键帽 → 第几条」，数字和面板里的角标对得上。 */
+@Composable
+private fun PickExample(keys: PickKeys, number: Int) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        KeyTokensRow(keys.tokens(number))
+        RawText(
+            "→ " + localize("第 %d 条").format(number),
+            style = AmType.data,
+            color = amColors.inkMid,
+        )
     }
 }
 
