@@ -442,7 +442,7 @@ class ClipHistoryTest {
         var triggered = 0
         pipeline.onTrigger = { _, _ -> triggered++; true }
         val seen = mutableListOf<Pair<Int, Char?>>()
-        pipeline.modal = { e, typed ->
+        pipeline.modal = { e, _, typed ->
             if (e.down) seen += e.keyCode to typed
             !e.isModifier
         }
@@ -466,7 +466,7 @@ class ClipHistoryTest {
 
         // 快捷键执行后面板才打开：抬起到的时候已经是模态了
         var modalSawUp = false
-        pipeline.modal = { e, _ -> if (!e.down) modalSawUp = true; true }
+        pipeline.modal = { e, _, _ -> if (!e.down) modalSawUp = true; true }
         assertTrue(pipeline.dispatch(key(false, KeyEvent.KEYCODE_V, ctrlV)))
         assertFalse(modalSawUp)
 
@@ -480,7 +480,7 @@ class ClipHistoryTest {
     fun `面板在按下时关掉，Enter 的抬起不能漏给底下的输入框`() {
         val pipeline = KeyPipeline()
         pipeline.onTrigger = { _, _ -> false }
-        pipeline.modal = { e, _ ->
+        pipeline.modal = { e, _, _ ->
             if (e.down && e.keyCode == KeyEvent.KEYCODE_ENTER) pipeline.modal = null // 选用即关闭
             true
         }
@@ -496,11 +496,34 @@ class ClipHistoryTest {
     fun `长按方向键的连发照样交给面板`() {
         val pipeline = KeyPipeline()
         var moves = 0
-        pipeline.modal = { e, _ -> if (e.down && e.keyCode == KeyEvent.KEYCODE_DPAD_DOWN) moves++; true }
+        pipeline.modal = { e, _, _ -> if (e.down && e.keyCode == KeyEvent.KEYCODE_DPAD_DOWN) moves++; true }
         pipeline.dispatch(key(true, KeyEvent.KEYCODE_DPAD_DOWN))
         pipeline.dispatch(key(true, KeyEvent.KEYCODE_DPAD_DOWN, repeat = 1))
         pipeline.dispatch(key(true, KeyEvent.KEYCODE_DPAD_DOWN, repeat = 2))
         assertEquals(3, moves)
+    }
+
+    @Test
+    fun `修饰键映射在面板里同样生效：Caps 映射成 Ctrl 时 Caps + 1 是直选`() {
+        val pipeline = KeyPipeline()
+        val caps = KeyEvent.KEYCODE_CAPS_LOCK
+        pipeline.rewriteCombo = { combo, pressed ->
+            if (caps in pressed && combo.keyCode != caps) combo.copy(modifiers = combo.modifiers or KeyCombo.MOD_CTRL)
+            else combo
+        }
+        val picks = mutableListOf<PanelKey?>()
+        pipeline.modal = { e, modifiers, typed ->
+            if (e.down) picks += PanelKeys.map(e.keyCode, modifiers, typed)
+            true
+        }
+        pipeline.dispatch(key(true, caps))
+        // 映射出来的 Ctrl 是注入的，实体键盘这颗 1 的 metaState 里没有它，打出来的字照样是 '1'
+        pipeline.dispatch(key(true, KeyEvent.KEYCODE_1), '1')
+        pipeline.dispatch(key(false, KeyEvent.KEYCODE_1))
+        pipeline.dispatch(key(false, caps))
+        // 松开 Caps 之后，1 回到搜索输入
+        pipeline.dispatch(key(true, KeyEvent.KEYCODE_1), '1')
+        assertEquals(listOf(null, PanelKey.Pick(0), PanelKey.Type('1')), picks)
     }
 
     // --- 动作 -----------------------------------------------------------------

@@ -171,7 +171,7 @@ class ClipPanel(
     // --- 按键 ----------------------------------------------------------------
 
     /** 按键线程（即主线程）上被管线调用。 */
-    private fun onKey(e: NormalizedKeyEvent, typed: Char?): Boolean {
+    private fun onKey(e: NormalizedKeyEvent, modifiers: Int, typed: Char?): Boolean {
         if (root == null || owner !== serviceProvider()) {
             close()
             return false
@@ -184,7 +184,7 @@ class ClipPanel(
             close()
             return true
         }
-        val key = PanelKeys.map(e.keyCode, e.modifiers, typed) ?: return true
+        val key = PanelKeys.map(e.keyCode, modifiers, typed) ?: return true
         // Ctrl + 数字选的是角标上那个数：从第一条完整可见的开始数
         val absolute = if (key is PanelKey.Pick) {
             if (key.index >= visibleBadges()) return true

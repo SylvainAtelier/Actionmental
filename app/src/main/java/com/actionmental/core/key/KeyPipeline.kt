@@ -55,13 +55,14 @@ class KeyPipeline(
     /**
      * 模态接管：剪贴板面板这类浮层打开期间，按键先交给它，快捷键与映射一概不参与。
      *
-     * 第二个参数是这颗键按当前修饰状态打出的字符（打不出字就是 null），面板拿它做搜索输入。
+     * 第二个参数是修饰键映射改写之后的修饰位，面板认组合键时用它而不是事件自己的 metaState；
+     * 第三个参数是这颗键按当前修饰状态打出的字符（打不出字就是 null），面板拿它做搜索输入。
      * 返回 true 表示吃掉。被吃掉的按下会记进 [consumedKeyCodes]：面板在按下时就关了的话，
      * 那颗键的抬起照样要拦住 —— 单行输入框在 Enter 抬起时触发「发送」，放出去就把消息发走了。
      * 运行在按键线程，必须非阻塞。
      */
     @Volatile
-    var modal: ((NormalizedKeyEvent, Char?) -> Boolean)? = null
+    var modal: ((NormalizedKeyEvent, modifiers: Int, typed: Char?) -> Boolean)? = null
 
     private val _snapshot = MutableStateFlow(KeyPressSnapshot())
     val snapshot: StateFlow<KeyPressSnapshot> = _snapshot.asStateFlow()
@@ -182,7 +183,7 @@ class KeyPipeline(
                 activeRemaps -= normalized.keyCode
                 return true
             }
-            val consumed = handler(normalized, typed)
+            val consumed = handler(normalized, modalModifiers(normalized), typed)
             if (consumed && normalized.down) consumedKeyCodes += normalized.keyCode
             return consumed
         }
@@ -287,6 +288,18 @@ class KeyPipeline(
         consumedKeyCodes += e.keyCode
         if (remapped) activeRemaps[e.keyCode] = combo to effective
         return true
+    }
+
+    /**
+     * 面板看到的修饰位，与快捷键匹配走同一套改写。
+     *
+     * 映射出来的修饰键（Caps → 左 Ctrl）是注入到虚拟设备上的，系统的 metaState 按设备各算各的，
+     * 实体键盘上那颗数字键的事件里根本没有 Ctrl —— 不改写的话，Caps + 1 在面板里就成了打字「1」。
+     */
+    private fun modalModifiers(e: NormalizedKeyEvent): Int {
+        if (e.isModifier) return e.modifiers
+        val rewrite = rewriteCombo ?: return e.modifiers
+        return rewrite(KeyCombo(e.keyCode, e.modifiers), _snapshot.value.pressedKeyCodes).modifiers
     }
 
     fun clearTraces() {
