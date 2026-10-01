@@ -766,6 +766,16 @@ object AppTranslations {
         "当前" to "Current",
         "已绑定" to "Current binding",
         "将替换为" to "Replace with",
+        "桌面按钮 · HOME SCREEN" to "HOME SCREEN",
+        "选好动作后，可放到桌面一键执行" to "Pick an action, then put it on the home screen for one-tap use",
+        "当前桌面不支持添加快捷方式" to "This launcher does not support adding shortcuts",
+        "改名称或动作，桌面上的会自动同步" to "Name and action changes sync to the home screen",
+        "轻点图标即执行 · 图标与文字取自名称" to "Tap the icon to run it · icon and text come from the name",
+        "再添加到桌面" to "Add to home screen again",
+        "添加到桌面" to "Add to home screen",
+        "保存并添加" to "Save & add",
+        "已在桌面" to "On home screen",
+        "这条快捷键已删除" to "This shortcut was deleted",
     )
 
     fun translate(text: String, language: UserSettings.Language): String = when (language) {

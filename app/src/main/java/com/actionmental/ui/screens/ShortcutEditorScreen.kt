@@ -7,6 +7,17 @@ import android.net.Uri
 import android.provider.Settings
 import android.view.KeyEvent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.text.style.TextOverflow
+import com.actionmental.core.shortcut.DesktopName
+import com.actionmental.platform.DesktopIcon
+import com.actionmental.ui.i18n.localize
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -108,6 +119,9 @@ fun ShortcutEditorScreen(
     val conflict by vm.conflict.collectAsStateWithLifecycle()
     val apps by vm.apps.collectAsStateWithLifecycle()
     val activities by vm.activities.collectAsStateWithLifecycle()
+    val desktopPinned by vm.desktopPinned.collectAsStateWithLifecycle()
+    // 桌面上的移除系统不通知；从桌面的确认框回来时也要重查一次
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.refreshDesktop() }
 
     // 关闭请求是一次性事件，只有本次在场的收集者会收到，因此不会被上一轮的保存结果误触发。
     LaunchedEffect(vm) { vm.closeRequests.collect { onDone() } }
@@ -222,6 +236,21 @@ fun ShortcutEditorScreen(
             )
         }
 
+        // --- 桌面按钮 --------------------------------------------------------
+        DesktopCard(
+            action = draft.action,
+            name = draft.action?.let { action ->
+                draft.label.trim().ifBlank {
+                    DesktopName.of(action).let { if (DesktopName.isBuiltIn(action)) localize(it) else it }
+                }
+            }.orEmpty(),
+            pinned = !draft.isNew && draft.id in desktopPinned,
+            supported = vm.desktopSupported,
+            isNew = draft.isNew,
+            enabled = hasMainKey && draft.action != null,
+            onPin = vm::saveAndPin,
+        )
+
         // --- 作用范围 --------------------------------------------------------
         AmCard(Modifier.fillMaxWidth()) {
             AmLabel("作用范围 · SCOPE")
@@ -334,6 +363,86 @@ fun ShortcutEditorScreen(
     }
 
     conflict?.let { ConflictSheet(it, vm) }
+}
+
+// --- 桌面按钮 ---------------------------------------------------------------
+
+/**
+ * 桌面按钮的配置与预览。
+ *
+ * 预览就是桌面上那一个的样子（同一张位图、同样的裁切），名称字段改一个字这里跟着变 ——
+ * 所以「名称」同时就是桌面按钮的配置，不另开一套表单。
+ * 已钉住时不再给按钮，只说明修改会自动同步；桌面不支持时如实说，不给一个点了没反应的按钮。
+ */
+@Composable
+private fun DesktopCard(
+    action: Action?,
+    name: String,
+    pinned: Boolean,
+    supported: Boolean,
+    isNew: Boolean,
+    enabled: Boolean,
+    onPin: () -> Unit,
+) {
+    val c = amColors
+    AmCard(Modifier.fillMaxWidth()) {
+        AmLabel("桌面按钮 · HOME SCREEN")
+        Spacer(Modifier.height(AmSpace.s1))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            DesktopIconPreview(action, name)
+            Spacer(Modifier.width(AmSpace.s2))
+            Column(Modifier.weight(1f)) {
+                // 名字已经按桌面的规则处理过语言，不再经 Text 的逐词翻译，免得预览与桌面上的不一样
+                androidx.compose.material3.Text(
+                    if (action == null) localize("未选择动作") else name,
+                    style = AmType.body,
+                    color = if (action == null) c.inkFaint else c.ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    when {
+                        action == null -> "选好动作后，可放到桌面一键执行"
+                        !supported -> "当前桌面不支持添加快捷方式"
+                        pinned -> "改名称或动作，桌面上的会自动同步"
+                        else -> "轻点图标即执行 · 图标与文字取自名称"
+                    },
+                    style = AmType.data,
+                    color = c.inkFaint,
+                )
+            }
+            Spacer(Modifier.width(AmSpace.s1))
+            when {
+                pinned -> AmLabel("已在桌面", color = c.ok)
+                supported && action != null -> AmSecondaryButton(
+                    if (isNew) "保存并添加" else "添加到桌面",
+                    onClick = onPin,
+                    enabled = enabled,
+                )
+            }
+        }
+    }
+}
+
+/** 桌面会把自适应图标裁到中间三分之二，预览照样放大 1.5 倍再裁，看到的就是桌面上的样子。 */
+@Composable
+private fun DesktopIconPreview(action: Action?, name: String) {
+    val c = amColors
+    val context = LocalContext.current
+    val shape = RoundedCornerShape(30)
+    Box(
+        Modifier
+            .size(48.dp)
+            .clip(shape)
+            .background(c.surfaceSunken)
+            .border(1.dp, c.line, shape),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (action != null) {
+            val bitmap = remember(action, name) { DesktopIcon.bitmap(context, action, name).asImageBitmap() }
+            Image(bitmap, contentDescription = null, modifier = Modifier.requiredSize(72.dp))
+        }
+    }
 }
 
 // --- 动作选择 ---------------------------------------------------------------

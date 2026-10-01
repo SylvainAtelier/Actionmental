@@ -18,6 +18,7 @@ import com.actionmental.core.shortcut.Shortcut
 import com.actionmental.data.UserSettings
 import com.actionmental.platform.PackageBackend
 import com.actionmental.core.clip.ClipEntry
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -194,6 +195,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun duplicateShortcut(id: String) =
         viewModelScope.launch { graph.shortcutRepository.duplicate(id) }
+
+    // --- 桌面按钮 -------------------------------------------------------------
+
+    /** 已钉在桌面上的快捷键 id，列表据此标出「桌面」。 */
+    val desktopPinned: StateFlow<Set<String>> = graph.desktopShortcuts.pinned
+    val desktopSupported: Boolean get() = graph.desktopShortcuts.supported
+
+    /** 桌面上的移除系统不通知，界面回到前台时重查。 */
+    fun refreshDesktop() = viewModelScope.launch(Dispatchers.IO) { graph.desktopShortcuts.refresh() }
+
+    fun pinToDesktop(id: String) {
+        val shortcut = graph.shortcutRepository.find(id) ?: return
+        if (!graph.desktopShortcuts.requestPin(shortcut)) {
+            _toast.value = "当前桌面不支持添加快捷方式"
+        }
+    }
 
     /** 导出的是整份配置：快捷键 + 键位映射，一次剪贴板搞定换机。 */
     fun exportConfig(): String = graph.configTransfer.export()

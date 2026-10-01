@@ -87,6 +87,18 @@
             android:taskAffinity=""
             android:theme="@style/Theme.Actionmental.Trampoline" />
 
+        <!--
+            桌面按钮的落点：轻点桌面上的快捷方式，执行绑定的动作后立即退出。
+            不导出：钉住的快捷方式由桌面以本应用身份打开，别的应用无法借它执行用户配置的命令。
+        -->
+        <activity
+            android:name=".platform.ShortcutLaunchActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Actionmental.Trampoline" />
+
         <service
             android:name=".service.KeyboardAccessibilityService"
             android:exported="true"

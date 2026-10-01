@@ -21,6 +21,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.AddToHomeScreen
+import androidx.compose.foundation.layout.size
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import com.actionmental.ui.i18n.localize
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -114,6 +119,8 @@ fun ShortcutListScreen(
 ) {
     val c = amColors
     val all by vm.shortcuts.collectAsStateWithLifecycle()
+    val pinned by vm.desktopPinned.collectAsStateWithLifecycle()
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.refreshDesktop() }
     var query by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf<ActionCategory?>(null) }
 
@@ -177,9 +184,11 @@ fun ShortcutListScreen(
                 ShortcutRow(
                     shortcut = shortcut,
                     selected = shortcut.id == selectedId,
+                    onDesktop = shortcut.id in pinned,
                     onClick = { onOpenEditor(shortcut.id) },
                     onToggle = { vm.setShortcutEnabled(shortcut.id, it) },
                     onDuplicate = { vm.duplicateShortcut(shortcut.id) },
+                    onPinDesktop = if (vm.desktopSupported) ({ vm.pinToDesktop(shortcut.id) }) else null,
                     onDelete = { vm.deleteShortcut(shortcut.id) },
                 )
             }
@@ -197,14 +206,17 @@ fun ShortcutListScreen(
     }
 }
 
-/** 单条快捷键。长按给出启用 / 禁用 / 复制 / 删除（PRD 14）。 */
+/** 单条快捷键。长按给出启用 / 禁用 / 复制 / 添加到桌面 / 删除（PRD 14）。 */
 @Composable
 private fun ShortcutRow(
     shortcut: Shortcut,
     selected: Boolean,
+    onDesktop: Boolean,
     onClick: () -> Unit,
     onToggle: (Boolean) -> Unit,
     onDuplicate: () -> Unit,
+    /** 桌面不支持钉快捷方式时为 null，菜单里就不出现这一项。 */
+    onPinDesktop: (() -> Unit)?,
     onDelete: () -> Unit,
 ) {
     val c = amColors
@@ -244,6 +256,16 @@ private fun ShortcutRow(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            // 一枚小图标而不是文字标签：这一列已经够挤，「在桌面上」也不是需要读的状态
+            if (onDesktop) {
+                Icon(
+                    Icons.Outlined.AddToHomeScreen,
+                    contentDescription = localize("已在桌面"),
+                    tint = c.inkMuted,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+            }
             if (shortcut.combo.isModifierKey) {
                 AmLabel("轻点", color = c.warn)
                 Spacer(Modifier.width(6.dp))
@@ -268,6 +290,12 @@ private fun ShortcutRow(
                 text = { Text("复制") },
                 onClick = { onDuplicate(); menuOpen = false },
             )
+            if (onPinDesktop != null) {
+                DropdownMenuItem(
+                    text = { Text(if (onDesktop) "再添加到桌面" else "添加到桌面") },
+                    onClick = { onPinDesktop(); menuOpen = false },
+                )
+            }
             DropdownMenuItem(
                 text = { Text("删除", color = c.accent) },
                 onClick = { onDelete(); menuOpen = false },

@@ -251,7 +251,8 @@ class ClipPanel(
                     state = state.withEntries(rows)
                     render()
                     // 换了搜索词回到顶上；翻页、删改保持原位
-                    if (firstPage) listView.setSelection(0) else revealSelected()
+                    // 空列表不能 setSelection：ListView 会不查越界直接 getItemId(0)
+                    if (firstPage) { if (state.entries.isNotEmpty()) listView.setSelection(0) } else revealSelected()
                 }
             }
         }
@@ -299,7 +300,7 @@ class ClipPanel(
     /** 键盘挪动光标后让它露出来：近的平滑滚过去，远的（PageDown 连按）直接跳。 */
     private fun revealSelected() {
         val target = state.selected
-        if (listView.childCount == 0) return
+        if (listView.childCount == 0 || target !in state.entries.indices) return
         val first = listView.firstVisiblePosition
         val last = listView.lastVisiblePosition
         if (target in (first + 1) until last) return

@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.res.Configuration
 import android.util.Log
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.actionmental.core.action.Action
 import com.actionmental.core.action.ActionExecutor
@@ -39,6 +40,8 @@ import com.actionmental.core.rotation.AppOverrideController
 import com.actionmental.core.rotation.AppRotationRuleManager
 import com.actionmental.core.rotation.OrientationCompatKeeper
 import com.actionmental.core.rotation.RotationController
+import com.actionmental.core.shortcut.DesktopName
+import com.actionmental.core.shortcut.Shortcut
 import com.actionmental.core.shortcut.ShortcutMatcher
 import com.actionmental.core.status.SystemStatus
 import com.actionmental.data.AppStore
@@ -59,6 +62,7 @@ import com.actionmental.platform.ClipPanel
 import com.actionmental.platform.ClipboardWriter
 import com.actionmental.platform.ConfigBackupFile
 import com.actionmental.platform.AudioBackend
+import com.actionmental.platform.DesktopShortcuts
 import com.actionmental.platform.HardeningNotifier
 import com.actionmental.platform.IcuPinyin
 import com.actionmental.platform.InputDeviceBackend
@@ -90,6 +94,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -150,6 +155,11 @@ class AppGraph private constructor(context: Context) {
     val packages = PackageBackend(context)
     private val wirelessDebug = WirelessDebugBackend(context)
     private val triggerHud = TriggerHud(accessibility::boundService)
+
+    /** 钉到桌面上的快捷键按钮。 */
+    val desktopShortcuts = DesktopShortcuts(context, translate = { text ->
+        AppTranslations.translate(text, settingsRepository.settings.value.language)
+    })
     val termux = TermuxBackend(context, translate = { text ->
         AppTranslations.translate(text, settingsRepository.settings.value.language)
     })
@@ -368,6 +378,84 @@ class AppGraph private constructor(context: Context) {
 
     private fun translate(text: String): String =
         AppTranslations.translate(text, settingsRepository.settings.value.language)
+
+    /**
+     * 执行一条快捷键：按键与桌面按钮共用这一条路，计数、提示、日志不分来源。
+     *
+     * 桌面那边多一条：无障碍没连上时顶部提示挂不出来，退回系统 Toast；
+     * 而且任何失败都要说 —— 手指点了桌面却什么都没发生，比按键没反应更让人困惑。
+     */
+    private fun runShortcut(shortcut: Shortcut, fromDesktop: Boolean): Job = scope.launch {
+        counters.action.incrementAndGet()
+        val result = executor.execute(shortcut.action)
+        lastActionResult.value = shortcut.displayLabel to result
+        // 应用自己复制的内容（IP、端口）直接入历史：没有 Shizuku 时监听收不到它
+        (result as? ActionResult.Ok)?.copied?.let { clipRecorder.offer(it, false, packageName) }
+        val settings = settingsRepository.settings.value
+        if (settings.triggerHud || (fromDesktop && !result.succeeded)) {
+            val feedback = TriggerFeedback.of(shortcut.action, result, ::translate)
+                ?: (result as? ActionResult.Failed)?.takeIf { fromDesktop }?.let {
+                    TriggerFeedback(DesktopName.of(shortcut, ::translate), value = translate(it.message), failed = true)
+                }
+            feedback?.let { if (fromDesktop && !accessibility.connected.value) toast(it) else triggerHud.show(it) }
+        }
+        // 触发与结果都留一条：排查「连按几下就失灵」时，这条时间线是唯一的线索
+        val source = if (fromDesktop) "桌面 · " else ""
+        if (result.succeeded) {
+            // 结果要跟着写：切换类动作的标签永远是同一句，只有结果说得出
+            // 这一下是转过去了还是转回来了（盘上记录里连按三下的那几段就分不清）
+            eventLog.debug(
+                "action",
+                source + shortcut.displayLabel,
+                shortcut.action.technical + " · " + result.message,
+            )
+        } else {
+            eventLog.error("action", source + shortcut.displayLabel + " 执行失败", result.message)
+        }
+        pipeline.trace(
+            if (result.succeeded) KeyTrace.Kind.VERIFIED else KeyTrace.Kind.ERROR,
+            shortcut.displayLabel,
+            result.message,
+        )
+    }
+
+    /**
+     * 桌面按钮被点了。
+     *
+     * 快捷键「禁用」只是不再监听那个组合键，桌面按钮照常可用 —— 点它本身就是明确的意图；
+     * 全局暂停则一视同仁地拦下（常亮除外，它本来就不归暂停管）。
+     */
+    fun runFromDesktop(shortcutId: String?): Job {
+        val shortcut = shortcutId?.let(shortcutRepository::find)
+        if (shortcut == null) {
+            // 冷启动时仓库可能还没读完盘：先等一下再判定「已删除」
+            return scope.launch {
+                val loaded = shortcutId?.let { id ->
+                    withTimeoutOrNull(1_500L) {
+                        shortcutRepository.shortcuts.first { list -> list.any { it.id == id } }
+                    }?.firstOrNull { it.id == id }
+                }
+                if (loaded != null) runFromDesktop(loaded).join()
+                else toast(TriggerFeedback(translate("这条快捷键已删除"), failed = true))
+            }
+        }
+        return runFromDesktop(shortcut)
+    }
+
+    private fun runFromDesktop(shortcut: Shortcut): Job {
+        if (pausedNow && shortcut.action !is Action.Awake) {
+            return scope.launch {
+                eventLog.debug("action", "桌面 · " + shortcut.displayLabel, "已暂停，未执行")
+                toast(TriggerFeedback(translate("已暂停 · 先在设置里恢复运行"), failed = true))
+            }
+        }
+        return runShortcut(shortcut, fromDesktop = true)
+    }
+
+    private suspend fun toast(feedback: TriggerFeedback) = withContext(Dispatchers.Main) {
+        val text = listOfNotNull(feedback.title, feedback.value).joinToString("\n")
+        Toast.makeText(appContext, text, Toast.LENGTH_SHORT).show()
+    }
 
     /** 浮层（面板、按钮）用深色还是浅色：跟应用的外观设置走，默认的「跟随系统」看系统此刻的深色模式。 */
     private fun overlayDark(): Boolean = when (settingsRepository.settings.value.theme) {
@@ -848,6 +936,15 @@ class AppGraph private constructor(context: Context) {
         scope.launch {
             shortcutRepository.shortcuts.collect { matcher.update(it) }
         }
+        // 桌面按钮跟着快捷键表与界面语言走：改名、换动作、删除都推到桌面上。
+        // 跳过首个值：仓库还没读盘时那是一张空表，拿它同步会把桌面上的按钮全部置灰
+        scope.launch {
+            combine(
+                shortcutRepository.shortcuts.drop(1),
+                settingsRepository.settings.map { it.language }.distinctUntilChanged(),
+            ) { shortcuts, _ -> shortcuts }
+                .collect { desktopShortcuts.sync(it) }
+        }
         scope.launch {
             keyRemapRepository.remaps.collect { remapMatcher.update(it) }
         }
@@ -1004,35 +1101,7 @@ class AppGraph private constructor(context: Context) {
                 false
             } else {
                 pipeline.trace(KeyTrace.Kind.MATCH, combo.toString(), shortcut.action.technical)
-                scope.launch {
-                    counters.action.incrementAndGet()
-                    val result = executor.execute(shortcut.action)
-                    lastActionResult.value = shortcut.displayLabel to result
-                    // 应用自己复制的内容（IP、端口）直接入历史：没有 Shizuku 时监听收不到它
-                    (result as? ActionResult.Ok)?.copied?.let { clipRecorder.offer(it, false, packageName) }
-                    val settings = settingsRepository.settings.value
-                    if (settings.triggerHud) {
-                        TriggerFeedback.of(shortcut.action, result) { AppTranslations.translate(it, settings.language) }
-                            ?.let(triggerHud::show)
-                    }
-                    // 触发与结果都留一条：排查「连按几下就失灵」时，这条时间线是唯一的线索
-                    if (result.succeeded) {
-                        // 结果要跟着写：切换类动作的标签永远是同一句，只有结果说得出
-                        // 这一下是转过去了还是转回来了（盘上记录里连按三下的那几段就分不清）
-                        eventLog.debug(
-                            "action",
-                            shortcut.displayLabel,
-                            shortcut.action.technical + " · " + result.message,
-                        )
-                    } else {
-                        eventLog.error("action", shortcut.displayLabel + " 执行失败", result.message)
-                    }
-                    pipeline.trace(
-                        if (result.succeeded) KeyTrace.Kind.VERIFIED else KeyTrace.Kind.ERROR,
-                        shortcut.displayLabel,
-                        result.message,
-                    )
-                }
+                runShortcut(shortcut, fromDesktop = false)
                 true
             }
         }

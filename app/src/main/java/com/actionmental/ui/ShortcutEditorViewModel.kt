@@ -13,6 +13,7 @@ import com.actionmental.core.shortcut.SaveOutcome
 import com.actionmental.core.shortcut.Shortcut
 import com.actionmental.core.shortcut.ShortcutConflict
 import com.actionmental.platform.PackageBackend
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -139,6 +140,7 @@ class ShortcutEditorViewModel(application: Application) : AndroidViewModel(appli
             Draft(id = repository.newId(), combo = presetCombo)
         }
         _conflict.value = null
+        pinAfterSave = false
     }
 
     fun startRecording() = graph.pipeline.startRecording()
@@ -199,6 +201,25 @@ class ShortcutEditorViewModel(application: Application) : AndroidViewModel(appli
         _draft.value = _draft.value.copy(deviceScope = scope)
     }
 
+    /** 桌面按钮：已钉住的快捷键 id，以及桌面支不支持钉。 */
+    val desktopPinned: StateFlow<Set<String>> = graph.desktopShortcuts.pinned
+    val desktopSupported: Boolean get() = graph.desktopShortcuts.supported
+
+    fun refreshDesktop() = viewModelScope.launch(Dispatchers.IO) { graph.desktopShortcuts.refresh() }
+
+    /**
+     * 「添加到桌面」= 先保存再钉住，一次点击。
+     *
+     * 钉住的是保存后的那一条，所以草稿上没保存的修改不会只留在桌面上；
+     * 撞上冲突时这个意图跟着冲突弹层走，用户确认覆盖之后照样钉。
+     */
+    private var pinAfterSave = false
+
+    fun saveAndPin() {
+        pinAfterSave = true
+        save()
+    }
+
     fun save(override: Boolean = false) = viewModelScope.launch {
         val d = _draft.value
         val combo = d.combo?.takeIf { it.keyCode != KeyEvent.KEYCODE_UNKNOWN } ?: return@launch
@@ -217,12 +238,15 @@ class ShortcutEditorViewModel(application: Application) : AndroidViewModel(appli
             is SaveOutcome.Conflict -> _conflict.value = outcome.conflict
             is SaveOutcome.Saved -> {
                 _conflict.value = null
+                if (pinAfterSave) graph.desktopShortcuts.requestPin(outcome.shortcut)
+                pinAfterSave = false
                 _closeRequests.emit(Unit)
             }
         }
     }
 
     fun dismissConflict() {
+        pinAfterSave = false
         _conflict.value = null
     }
 
