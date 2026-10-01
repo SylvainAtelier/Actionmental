@@ -128,6 +128,19 @@ fun ClipHistoryScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                     AmSwitch(settings.clipHistory, onCheckedChange = vm::setClipHistory)
                 }
                 Spacer(Modifier.height(AmSpace.s2))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("屏幕边缘按钮", style = AmType.body, color = c.ink)
+                        Text(
+                            if (status.accessibilityConnected) "点一下唤出面板 · 拖动换位置，松手贴边"
+                            else "需要无障碍键盘服务在运行",
+                            style = AmType.data,
+                            color = c.inkFaint,
+                        )
+                    }
+                    AmSwitch(settings.clipBubble, onCheckedChange = vm::setClipBubble)
+                }
+                Spacer(Modifier.height(AmSpace.s2))
                 Text(
                     "在快捷键里添加「剪贴板 → 剪贴板历史」动作，就能在任意应用里唤出面板：" +
                         "直接打字搜索（中文可用全拼或首字母，如 zw 找「中文」），↑↓ 选择，" +

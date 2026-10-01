@@ -1,5 +1,6 @@
 package com.actionmental
 
+import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.hardware.input.InputManager
 import android.content.Context
@@ -52,6 +53,7 @@ import com.actionmental.data.UserSettings
 import com.actionmental.data.ShortcutRepository
 import com.actionmental.platform.AccessibilityBridge
 import com.actionmental.platform.AppCatalog
+import com.actionmental.platform.ClipBubble
 import com.actionmental.platform.ClipCapture
 import com.actionmental.platform.ClipPanel
 import com.actionmental.platform.ClipboardWriter
@@ -336,17 +338,53 @@ class AppGraph private constructor(context: Context) {
         },
         onInsert = ::insertClip,
         onEdited = clipRecorder::forget,
-        translate = { AppTranslations.translate(it, settingsRepository.settings.value.language) },
-        // 跟应用的外观设置走；默认的「跟随系统」就是看系统此刻是不是深色模式
-        dark = {
-            when (settingsRepository.settings.value.theme) {
-                UserSettings.Theme.LIGHT -> false
-                UserSettings.Theme.DARK -> true
-                UserSettings.Theme.SYSTEM ->
-                    appContext.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
-                        Configuration.UI_MODE_NIGHT_YES
+        translate = ::translate,
+        dark = ::overlayDark,
+        onError = { what, error -> eventLog.error("clip", what + " 出错", error) },
+    )
+
+    /**
+     * 常驻屏幕边缘的剪贴板按钮。点它和按快捷键是同一个入口；
+     * 唤不出来（比如锁着屏）时同样用触发提示说清原因，不静默。
+     */
+    private val clipBubble = ClipBubble(
+        serviceProvider = accessibility::boundService,
+        position = { settingsRepository.settings.value.let { it.clipBubbleOnRight to it.clipBubbleY } },
+        onTap = {
+            scope.launch {
+                val result = clipPanel.toggle()
+                if (result is ActionResult.Failed) {
+                    TriggerFeedback.of(Action.ClipboardHistory, result, ::translate)?.let(triggerHud::show)
+                }
             }
         },
+        onMoved = { right, y ->
+            scope.launch { settingsRepository.update { it.copy(clipBubbleOnRight = right, clipBubbleY = y) } }
+        },
+        dark = ::overlayDark,
+        description = { translate("打开剪贴板历史") },
+        onError = { what, error -> eventLog.error("clip", what + " 出错", error) },
+    )
+
+    private fun translate(text: String): String =
+        AppTranslations.translate(text, settingsRepository.settings.value.language)
+
+    /** 浮层（面板、按钮）用深色还是浅色：跟应用的外观设置走，默认的「跟随系统」看系统此刻的深色模式。 */
+    private fun overlayDark(): Boolean = when (settingsRepository.settings.value.theme) {
+        UserSettings.Theme.LIGHT -> false
+        UserSettings.Theme.DARK -> true
+        UserSettings.Theme.SYSTEM ->
+            appContext.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
+                Configuration.UI_MODE_NIGHT_YES
+    }
+
+    /**
+     * 屏幕此刻是不是解锁可用。熄屏即锁，解锁（或没有锁屏时亮屏）即开。
+     *
+     * 只给剪贴板按钮用：无障碍浮层压得住锁屏，按钮不能在锁屏上露面。
+     */
+    private val unlocked = MutableStateFlow(
+        context.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked != true,
     )
 
     /**
@@ -548,10 +586,20 @@ class AppGraph private constructor(context: Context) {
             // 熄屏收起剪贴板面板：无障碍悬浮层压得住锁屏，不能让历史留在锁屏上
             if (intent?.action == Intent.ACTION_SCREEN_OFF) {
                 clipPanel.dismiss()
+                unlocked.value = false
                 return
             }
             // 锁屏期间系统对谁都不给剪贴板内容，期间的复制在解锁时补读一次
-            if (intent?.action == Intent.ACTION_USER_PRESENT) scope.launch { clipCapture.catchUp() }
+            if (intent?.action == Intent.ACTION_USER_PRESENT) {
+                unlocked.value = true
+                scope.launch { clipCapture.catchUp() }
+            }
+            // 没设锁屏的机器亮屏即可用，收不到 USER_PRESENT 也要把按钮放出来
+            if (intent?.action == Intent.ACTION_SCREEN_ON &&
+                appContext.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked != true
+            ) {
+                unlocked.value = true
+            }
 
             // 先重新数一遍键盘，且不受暂停影响。
             //
@@ -929,6 +977,19 @@ class AppGraph private constructor(context: Context) {
         // 两种情况下面板都得收起，否则它停在屏幕上却按什么都没反应
         scope.launch { paused.collect { if (it) clipPanel.dismiss() } }
         scope.launch { accessibility.connected.collect { if (!it) clipPanel.dismiss() } }
+
+        // 剪贴板按钮：开关开着、监听服务连着、没暂停、屏幕解锁，四样都满足才露面。
+        // 服务重连时 connected 会先落再起，按钮随之在新的服务实例上重挂。
+        scope.launch {
+            combine(
+                settingsRepository.settings.map { it.clipBubble }.distinctUntilChanged(),
+                accessibility.connected,
+                paused,
+                unlocked,
+            ) { on, connected, isPaused, open -> on && connected && !isPaused && open }
+                .distinctUntilChanged()
+                .collect { visible -> if (visible) clipBubble.show() else clipBubble.hide() }
+        }
 
         // 无障碍自愈：开关被 ROM 抹掉时写回去（P2）
         scope.launch { watchAccessibilitySwitch() }

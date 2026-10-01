@@ -5,6 +5,7 @@ import com.actionmental.core.action.Action
 import com.actionmental.core.action.ActionCatalog
 import com.actionmental.core.action.ActionResult
 import com.actionmental.core.action.TriggerFeedback
+import com.actionmental.core.clip.BubbleGeometry
 import com.actionmental.core.clip.ClipDeduper
 import com.actionmental.core.clip.ClipEntry
 import com.actionmental.core.clip.ClipPanelState
@@ -397,6 +398,30 @@ class ClipHistoryTest {
         // 没定义的 Ctrl 组合不当成字符输入
         assertNull(PanelKeys.map(KeyEvent.KEYCODE_Q, ctrl, 'q'))
         assertNull(PanelKeys.map(KeyEvent.KEYCODE_F5, 0, null))
+    }
+
+    // --- 悬浮按钮的位置 -------------------------------------------------------
+
+    @Test
+    fun `松手时贴近的那一侧`() {
+        assertFalse(BubbleGeometry.snapToRight(centerX = 100, screenWidth = 1000))
+        assertTrue(BubbleGeometry.snapToRight(centerX = 500, screenWidth = 1000))
+        assertTrue(BubbleGeometry.snapToRight(centerX = 900, screenWidth = 1000))
+    }
+
+    @Test
+    fun `竖直位置按比例存，换屏幕尺寸也落在可用区内`() {
+        // 竖屏 2000 高、上让 100、下让 100、按钮 100：可动范围 100…1800
+        assertEquals(0f, BubbleGeometry.fractionOf(50, 2000, 100, 100, 100))
+        assertEquals(1f, BubbleGeometry.fractionOf(1950, 2000, 100, 100, 100))
+        val half = BubbleGeometry.fractionOf(950, 2000, 100, 100, 100)
+        assertEquals(0.5f, half, 0.001f)
+        assertEquals(950, BubbleGeometry.yOf(half, 2000, 100, 100, 100))
+        // 转成横屏只剩 1000 高：同样的比例落在新范围的中间
+        assertEquals(450, BubbleGeometry.yOf(half, 1000, 100, 100, 100))
+        // 窗口小到放不下按钮也不出负数
+        assertEquals(100, BubbleGeometry.yOf(0.7f, 250, 100, 100, 100))
+        assertEquals(0f, BubbleGeometry.fractionOf(10, 250, 100, 100, 100))
     }
 
     // --- 管线的模态接管 -------------------------------------------------------

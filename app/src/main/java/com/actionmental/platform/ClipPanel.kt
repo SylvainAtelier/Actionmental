@@ -73,6 +73,8 @@ class ClipPanel(
     private val translate: (String) -> String,
     /** 此刻该用深色还是浅色。每次打开时问一次：面板开着的那几秒里主题不会变。 */
     private val dark: () -> Boolean,
+    /** 面板内部出错时记日志，而不是让异常把进程带走。 */
+    private val onError: (what: String, error: Throwable) -> Unit,
 ) {
     private val main = Handler(Looper.getMainLooper())
 
@@ -105,18 +107,32 @@ class ClipPanel(
         if (service.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true) {
             return ActionResult.Failed(ActionResult.Reason.UNSUPPORTED, "锁屏时不显示剪贴板历史")
         }
-        main.post { if (root != null) close() else show(service) }
+        main.post { guarded("打开 / 关闭剪贴板面板") { if (root != null) close() else show(service) } }
         return ActionResult.Ok(if (open) "关闭剪贴板历史" else "打开剪贴板历史")
     }
 
     /** 熄屏、服务断开时调用。 */
     fun dismiss() {
-        if (open) main.post { close() }
+        if (open) main.post { guarded("收起剪贴板面板") { close() } }
+    }
+
+    /**
+     * 面板跑在无障碍服务进程的主线程上：这里抛出去的异常会带走整个进程，
+     * 按键监听也跟着断掉。出了错只收起面板、记一笔，代价最多是这一次没打开。
+     */
+    private inline fun guarded(what: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (t: Throwable) {
+            onError(what, t)
+            runCatching { close() }
+        }
     }
 
     private fun show(service: AccessibilityService) {
         val wm = service.getSystemService(WindowManager::class.java) ?: return
         palette = Palette.of(dark())
+        lastLoadedQuery = ""
         state = ClipPanelState()
         limit = ClipPanelState.PAGE_SIZE
         hasMore = false
@@ -226,15 +242,17 @@ class ClipPanel(
             main.post {
                 // 打字快过查询时，旧结果到得晚也不能盖掉新结果
                 if (gen != generation || root == null) return@post
-                limit = count
-                hasMore = rows.size >= count
-                loadingMore = false
-                val firstPage = state.entries.isEmpty() || query != lastLoadedQuery
-                lastLoadedQuery = query
-                state = state.withEntries(rows)
-                render()
-                // 换了搜索词回到顶上；翻页、删改保持原位
-                if (firstPage) listView.setSelection(0) else revealSelected()
+                guarded("刷新剪贴板列表") {
+                    limit = count
+                    hasMore = rows.size >= count
+                    loadingMore = false
+                    val firstPage = state.entries.isEmpty() || query != lastLoadedQuery
+                    lastLoadedQuery = query
+                    state = state.withEntries(rows)
+                    render()
+                    // 换了搜索词回到顶上；翻页、删改保持原位
+                    if (firstPage) listView.setSelection(0) else revealSelected()
+                }
             }
         }
     }
@@ -247,7 +265,7 @@ class ClipPanel(
         if (position < state.entries.size - ClipPanelState.PREFETCH) return
         loadingMore = true
         // getView 里触发时正在布局，挪到下一帧再改数据
-        main.post { if (root != null) load(state.query, limit + ClipPanelState.PAGE_SIZE) }
+        main.post { if (root != null) guarded("加载下一页") { load(state.query, limit + ClipPanelState.PAGE_SIZE) } }
     }
 
     // --- 绘制 ----------------------------------------------------------------
@@ -456,7 +474,11 @@ class ClipPanel(
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 .apply { topMargin = dp(context, 10f).toInt(); bottomMargin = dp(context, 8f).toInt() }
         }
-        listView = ListView(context).apply {
+        // 先赋值、再配置：setOnScrollListener 会当场回调一次 onScroll，
+        // 回调里要用到 listView —— 写在 `listView = ListView().apply { … }` 里时字段还没赋上，
+        // lateinit 当场抛异常，整个无障碍进程跟着崩掉（真机上唤出面板即闪退就是这个）。
+        listView = ListView(context)
+        listView.apply {
             adapter = this@ClipPanel.adapter
             divider = null
             dividerHeight = dp(context, 2f).toInt()

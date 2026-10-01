@@ -105,6 +105,11 @@ data class UserSettings(
     val clipHistoryRetentionDays: Int = 0,
     /** 未置顶条目最多留多少条，0 为不限。默认值的由来见 ClipPolicy.DEFAULT_CAPACITY。 */
     val clipHistoryCapacity: Int = com.actionmental.core.clip.ClipPolicy.DEFAULT_CAPACITY,
+    /** 常驻屏幕边缘的剪贴板按钮，点一下唤出面板。默认关闭：它常年占着屏幕一角。 */
+    val clipBubble: Boolean = false,
+    /** 按钮贴在哪一侧，以及竖直位置（可用高度的比例，0 顶、1 底）。拖动松手后记下。 */
+    val clipBubbleOnRight: Boolean = true,
+    val clipBubbleY: Float = 0.6f,
 ) {
     enum class Theme(val label: String) { LIGHT("浅色"), DARK("深色"), SYSTEM("跟随系统") }
     enum class Language { CHINESE, ENGLISH }

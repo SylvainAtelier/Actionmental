@@ -487,6 +487,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setClipHistory(on: Boolean) = updateSettings { it.copy(clipHistory = on) }
 
+    /** 屏幕边缘的剪贴板按钮。显隐由 AppGraph 按开关、服务、暂停、锁屏统一决定。 */
+    fun setClipBubble(on: Boolean) = updateSettings { it.copy(clipBubble = on) }
+
     /** 未置顶条目的保留数，0 为不限。调小时由 AppGraph 当场删掉超出的部分。 */
     fun setClipCapacity(count: Int) = updateSettings { it.copy(clipHistoryCapacity = count.coerceAtLeast(0)) }
 
