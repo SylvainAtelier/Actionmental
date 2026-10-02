@@ -477,6 +477,20 @@ class AppGraph private constructor(context: Context) {
     )
 
     /**
+     * 照系统的真值把 [unlocked] 拨回「已解锁」。
+     *
+     * 解锁本该由 USER_PRESENT 告诉我们，但广播会被 ROM 拦、会在进程冻结时丢 ——
+     * 只靠它，漏一次按钮就一直藏着。界面回到前台、前台应用换了，这两个时刻屏幕必然是开着的，
+     * 顺手对一次真值，代价只是一次本地查询。只往「解锁」方向纠正：上锁仍以熄屏广播为准。
+     */
+    private fun resyncUnlocked() {
+        if (unlocked.value) return
+        if (appContext.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == false) {
+            unlocked.value = true
+        }
+    }
+
+    /**
      * 映射的输出口。注入那一路直接挂在 shizuku 上而不是包装过的 [logged]：
      * 注入的内容就是用户的击键，写进 shell 日志等于记录输入 ——
      * 「不记录输入内容」的承诺优先于「每一条特权调用都可查」。
@@ -873,6 +887,9 @@ class AppGraph private constructor(context: Context) {
         eventLog.info("app", "进程启动")
         reportLastExit()
         shizuku.start()
+        // 必须 EXPORTED：USER_PRESENT 不是 system_server 发的，而是 SystemUI（一个普通 uid）发的，
+        // NOT_EXPORTED 的接收器会把它当成「别的应用发来的」直接丢掉 —— 亮灭屏照收，解锁却永远收不到，
+        // 剪贴板按钮于是在第一次熄屏之后再也不出来。三个都是受保护广播，普通应用发不了，导出没有风险。
         ContextCompat.registerReceiver(
             appContext,
             screenOnReceiver,
@@ -881,7 +898,7 @@ class AppGraph private constructor(context: Context) {
                 addAction(Intent.ACTION_SCREEN_OFF)
                 addAction(Intent.ACTION_USER_PRESENT)
             },
-            ContextCompat.RECEIVER_NOT_EXPORTED,
+            ContextCompat.RECEIVER_EXPORTED,
         )
 
         // 以下三处把原来靠轮询发现的变化改成由事件通知，
@@ -1076,15 +1093,19 @@ class AppGraph private constructor(context: Context) {
         scope.launch { paused.collect { if (it) clipPanel.dismiss() } }
         scope.launch { accessibility.connected.collect { if (!it) clipPanel.dismiss() } }
 
-        // 剪贴板按钮：开关开着、监听服务连着、没暂停、屏幕解锁，四样都满足才露面。
+        // 前台应用一换，屏幕必然开着：漏掉的解锁在这里补上
+        scope.launch { accessibility.foregroundPackage.collect { resyncUnlocked() } }
+
+        // 剪贴板按钮：开关开着、监听服务连着、屏幕解锁，三样都满足才露面。
+        // 暂停不收起它：按钮本来就是给不接键盘时用的，而「没有键盘就自动暂停」恰好在那时落地。
+        // 暂停只停按键，点按钮 → 点一条走的是触摸和无障碍输入通道，照样能用。
         // 服务重连时 connected 会先落再起，按钮随之在新的服务实例上重挂。
         scope.launch {
             combine(
                 settingsRepository.settings.map { it.clipBubble }.distinctUntilChanged(),
                 accessibility.connected,
-                paused,
                 unlocked,
-            ) { on, connected, isPaused, open -> on && connected && !isPaused && open }
+            ) { on, connected, open -> on && connected && open }
                 .distinctUntilChanged()
                 .collect { visible -> if (visible) clipBubble.show() else clipBubble.hide() }
         }
@@ -1673,6 +1694,7 @@ class AppGraph private constructor(context: Context) {
     /** 界面回来了。由 [com.actionmental.ui.MainActivity] 的 onStart 调用。 */
     fun onUiStarted() {
         uiForeground = true
+        resyncUnlocked()
         catalogRelease?.cancel()
         catalogRelease = null
         // 与「界面退到后台」那条成对。两条之间的 rss 差值就是界面本身的代价 ——

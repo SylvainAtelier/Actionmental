@@ -1,6 +1,8 @@
 package com.actionmental.ui.screens
 
 import android.content.ClipboardManager
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -137,13 +139,19 @@ fun ClipHistoryScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                     Column(Modifier.weight(1f)) {
                         Text("屏幕边缘按钮", style = AmType.body, color = c.ink)
                         Text(
-                            if (status.accessibilityConnected) "点一下唤出面板 · 拖动换位置，松手贴边"
-                            else "需要无障碍键盘服务在运行",
+                            "点一下唤出面板 · 拖动换位置，松手贴边",
                             style = AmType.data,
                             color = c.inkFaint,
                         )
                     }
                     AmSwitch(settings.clipBubble, onCheckedChange = vm::setClipBubble)
+                }
+                if (settings.clipBubble) {
+                    Spacer(Modifier.height(6.dp))
+                    BubblePermissionGuide(
+                        connected = status.accessibilityConnected,
+                        enabledInSettings = status.accessibilityEnabledInSettings,
+                    )
                 }
                 Spacer(Modifier.height(AmSpace.s2))
                 RawText(
@@ -529,3 +537,52 @@ private fun ClipDetailSheet(entry: ClipEntry, vm: AppViewModel, ownPackage: Stri
 
 /** 读全文用的字号：比列表里的正文大一档、常规字重、行距放宽，长段落不累眼。 */
 private val DetailText = TextStyle(fontFamily = FontFamily.SansSerif, fontSize = 14.sp, lineHeight = 22.sp)
+
+/**
+ * 边缘按钮要露面所需的条件，就地列出来，缺哪样给哪样的入口。
+ *
+ * 按钮挂的是无障碍浮层，唯一要的授权是无障碍键盘服务；悬浮窗权限用不上，
+ * 明说出来，免得用户以为是它没给而去系统里乱翻。
+ */
+@Composable
+private fun BubblePermissionGuide(connected: Boolean, enabledInSettings: Boolean) {
+    val c = amColors
+    val context = LocalContext.current
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(c.bg, RoundedCornerShape(AmShape.key + 2.dp))
+            .padding(horizontal = AmSpace.s2, vertical = 8.dp),
+    ) {
+        AmLabel("需要的权限 · PERMISSIONS")
+        Spacer(Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StatusDot(if (connected) c.ok else c.accent)
+            Column(Modifier.weight(1f)) {
+                Text("无障碍键盘服务", style = AmType.body, color = c.ink)
+                Text(
+                    when {
+                        connected -> "运行中 · 按钮靠它挂在其他应用上层"
+                        enabledInSettings -> "已授权但未连接 · 到系统设置里把它关掉再打开"
+                        else -> "未开启 · 在系统设置 → 无障碍里打开「Actionmental 键盘服务」"
+                    },
+                    style = AmType.data,
+                    color = c.inkFaint,
+                )
+            }
+            if (!connected) {
+                AmSecondaryButton("去开启", accent = true, onClick = {
+                    context.startActivity(
+                        Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                })
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "不需要悬浮窗权限。暂停时照常显示；锁屏时自动隐藏，解锁后回来。",
+            style = AmType.secondary,
+            color = c.inkFaint,
+        )
+    }
+}
