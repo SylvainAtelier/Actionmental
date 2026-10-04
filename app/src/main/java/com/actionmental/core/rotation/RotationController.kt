@@ -467,12 +467,22 @@ class RotationController(
         }
     }
 
+    /**
+     * 这台设备的 `cmd window` 没有 fix-to-user-rotation 子命令（ColorOS 等）。
+     *
+     * 命令不存在不会因为多试几次就有了：原来每一次写入都带着它、每一次都失败一遍，
+     * 事件日志里每条写入后面都挂着同一句「不受支持」。第一次确认之后就不再下发，进程内有效。
+     */
+    @Volatile
+    private var fixToUserUnsupported = false
+
     private suspend fun writeShell(mode: RotationMode): ActionResult {
         // 降级时挂上的悬浮层要先撤掉：它压在所有窗口之上，留着会和 shell 的写入各说各话
         settingsLocked = null
         local?.forceOverlay(null)
         val b = backend()
         val plan = rotationWritePlan(mode)
+            ?.let { full -> if (fixToUserUnsupported) full.filterNot { it.contains(FIX_TO_USER) } else full }
             ?: return ActionResult.Failed(ActionResult.Reason.UNSUPPORTED, mode.technical)
 
         val results = execBatch(b, plan)
@@ -483,8 +493,12 @@ class RotationController(
             val shell = results.getOrNull(index) ?: return@forEachIndexed
             if (!shell.ok) {
                 // fix-to-user-rotation 在部分 OEM 上不存在，属于降级而不是彻底失败
-                if (command.contains("fix-to-user-rotation")) softFailure = shell.output.trim()
-                else return ActionResult.Failed(ActionResult.Reason.EXECUTION_FAILED, shell.output.trim())
+                if (command.contains(FIX_TO_USER)) {
+                    softFailure = shell.output.trim()
+                    if (shell.output.contains("Unknown command", ignoreCase = true)) fixToUserUnsupported = true
+                } else {
+                    return ActionResult.Failed(ActionResult.Reason.EXECUTION_FAILED, shell.output.trim())
+                }
             }
         }
         return if (softFailure == null) ActionResult.OK
@@ -503,9 +517,9 @@ class RotationController(
         // 而这段代码在旋转页每十几秒、以及每次写入之后都要跑一遍。
         val probes = execBatch(
             b,
-            listOf(
+            listOfNotNull(
                 "cmd window get-ignore-orientation-request",
-                "cmd window get-fix-to-user-rotation",
+                "cmd window get-fix-to-user-rotation".takeUnless { fixToUserUnsupported },
             ),
         )
         val ignore = probes?.getOrNull(0)
@@ -636,6 +650,8 @@ class RotationController(
          * 这类没有 URI 可以观察的开关被另一个特权应用动过。
          */
         const val CACHE_TTL_MS = 30_000L
+
+        const val FIX_TO_USER = "fix-to-user-rotation"
     }
 
     /** 切换类动作在写不了时的失败。意图不落盘：没写下去的「转过去」不该在下次启动时冒出来。 */

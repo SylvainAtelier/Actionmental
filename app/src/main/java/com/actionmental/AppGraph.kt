@@ -1008,9 +1008,11 @@ class AppGraph private constructor(context: Context) {
             ).collect { (_, usable) -> if (usable) syncOrientationCompat("名单或 Shizuku 变化") }
         }
 
-        // Shizuku 来去会换掉旋转的写入级别：连上时从悬浮层升级回 shell，掉了就降级
+        // Shizuku 来去会换掉旋转的写入级别：连上时从悬浮层升级回 shell，掉了就降级。
+        // 特权服务连上也要再落一次：授权在先、服务绑定在后，启动时那一次写入
+        // 在 awaitService 里等满 1s 恰好错过绑定，就以「特权通道不可用」失败，之后再没人重试。
         scope.launch {
-            shizuku.status.map { it.usable }.distinctUntilChanged().collect {
+            shizuku.status.map { it.usable to it.serviceBound }.distinctUntilChanged().collect {
                 rotation.reapplyAsync()
             }
         }
