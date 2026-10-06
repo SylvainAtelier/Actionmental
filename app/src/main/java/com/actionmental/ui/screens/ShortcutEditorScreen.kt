@@ -118,6 +118,7 @@ fun ShortcutEditorScreen(
     val recording by vm.recording.collectAsStateWithLifecycle()
     val conflict by vm.conflict.collectAsStateWithLifecycle()
     val apps by vm.apps.collectAsStateWithLifecycle()
+    val appsLoading by vm.appsLoading.collectAsStateWithLifecycle()
     val activities by vm.activities.collectAsStateWithLifecycle()
     val desktopPinned by vm.desktopPinned.collectAsStateWithLifecycle()
     // 桌面上的移除系统不通知；从桌面的确认框回来时也要重查一次
@@ -325,6 +326,8 @@ fun ShortcutEditorScreen(
 
         EditorSheet.APP -> AppActivityPickerSheet(
             apps = apps,
+            loading = appsLoading,
+            onShown = vm::ensureApps,
             activities = activities,
             current = draft.action as? Action.LaunchApp,
             openPackage = openGroup,
@@ -500,6 +503,8 @@ private const val DEFAULT_ENTRY_ID = "__default__"
 @Composable
 private fun AppActivityPickerSheet(
     apps: List<PackageBackend.InstalledApp>,
+    loading: Boolean,
+    onShown: () -> Unit,
     activities: Map<String, List<PackageBackend.ActivityEntry>>,
     current: Action.LaunchApp?,
     openPackage: String?,
@@ -508,6 +513,7 @@ private fun AppActivityPickerSheet(
     onRescan: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    LaunchedEffect(Unit) { onShown() }
     val groups = remember(apps, activities, current) {
         apps.map { app ->
             val loaded = activities[app.packageName]
@@ -553,6 +559,7 @@ private fun AppActivityPickerSheet(
         onOpenGroup = onOpenPackage,
         searchPlaceholder = "搜索应用名或包名…",
         emptyHint = "这个应用没有可启动的入口",
+        loading = loading,
         onPick = { packageName, itemId ->
             val app = apps.firstOrNull { it.packageName == packageName } ?: return@AmPickerSheet
             val entry = activities[packageName]?.firstOrNull { it.className == itemId }

@@ -124,18 +124,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // --- 状态刷新 -------------------------------------------------------------
 
     /**
+     * 应用选择器打开了，确保应用清单在。
+     *
+     * 清单会在界面离开一阵之后被放掉（见 AppGraph.onUiStopped），装卸应用后会被标记过期。
+     * [com.actionmental.platform.AppCatalog.warmUp] 自带「还新鲜就不查」。
+     */
+    fun ensureAppCatalog() = graph.appCatalog.warmUp()
+
+    val appsLoading: StateFlow<Boolean> = graph.appCatalog.loading
+
+    /**
      * 轻量状态刷新：读设置、查设备、看本地标志，都不出进程边界之外太远。
      *
      * 刻意不含旋转 —— 那一项要跑两条 shell，见 [refreshRotationState]。
      */
-    /**
-     * 界面要用应用清单了，确保它在。
-     *
-     * 清单会在界面退到后台时被放掉（见 AppGraph.onTrimMemory），所以每次回到前台
-     * 都要问一次。[com.actionmental.platform.AppCatalog.warmUp] 自带「已经有了就不查」。
-     */
-    fun ensureAppCatalog() = graph.appCatalog.warmUp()
-
     fun refreshEverything() {
         refreshSettingsAccess()
         graph.shizuku.refresh()

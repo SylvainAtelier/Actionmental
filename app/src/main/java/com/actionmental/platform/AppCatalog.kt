@@ -14,10 +14,11 @@ import kotlinx.coroutines.withContext
 /**
  * 应用与 Activity 的内存目录。
  *
- * 选择器必须瞬开，而 PackageManager 的查询在装了几百个应用的设备上要几百毫秒 ——
- * 所以应用清单在进程启动时就在后台预热一次，界面只读缓存；
+ * 应用清单只在应用选择器打开时才查（[warmUp]），进程启动、界面回到前台都不碰它：
+ * 绝大多数时候界面开着也不会去点选择器。应用名有盘上缓存（[LabelCache]），
+ * 所以除了第一次，查一遍只剩一次 queryIntentActivities 的代价。
  * Activity 清单按包懒加载并缓存，一个包只查一次。
- * 两者都是纯缓存，刷新是显式动作，不做定时失效。
+ * 两者都是纯缓存：装卸应用只标记过期（[markStale]），下次打开选择器时才重查。
  */
 class AppCatalog(
     private val packages: PackageBackend,
@@ -40,14 +41,23 @@ class AppCatalog(
     private val activities = mutableMapOf<String, List<PackageBackend.ActivityEntry>>()
     private val activityLock = Mutex()
 
-    /** 进程启动后调用一次。已经有数据就不重复查。 */
+    /** 装卸过应用之后手里的清单就不全了，但没人要看时不必当场重查。 */
+    @Volatile
+    private var stale = false
+
+    /** 应用选择器打开时调用。手里的清单还新鲜就不重复查。 */
     fun warmUp() {
-        if (_apps.value.isNotEmpty() || _loading.value) return
+        if ((_apps.value.isNotEmpty() && !stale) || _loading.value) return
         scope.launch { refresh() }
+    }
+
+    fun markStale() {
+        stale = true
     }
 
     suspend fun refresh() {
         _loading.value = true
+        stale = false
         val startedAt = System.currentTimeMillis()
         try {
             val loaded = withContext(Dispatchers.IO) { packages.launchableApps() }
@@ -57,7 +67,8 @@ class AppCatalog(
             throw e
         } catch (e: Exception) {
             // 冷启动时 PackageManager 查几百个包可能直接抛出来。清单只是选择器的缓存，
-            // 查不到就留空，下次回到前台 warmUp 会再试 —— 不能为它把进程带走
+            // 查不到就留着旧的，下次打开选择器 warmUp 会再试 —— 不能为它把进程带走
+            stale = true
             onFailed(e)
         } finally {
             _loading.value = false

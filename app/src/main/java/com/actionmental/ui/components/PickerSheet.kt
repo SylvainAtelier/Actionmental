@@ -94,6 +94,8 @@ fun AmPickerSheet(
     searchPlaceholder: String = "搜索…",
     emptyHint: String = "没有匹配项",
     header: (@Composable () -> Unit)? = null,
+    /** 一级列表还在后台读取：没有分组时显示读取中，而不是「没有匹配项」。 */
+    loading: Boolean = false,
 ) {
     val c = amColors
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -146,6 +148,10 @@ fun AmPickerSheet(
                 val listHeight = 420.dp
 
                 when {
+                    loading && groups.isEmpty() -> Box(Modifier.fillMaxWidth().height(listHeight)) {
+                        CenteredHint("正在读取应用列表…")
+                    }
+
                     term.isNotEmpty() -> LazyColumn(
                         Modifier.fillMaxWidth().heightIn(max = listHeight),
                         contentPadding = PaddingValues(bottom = AmSpace.s2),

@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import com.actionmental.ui.i18n.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -203,7 +204,9 @@ private fun AppPickerSheet(
     onDismiss: () -> Unit,
     onPick: (PackageBackend.InstalledApp, RotationMode) -> Unit,
 ) {
+    LaunchedEffect(Unit) { vm.ensureAppCatalog() }
     val apps by vm.apps.collectAsStateWithLifecycle()
+    val loading by vm.appsLoading.collectAsStateWithLifecycle()
     var openPackage by remember { mutableStateOf<String?>(null) }
 
     val groups = remember(apps) {
@@ -233,6 +236,7 @@ private fun AppPickerSheet(
         onOpenGroup = { openPackage = it },
         searchPlaceholder = "搜索应用名或包名…",
         emptyHint = "没有匹配的应用",
+        loading = loading,
         onPick = { packageName, modeName ->
             val app = apps.firstOrNull { it.packageName == packageName }
             val mode = modeName?.let { name -> RotationMode.selectable.firstOrNull { it.name == name } }
@@ -254,7 +258,9 @@ private fun CompatPickerSheet(
     onDismiss: () -> Unit,
     onPick: (PackageBackend.InstalledApp) -> Unit,
 ) {
+    LaunchedEffect(Unit) { vm.ensureAppCatalog() }
     val apps by vm.apps.collectAsStateWithLifecycle()
+    val loading by vm.appsLoading.collectAsStateWithLifecycle()
     val groups = remember(apps) {
         apps.map { app ->
             PickerGroup(
@@ -274,6 +280,7 @@ private fun CompatPickerSheet(
         onOpenGroup = {},
         searchPlaceholder = "搜索应用名或包名…",
         emptyHint = "没有匹配的应用",
+        loading = loading,
         onPick = { packageName, _ -> apps.firstOrNull { it.packageName == packageName }?.let(onPick) },
         onDismiss = onDismiss,
         header = {

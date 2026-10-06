@@ -793,6 +793,7 @@ class AppGraph private constructor(context: Context) {
         override fun onReceive(context: Context?, intent: Intent?) {
             val pkg = intent?.data?.schemeSpecificPart
             if (pkg == SHIZUKU_PACKAGE) shizuku.refresh()
+            appCatalog.markStale()
             // 应用更新后覆盖可能被系统清掉：名单上的包一装一换就核对一次
             if (pkg != null && intent.action != Intent.ACTION_PACKAGE_REMOVED &&
                 orientationCompatRepository.targets.value.any { it.packageName == pkg }
@@ -945,8 +946,7 @@ class AppGraph private constructor(context: Context) {
         // 应用清单刻意不在这里预热。这个进程多数时候是被开机广播、无障碍绑定
         // 或者上一次被杀之后的重启拉起来的 —— 那些时刻根本没有界面，
         // 而 queryIntentActivities 要把几百个包连同 disabled 的一起取回来，
-        // 是启动路径上最贵的一步。真正要用它的地方（AppViewModel.ensureAppCatalog）
-        // 每次回到前台都会问一次，晚这一下没人看得出来。
+        // 是启动路径上最贵的一步。只有应用选择器打开时才查（AppCatalog.warmUp）。
         refreshKeyboards()
         refreshAccessibility()
 

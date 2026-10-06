@@ -16,6 +16,7 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import com.actionmental.core.action.ActionResult
 import com.actionmental.core.key.KeyboardDevice
+import java.io.File
 
 /** 音量 / 媒体：普通 API 就能做到的事，绝不走 Shizuku（PRD 3.4）。 */
 class AudioBackend(context: Context) {
@@ -39,6 +40,45 @@ class AudioBackend(context: Context) {
         audio.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0))
         ActionResult.OK
     }.getOrElse { ActionResult.Failed(ActionResult.Reason.EXECUTION_FAILED, it.message.orEmpty()) }
+}
+
+/** [PackageBackend.launchableApps] 的应用名缓存。一行一条：键、制表符、应用名。 */
+internal class LabelCache(private val context: Context) {
+
+    private val file get() = File(context.noBackupFilesDir, "app-labels.tsv")
+
+    private fun locale(): String = context.resources.configuration.locales[0].toLanguageTag()
+
+    fun load(): Map<String, String> = runCatching {
+        val lines = file.takeIf { it.exists() }?.readLines() ?: return emptyMap()
+        if (lines.firstOrNull() != HEADER + locale()) return emptyMap()
+        lines.asSequence().drop(1).mapNotNull { line ->
+            val tab = line.indexOf('\t')
+            if (tab <= 0) null else line.substring(0, tab) to line.substring(tab + 1)
+        }.toMap()
+    }.getOrDefault(emptyMap())
+
+    /** 写坏了无所谓：下次读不出来就当没有缓存，全量取一次名字。 */
+    fun save(labels: Map<String, String>) {
+        runCatching {
+            val text = buildString {
+                append(HEADER).append(locale()).append('\n')
+                labels.forEach { (key, label) ->
+                    append(key).append('\t').append(label.replace('\t', ' ').replace('\n', ' ')).append('\n')
+                }
+            }
+            val tmp = File(file.parentFile, file.name + ".tmp")
+            tmp.writeText(text)
+            tmp.renameTo(file)
+        }
+    }
+
+    companion object {
+        private const val HEADER = "#v1 "
+
+        fun keyOf(packageName: String, activity: String, sourceDir: String?): String =
+            packageName + "|" + activity + "|" + sourceDir.orEmpty()
+    }
 }
 
 /** 应用启动、应用清单与链接打开。 */
@@ -101,27 +141,45 @@ class PackageBackend(private val context: Context) {
      */
     @Suppress("DEPRECATION")
     fun launchableApps(): List<InstalledApp> {
+        val pm = context.packageManager
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        return context.packageManager.queryIntentActivities(
-            intent,
-            PackageManager.MATCH_DISABLED_COMPONENTS,
-        )
+        val cached = labelCache.load()
+        val fresh = HashMap<String, String>()
+        val apps = pm.queryIntentActivities(intent, PackageManager.MATCH_DISABLED_COMPONENTS)
+            .distinctBy { it.activityInfo.packageName }
             .map {
-                val applicationInfo = it.activityInfo.applicationInfo
+                val activityInfo = it.activityInfo
+                val applicationInfo = activityInfo.applicationInfo
+                val key = LabelCache.keyOf(activityInfo.packageName, activityInfo.name, applicationInfo.sourceDir)
+                // 查询与逐条取名之间包可能刚被更新或卸载，取不到名字就用包名顶上
+                val label = cached[key] ?: runCatching { it.loadLabel(pm).toString() }
+                    .getOrDefault(activityInfo.packageName)
+                fresh[key] = label
                 InstalledApp(
-                    packageName = it.activityInfo.packageName,
-                    // 查询与逐条取名之间包可能刚被更新或卸载，取不到名字就用包名顶上
-                    label = runCatching { it.loadLabel(context.packageManager).toString() }
-                        .getOrDefault(it.activityInfo.packageName),
-                    launchActivity = it.activityInfo.name,
+                    packageName = activityInfo.packageName,
+                    label = label,
+                    launchActivity = activityInfo.name,
                     frozen = !applicationInfo.enabled ||
                         applicationInfo.flags and ApplicationInfo.FLAG_SUSPENDED != 0,
                     systemApp = applicationInfo.flags and ApplicationInfo.FLAG_SYSTEM != 0,
                 )
             }
-            .distinctBy { it.packageName }
             .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.label })
+        // 卸掉的应用随之从盘上消失：只存这一次真的看到的
+        if (fresh != cached) labelCache.save(fresh)
+        return apps
     }
+
+    /**
+     * 应用名的盘上缓存。
+     *
+     * 逐条 loadLabel 是清单加载里唯一贵的部分：每一条都要打开对方 APK 的资源表，
+     * 几百个包加起来就是几百 MB 的映射（体征里 code= 一下冲到 517MB、rss 753MB）、
+     * 冷启动后四秒多的 CPU。而应用名只在应用更新或系统换语言时才会变 ——
+     * 以「包名 + 入口 + 安装路径」为键（更新后安装路径必换），语言写在文件头，
+     * 换了语言整份作废。命中的那些一个资源表都不用开。
+     */
+    private val labelCache = LabelCache(context)
 
     /**
      * 单个应用里所有可作为启动目标的 Activity。

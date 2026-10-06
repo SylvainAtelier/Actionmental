@@ -70,9 +70,7 @@ fun AppRoot(vm: AppViewModel) {
     val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            // 应用清单在界面离开够久之后才被放掉，回到前台补一次
-            // （warmUp 自带「已经有了就不查」，短暂切走再回来不会重查）
-            vm.ensureAppCatalog()
+            // 应用清单不在这里补：只有三个应用选择器用得上它，由它们打开时各自要
             while (true) {
                 vm.refreshEverything()
                 delay(60_000)

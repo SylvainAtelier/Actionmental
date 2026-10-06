@@ -65,9 +65,11 @@ class ShortcutEditorViewModel(application: Application) : AndroidViewModel(appli
         runCatching { getApplication<Application>().startActivity(graph.termux.overlaySettingsIntent()) }
     }
 
-    /** 预热过的应用清单：选择器打开时已经在内存里，不必等 PackageManager。 */
+    /** 应用清单：选择器打开时才去要（[ensureApps]），之前没有人为它付钱。 */
     val apps: StateFlow<List<PackageBackend.InstalledApp>> = graph.appCatalog.apps
     val appsLoading: StateFlow<Boolean> = graph.appCatalog.loading
+
+    fun ensureApps() = graph.appCatalog.warmUp()
 
     private val _activities = MutableStateFlow<Map<String, List<PackageBackend.ActivityEntry>>>(emptyMap())
 
