@@ -44,22 +44,26 @@ class DegradedModeTest {
     }
 
     /**
-     * 按住的修饰键有输入框就走输入通道：注入的 Shift 会先经过输入法，
-     * Gboard 拼音吞掉轻点 Shift 的抬起，远控应用那边 Shift 就一直按着。
+     * 修饰键照常注入，输入法才看得到完整的轻点（Gboard 拼音靠它切中英文）；
+     * 输入法吞掉抬起时，应用靠输入通道补发的那一次抬起松开修饰键（TeamViewer 远端 Shift 不再卡住）。
      */
     @Test
-    fun `按住的修饰键有输入框时绕开输入法`() {
+    fun `注入的修饰键抬起后从输入通道补发一次`() {
         val shift = KeyCombo(KeyEvent.KEYCODE_SHIFT_LEFT)
         val esc = KeyCombo(KeyEvent.KEYCODE_ESCAPE)
-        fun held(combo: KeyCombo, sdk: Int = 34, ic: Boolean) =
-            KeyRouting.routeHeld(combo, sdk, injectReady = true, inputConnectionReady = ic)
+        fun needs(combo: KeyCombo, channel: KeyChannel?, sdk: Int = 34, ic: Boolean = true) =
+            KeyRouting.needsPostImeRelease(combo, channel, sdk, inputConnectionReady = ic)
 
-        assertEquals(KeyChannel.INPUT_CONNECTION, held(shift, ic = true))
-        // 没有输入框时输入法不拦按键，照常注入
-        assertEquals(KeyChannel.INJECT, held(shift, ic = false))
-        // 普通键不改路；Android 13 以前没有输入通道
-        assertEquals(KeyChannel.INJECT, held(esc, ic = true))
-        assertEquals(KeyChannel.INJECT, held(shift, sdk = 32, ic = true))
+        // 有 Shizuku 时修饰键仍走注入，输入法看得到
+        assertEquals(KeyChannel.INJECT, KeyRouting.route(shift, 34, injectReady = true, inputConnectionReady = true))
+        assertTrue(needs(shift, KeyChannel.INJECT))
+
+        // 没有输入框时输入法不拦按键；走输入通道的本来就绕开了输入法
+        assertFalse(needs(shift, KeyChannel.INJECT, ic = false))
+        assertFalse(needs(shift, KeyChannel.INPUT_CONNECTION))
+        // 普通键不补；Android 13 以前没有输入通道
+        assertFalse(needs(esc, KeyChannel.INJECT))
+        assertFalse(needs(shift, KeyChannel.INJECT, sdk = 32))
     }
 
     @Test

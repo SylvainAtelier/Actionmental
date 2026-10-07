@@ -46,26 +46,22 @@ class KeyOutputRouter(
         )
     }
 
-    /**
-     * 按住中的键是从哪条路按下的。抬起必须走同一条路 ——
-     * 按下经输入通道、抬起却去注入的话，抬起会被输入法拦下，等于没修。
-     */
-    private val heldChannels = ConcurrentHashMap<Int, KeyChannel>()
-
-    private fun routeHeld(combo: KeyCombo): KeyChannel? =
-        KeyRouting.routeHeld(combo, Build.VERSION.SDK_INT, shizuku.injectReady(), inputConnectionReady())
-
     override suspend fun send(combo: KeyCombo, down: Boolean?): Result<Unit> {
         // 发送时按那一刻重新挑路：从按下到真正发出之间焦点可能换了、Shizuku 可能刚连上
-        val channel = when (down) {
-            null -> route(combo)
-            true -> routeHeld(combo)?.also { heldChannels[combo.keyCode] = it }
-            // 按下时的输入框已经没了（焦点换走），抬起只能退回普通路由，总比不发强
-            false -> heldChannels.remove(combo.keyCode)
-                ?.takeIf { it != KeyChannel.INPUT_CONNECTION || inputConnectionReady() }
-                ?: route(combo)
+        val channel = route(combo)
+        val result = sendVia(channel, combo, down)
+        // SDK 判断写在这里而不只在规则里：lint 要在调用点看到它
+        if (Build.VERSION.SDK_INT >= 33 && down == false && result.isSuccess &&
+            KeyRouting.needsPostImeRelease(combo, channel, Build.VERSION.SDK_INT, inputConnectionReady())
+        ) {
+            // 补发失败（输入框恰好没了）不算这次发送失败：注入那一半已经发出去了
+            sendToInputConnection(combo, false)
         }
-        return when (channel) {
+        return result
+    }
+
+    private suspend fun sendVia(channel: KeyChannel?, combo: KeyCombo, down: Boolean?): Result<Unit> =
+        when (channel) {
             KeyChannel.INJECT -> when (down) {
                 null -> shizuku.injectKey(combo.keyCode, combo.metaState())
                 else -> shizuku.injectKeyState(combo.keyCode, combo.metaState(down), down)
@@ -81,7 +77,6 @@ class KeyOutputRouter(
                 else Result.failure(IllegalStateException("无障碍输入通道需要 Android 13"))
             null -> Result.failure(IllegalStateException(unavailableReason()))
         }
-    }
 
     /**
      * 全局动作与媒体键只有「一下」，没有按住的概念：在按下时做一次，抬起什么都不发。

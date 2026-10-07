@@ -103,17 +103,19 @@ object KeyRouting {
     }
 
     /**
-     * 只发半边（按住）的目标键走哪条路。
+     * 注入的修饰键抬起之后，要不要再从输入通道给前台应用补一次抬起。
      *
-     * 修饰键有输入框时优先走输入通道：注入的按键和实体键一样先交给输入法，
-     * 而 Gboard 拼音把「单独轻点 Shift」当作中英文切换，会吞掉 Shift 的抬起 ——
-     * 前台应用只收到按下，TeamViewer 这类远控就把远端的 Shift 一直按着。
-     * 输入通道的事件在输入法之后投递，输入法看不到这颗修饰键，也就吞不掉。
-     * 没有输入框时输入法本来就不拦按键，照常注入。
+     * 注入的按键和实体键一样先交给输入法。Gboard 拼音把「单独轻点 Shift」当作中英文切换，
+     * 切换的同时吞掉 Shift 的抬起 —— 前台应用只收到按下，TeamViewer 这类远控就把远端的 Shift 一直按着。
+     *
+     * 两头都要顾：按下与抬起照常注入，输入法才看得到完整的轻点、才能切中英文；
+     * 输入通道的事件在输入法之后投递，补发的这一次抬起输入法拦不住，应用一定收得到。
+     * 输入法没吞时应用会收到两次抬起，对已经松开的修饰键是空操作。
+     *
+     * 只补注入出去的：走输入通道的那半边本来就绕过了输入法。没有输入框时输入法也不拦按键。
      */
-    fun routeHeld(combo: KeyCombo, sdk: Int, injectReady: Boolean, inputConnectionReady: Boolean): KeyChannel? =
-        if (combo.isModifierKey && sdk >= 33 && inputConnectionReady) KeyChannel.INPUT_CONNECTION
-        else route(combo, sdk, injectReady, inputConnectionReady)
+    fun needsPostImeRelease(combo: KeyCombo, channel: KeyChannel?, sdk: Int, inputConnectionReady: Boolean): Boolean =
+        combo.isModifierKey && channel == KeyChannel.INJECT && sdk >= 33 && inputConnectionReady
 
     /**
      * 没有 Shizuku 时这颗目标键最好能走到哪条路。映射页据此提前告诉用户：
