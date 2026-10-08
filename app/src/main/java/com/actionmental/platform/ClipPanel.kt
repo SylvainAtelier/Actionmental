@@ -491,6 +491,9 @@ class ClipPanel(
             })
         }
         val layer = FrameLayout(context).apply {
+            // 兄弟视图按 Z 排绘制和分发触摸：这一层不抬过卡片的 12dp，菜单就画在卡片底下、点也点不到。
+            // 层本身没有背景，抬高不会投出整屏的影子
+            elevation = dp(context, 24f)
             // 点菜单外面只收菜单：面板还开着，用户多半是要接着挑
             setOnClickListener { dismissMenu() }
             addView(menu, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
