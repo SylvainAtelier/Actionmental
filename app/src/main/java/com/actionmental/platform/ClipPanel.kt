@@ -39,13 +39,12 @@ import com.actionmental.core.clip.PickKeys
 import com.actionmental.core.key.KeyPipeline
 import com.actionmental.core.key.NormalizedKeyEvent
 import com.actionmental.data.ClipHistoryStore
+import com.actionmental.data.UserSettings
 import com.actionmental.ui.theme.AmColors
-import com.actionmental.ui.theme.DarkAmColors
-import com.actionmental.ui.theme.LightAmColors
+import com.actionmental.ui.theme.amColorsFor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlin.math.abs
-import kotlin.math.roundToInt
 
 /**
  * 剪贴板历史面板：快捷键唤出，浮在当前应用上面。
@@ -79,6 +78,8 @@ class ClipPanel(
     private val translate: (String) -> String,
     /** 此刻该用深色还是浅色。每次打开时问一次：面板开着的那几秒里主题不会变。 */
     private val dark: () -> Boolean,
+    /** 强调色。和 [dark] 一样每次打开时问一次。 */
+    private val accent: () -> UserSettings.Accent,
     /** 面板内部出错时记日志，而不是让异常把进程带走。 */
     private val onError: (what: String, error: Throwable) -> Unit,
 ) {
@@ -90,7 +91,7 @@ class ClipPanel(
     /** 以下只在主线程读写。 */
     private var root: PanelRoot? = null
     private var owner: AccessibilityService? = null
-    private var palette = Palette.of(dark = true)
+    private var palette = Palette.of(dark = true, UserSettings.Accent.TERRACOTTA)
     private var pick = PickKeys.CTRL_DIGITS
     private var state = ClipPanelState()
     private var generation = 0L
@@ -141,7 +142,7 @@ class ClipPanel(
 
     private fun show(service: AccessibilityService) {
         val wm = service.getSystemService(WindowManager::class.java) ?: return
-        palette = Palette.of(dark())
+        palette = Palette.of(dark(), accent())
         pick = pickKeys()
         lastLoadedQuery = ""
         state = ClipPanelState()
@@ -639,6 +640,8 @@ class ClipPanel(
             gravity = Gravity.CENTER
             val padV = dp(context, 24f).toInt()
             setPadding(pad, padV, pad, padV)
+            // 卡片铺满时由它占住列表让出的空间，提示行留在卡片底部
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
         }
         val hint = TextView(context).apply {
             setTextColor(palette.faint)
@@ -664,8 +667,7 @@ class ClipPanel(
             addView(listView)
             addView(emptyView)
             addView(hint)
-            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                .apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL }
+            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
         return PanelRoot(context, card, hint).apply {
             setBackgroundColor(palette.backdrop)
@@ -677,11 +679,10 @@ class ClipPanel(
     }
 
     /**
-     * 面板的根：每次测量时按当前窗口重算卡片的宽度与上下留白，转屏、分屏、小窗都自动跟上。
+     * 面板的根：每次测量时按当前窗口重算卡片四周的留白，转屏、分屏、小窗都自动跟上。
      *
-     * - 宽：两侧至少留 12dp（宽屏 24dp），封顶 600dp —— 一行再宽，眼睛就要左右扫了；
-     * - 上：状态栏下方再留屏高的 8%（8～64dp），落在视线最先到的位置，也不贴着状态栏；
-     * - 下：避开导航栏再留 16dp，卡片到这里为止，列表在卡片里滚；
+     * - 卡片铺满避开系统栏之后的区域，四边留同样宽的白：短边不到 480dp 时 12dp，否则 24dp；
+     * - 列表在卡片里滚，条目少时下面空着，卡片的边框不随内容跳；
      * - 按键提示随宽度换繁简两版，窄窗口不折成三行。
      */
     private inner class PanelRoot(
@@ -694,19 +695,18 @@ class ClipPanel(
             val width = MeasureSpec.getSize(widthMeasureSpec)
             val height = MeasureSpec.getSize(heightMeasureSpec)
             val insets = systemInsets()
-            val gutter = dp(context, if (px2dp(width) < 480) 12f else 24f).toInt()
-            val usable = width - insets[0] - insets[2] - 2 * gutter
+            // 留白按短边取：横屏时也是同一个数，四周看起来一样宽
+            val gutter = dp(context, if (px2dp(minOf(width, height)) < 480) 12f else 24f).toInt()
             val lp = card.layoutParams as LayoutParams
-            lp.width = minOf(usable, dp(context, 600f).toInt())
-            lp.leftMargin = insets[0]
-            lp.rightMargin = insets[2]
-            lp.topMargin = insets[1] + (height * 0.08f).roundToInt()
-                .coerceIn(dp(context, 8f).toInt(), dp(context, 64f).toInt())
-            lp.bottomMargin = insets[3] + dp(context, 16f).toInt()
+            lp.leftMargin = insets[0] + gutter
+            lp.topMargin = insets[1] + gutter
+            lp.rightMargin = insets[2] + gutter
+            lp.bottomMargin = insets[3] + gutter
+            val cardWidth = width - lp.leftMargin - lp.rightMargin
 
             val wanted = translate(
-                if (px2dp(lp.width) < 420) "↑↓ 选择 · Enter 输入 · Ctrl+1…9 直选 · Esc 关闭"
-                else "↑↓ 选择 · Enter 输入 · Ctrl+1…9 直选 · Ctrl+P 置顶 · Del 删除 · Esc 关闭",
+                if (px2dp(cardWidth) < 420) "↑↓ 选择 · Enter 输入 · Ctrl+1…9 直选 · Esc 关闭"
+                else "↑↓ 选择 · Enter 输入 · Ctrl+1…9 直选 · Ctrl+C 复制 · Ctrl+P 置顶 · Del 删除 · Esc 关闭",
             ).replace(PickKeys.TEMPLATE, pick.hint)
             if (hint.text.toString() != wanted) hint.text = wanted
             super.onMeasure(widthMeasureSpec, heightMeasureSpec)
@@ -747,7 +747,7 @@ class ClipPanel(
     }
 
     /**
-     * 面板的配色，取应用自己的设计令牌（[LightAmColors] / [DarkAmColors]），不另起一套色值。
+     * 面板的配色，取应用自己的设计令牌（[amColorsFor]，跟着用户选的强调色），不另起一套色值。
      *
      * 当前项要一眼认得出，靠的是三样东西叠在一起，而不是一块淡色：
      * 强调色调过的底（浅色 14%、深色 24%，深色底上同样的透明度显得更暗，所以加量）、
@@ -770,10 +770,7 @@ class ClipPanel(
         val backdrop = if (dark) 0x73000000 else 0x33000000
 
         companion object {
-            private val light by lazy { Palette(LightAmColors, dark = false) }
-            private val darkPalette by lazy { Palette(DarkAmColors, dark = true) }
-
-            fun of(dark: Boolean): Palette = if (dark) darkPalette else light
+            fun of(dark: Boolean, accent: UserSettings.Accent): Palette = Palette(amColorsFor(dark, accent), dark)
         }
     }
 }

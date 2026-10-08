@@ -18,7 +18,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val vm: AppViewModel = viewModel()
             val settings by vm.settings.collectAsStateWithLifecycle()
-            ActionmentalTheme(theme = settings.theme, language = settings.language) {
+            ActionmentalTheme(theme = settings.theme, language = settings.language, accent = settings.accent) {
                 AppRoot(vm)
             }
         }

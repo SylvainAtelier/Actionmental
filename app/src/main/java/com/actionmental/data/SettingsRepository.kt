@@ -15,6 +15,8 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class UserSettings(
     val theme: Theme = Theme.SYSTEM,
+    /** 强调色。深浅两套由同一个种子色推出来，见 Theme.kt 的 amColorsFor。 */
+    val accent: Accent = Accent.TERRACOTTA,
     val language: Language = Language.CHINESE,
     val showRawKeyCodes: Boolean = true,
     /** 快捷键启动应用、复制无线调试地址后，在屏幕顶部浮一枚提示说明结果。 */
@@ -114,6 +116,23 @@ data class UserSettings(
     val clipPickKeys: com.actionmental.core.clip.PickKeys = com.actionmental.core.clip.PickKeys.CTRL_DIGITS,
 ) {
     enum class Theme(val label: String) { LIGHT("浅色"), DARK("深色"), SYSTEM("跟随系统") }
+
+    /**
+     * 可选的强调色。[seed] 是浅色主题下的强调色（ARGB），深色那一套按它提亮推出来。
+     * 种子都压在中等明度：上面要叠白字（按钮、角标），太亮的颜色白字看不清。
+     *
+     * 枚举名会落盘，改名就是改存档格式。
+     */
+    enum class Accent(val label: String, val seed: Long) {
+        TERRACOTTA("赤陶", 0xFFC8452B),
+        AMBER("琥珀", 0xFFB0620F),
+        ROSE("玫红", 0xFFC2366B),
+        VIOLET("紫罗兰", 0xFF7048C8),
+        BLUE("靛蓝", 0xFF2F62D0),
+        TEAL("青碧", 0xFF0F7C78),
+        GREEN("松绿", 0xFF3A7A2E),
+        GRAPHITE("石墨", 0xFF555B66),
+    }
     enum class Language { CHINESE, ENGLISH }
 }
 

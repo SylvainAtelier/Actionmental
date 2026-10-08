@@ -24,8 +24,8 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.core.graphics.ColorUtils
 import com.actionmental.R
 import com.actionmental.core.clip.BubbleGeometry
-import com.actionmental.ui.theme.DarkAmColors
-import com.actionmental.ui.theme.LightAmColors
+import com.actionmental.data.UserSettings
+import com.actionmental.ui.theme.amColorsFor
 import kotlin.math.abs
 
 /**
@@ -46,6 +46,7 @@ class ClipBubble(
     /** 拖完松手：记下新位置。 */
     private val onMoved: (onRight: Boolean, fraction: Float) -> Unit,
     private val dark: () -> Boolean,
+    private val accent: () -> UserSettings.Accent,
     private val description: () -> String,
     private val onError: (what: String, error: Throwable) -> Unit,
 ) {
@@ -66,6 +67,9 @@ class ClipBubble(
     }
 
     fun hide() = main.post { guarded("隐藏剪贴板按钮") { detach() } }
+
+    /** 应用里换了深浅色或强调色：系统配置没变，按钮收不到 onConfigurationChanged，要叫一声。 */
+    fun restyle() = main.post { guarded("剪贴板按钮换色") { view?.restyle() } }
 
     private inline fun guarded(what: String, block: () -> Unit) {
         try {
@@ -151,8 +155,10 @@ class ClipBubble(
         }
 
         /** 跟着主题换色：浅色是白底橙图标，深色是深底橙图标，在任何背景上都有一圈细边托住。 */
+        fun restyle() = applyTheme()
+
         private fun applyTheme() {
-            val c = if (dark()) DarkAmColors else LightAmColors
+            val c = amColorsFor(dark(), accent())
             circle.setColor(c.surface.toArgb())
             circle.setStroke(dp(1f), c.line.toArgb())
             val ripple = ColorUtils.setAlphaComponent(c.accent.toArgb(), 0x40)

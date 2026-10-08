@@ -11,6 +11,8 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.core.graphics.ColorUtils
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -95,6 +97,43 @@ val DarkAmColors = AmColors(
     keycapShadow = Color(0xFF100F0E),
 )
 
+/**
+ * 某个主题、某个强调色下的整套令牌。只换强调色那四个，其余照旧。
+ *
+ * 默认的赤陶直接用上面手调的两套；别的颜色从种子推，推法是照着赤陶那两套手调值反算出来的：
+ * - 浅色：强调色就是种子；墨色压到种子明度的 0.65；底与边框是种子在卡片面上 5% / 33% 的混色；
+ * - 深色：同色相提亮到 0.52～0.62（深底上要亮一档才压得住，再亮白字就看不清了），饱和度略收；
+ *   墨色提到明度 0.75；底与边框是它在页面底色上 7% / 25% 的混色。
+ */
+fun amColorsFor(dark: Boolean, accent: UserSettings.Accent): AmColors {
+    val base = if (dark) DarkAmColors else LightAmColors
+    if (accent == UserSettings.Accent.TERRACOTTA) return base
+    return accentCache.getOrPut(dark to accent) {
+        val hsl = FloatArray(3)
+        ColorUtils.colorToHSL(accent.seed.toInt(), hsl)
+        val (h, s, l) = Triple(hsl[0], hsl[1], hsl[2])
+        if (dark) {
+            val main = ColorUtils.HSLToColor(floatArrayOf(h, s * 0.9f, (l + 0.12f).coerceIn(0.52f, 0.62f)))
+            base.copy(
+                accent = Color(main),
+                accentInk = Color(ColorUtils.HSLToColor(floatArrayOf(h, s * 0.8f, 0.75f))),
+                accentBg = Color(ColorUtils.blendARGB(base.bgScreen.toArgb(), main, 0.07f)),
+                accentLine = Color(ColorUtils.blendARGB(base.bgScreen.toArgb(), main, 0.25f)),
+            )
+        } else {
+            val main = accent.seed.toInt()
+            base.copy(
+                accent = Color(main),
+                accentInk = Color(ColorUtils.HSLToColor(floatArrayOf(h, s, l * 0.65f))),
+                accentBg = Color(ColorUtils.blendARGB(base.surface.toArgb(), main, 0.05f)),
+                accentLine = Color(ColorUtils.blendARGB(base.surface.toArgb(), main, 0.33f)),
+            )
+        }
+    }
+}
+
+private val accentCache = java.util.concurrent.ConcurrentHashMap<Pair<Boolean, UserSettings.Accent>, AmColors>()
+
 val LocalAmColors = staticCompositionLocalOf { LightAmColors }
 
 /**
@@ -140,6 +179,7 @@ object AmShape {
 fun ActionmentalTheme(
     theme: UserSettings.Theme = UserSettings.Theme.SYSTEM,
     language: UserSettings.Language = UserSettings.Language.CHINESE,
+    accent: UserSettings.Accent = UserSettings.Accent.TERRACOTTA,
     content: @Composable () -> Unit,
 ) {
     val dark = when (theme) {
@@ -147,7 +187,9 @@ fun ActionmentalTheme(
         UserSettings.Theme.DARK -> true
         UserSettings.Theme.SYSTEM -> isSystemInDarkTheme()
     }
-    val am = if (dark) DarkAmColors else LightAmColors
+    val am = amColorsFor(dark, accent)
+    // 出错永远是红的：强调色换成蓝、绿之后，错误提示不能跟着变成「好看」的颜色
+    val errorRed = (if (dark) DarkAmColors else LightAmColors).accent
 
     val scheme = if (dark) {
         darkColorScheme(
@@ -155,7 +197,7 @@ fun ActionmentalTheme(
             background = am.bgScreen, onBackground = am.ink,
             surface = am.surface, onSurface = am.ink,
             surfaceVariant = am.surfaceSunken, onSurfaceVariant = am.inkMid,
-            outline = am.line, error = am.accent,
+            outline = am.line, error = errorRed,
         )
     } else {
         lightColorScheme(
@@ -163,7 +205,7 @@ fun ActionmentalTheme(
             background = am.bgScreen, onBackground = am.ink,
             surface = am.surface, onSurface = am.ink,
             surfaceVariant = am.surfaceSunken, onSurfaceVariant = am.inkMid,
-            outline = am.line, error = am.accent,
+            outline = am.line, error = errorRed,
         )
     }
 

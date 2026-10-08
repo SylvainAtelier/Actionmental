@@ -4,7 +4,20 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -36,7 +49,10 @@ import com.actionmental.ui.components.AmSwitch
 import com.actionmental.ui.components.StatusDot
 import com.actionmental.ui.theme.AmSpace
 import com.actionmental.ui.theme.AmType
+import com.actionmental.ui.theme.DarkAmColors
 import com.actionmental.ui.theme.amColors
+import com.actionmental.ui.theme.amColorsFor
+import com.actionmental.ui.i18n.localize
 
 /** 设置（PRD 36 · 设计稿 2b 屏 3）。 */
 @Composable
@@ -175,6 +191,15 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                     }
                 }
             }
+            Spacer(Modifier.height(AmSpace.s2))
+            Text("强调色", style = AmType.body, color = c.ink)
+            Text(
+                settings.accent.label + " · 深色、浅色各用一档，自动换",
+                style = AmType.data,
+                color = c.inkFaint,
+            )
+            Spacer(Modifier.height(6.dp))
+            AccentPicker(settings.accent) { accent -> vm.updateSettings { it.copy(accent = accent) } }
             Spacer(Modifier.height(AmSpace.s2))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -332,5 +357,38 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
             )
         }
         Spacer(Modifier.height(AmSpace.s4))
+    }
+}
+
+/**
+ * 强调色色板：每个圆点画的是它在当前深浅主题下真正会用的那一档，所见即所得。
+ * 选中的那个外面套一圈墨色环、里面一个白点；不只靠颜色区分，色弱也认得出。
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AccentPicker(selected: UserSettings.Accent, onSelect: (UserSettings.Accent) -> Unit) {
+    val c = amColors
+    val dark = c.bgScreen == DarkAmColors.bgScreen
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        UserSettings.Accent.entries.forEach { accent ->
+            val on = accent == selected
+            val label = localize(accent.label)
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .border(2.dp, if (on) c.ink else Color.Transparent, CircleShape)
+                    .padding(4.dp)
+                    .background(amColorsFor(dark, accent).accent, CircleShape)
+                    .clip(CircleShape)
+                    .selectable(selected = on, role = Role.RadioButton) { onSelect(accent) }
+                    .semantics { contentDescription = label },
+                contentAlignment = Alignment.Center,
+            ) {
+                if (on) Box(Modifier.size(8.dp).background(Color.White, CircleShape))
+            }
+        }
     }
 }

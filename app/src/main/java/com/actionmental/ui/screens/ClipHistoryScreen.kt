@@ -158,7 +158,7 @@ fun ClipHistoryScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                     localize(
                         "在快捷键里添加「剪贴板 → 剪贴板历史」动作，就能在任意应用里唤出面板：" +
                             "直接打字搜索（中文可用全拼或首字母，如 zw 找「中文」），↑↓ 选择，" +
-                            "Enter 写进当前输入框，Ctrl+1…9 直选，Ctrl+P 置顶，Del 删除，Esc 关闭。",
+                            "Enter 写进当前输入框，Ctrl+1…9 直选，Ctrl+C 复制到剪贴板，Ctrl+P 置顶，Del 删除，Esc 关闭。",
                     ).replace(PickKeys.TEMPLATE, settings.clipPickKeys.hint),
                     style = AmType.secondary,
                     color = c.inkMid,

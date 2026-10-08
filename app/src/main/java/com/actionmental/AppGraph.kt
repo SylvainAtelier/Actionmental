@@ -352,6 +352,7 @@ class AppGraph private constructor(context: Context) {
         onEdited = clipRecorder::forget,
         translate = ::translate,
         dark = ::overlayDark,
+        accent = { settingsRepository.settings.value.accent },
         onError = { what, error -> eventLog.error("clip", what + " 出错", error) },
     )
 
@@ -374,6 +375,7 @@ class AppGraph private constructor(context: Context) {
             scope.launch { settingsRepository.update { it.copy(clipBubbleOnRight = right, clipBubbleY = y) } }
         },
         dark = ::overlayDark,
+        accent = { settingsRepository.settings.value.accent },
         description = { translate("打开剪贴板历史") },
         onError = { what, error -> eventLog.error("clip", what + " 出错", error) },
     )
@@ -1128,6 +1130,12 @@ class AppGraph private constructor(context: Context) {
             ) { on, connected, open -> on && connected && open }
                 .distinctUntilChanged()
                 .collect { visible -> if (visible) clipBubble.show() else clipBubble.hide() }
+        }
+        // 在应用里换深浅色或强调色时系统配置不变，按钮不会自己换色
+        scope.launch {
+            settingsRepository.settings.map { it.theme to it.accent }
+                .distinctUntilChanged()
+                .collect { clipBubble.restyle() }
         }
 
         // 无障碍自愈：开关被 ROM 抹掉时写回去（P2）

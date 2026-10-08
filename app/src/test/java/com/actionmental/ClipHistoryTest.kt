@@ -352,6 +352,7 @@ class ClipHistoryTest {
         assertEquals(PanelEffect.Insert(five[2]), s.reduce(PanelKey.Enter).second)
         assertEquals(PanelEffect.TogglePin(five[2]), s.reduce(PanelKey.TogglePin).second)
         assertEquals(PanelEffect.Delete(five[2]), s.reduce(PanelKey.Delete).second)
+        assertEquals(PanelEffect.Copy(five[2]), s.reduce(PanelKey.Copy).second)
 
         val empty = ClipPanelState()
         assertEquals(PanelEffect.None, empty.reduce(PanelKey.Enter).second)
@@ -388,6 +389,7 @@ class ClipHistoryTest {
         assertEquals(PanelKey.ClearQuery, PanelKeys.map(KeyEvent.KEYCODE_DEL, ctrl, null))
         assertEquals(PanelKey.Delete, PanelKeys.map(KeyEvent.KEYCODE_FORWARD_DEL, 0, null))
         assertEquals(PanelKey.TogglePin, PanelKeys.map(KeyEvent.KEYCODE_P, ctrl, null))
+        assertEquals(PanelKey.Copy, PanelKeys.map(KeyEvent.KEYCODE_C, ctrl, null))
         assertEquals(PanelKey.Pick(0), PanelKeys.map(KeyEvent.KEYCODE_1, ctrl, null))
         assertEquals(PanelKey.Pick(8), PanelKeys.map(KeyEvent.KEYCODE_9, ctrl, null))
         assertEquals(PanelKey.Pick(2), PanelKeys.map(KeyEvent.KEYCODE_NUMPAD_3, ctrl, null))
