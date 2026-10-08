@@ -485,8 +485,13 @@ class RotationController(
             ?.let { full -> if (fixToUserUnsupported) full.filterNot { it.contains(FIX_TO_USER) } else full }
             ?: return ActionResult.Failed(ActionResult.Reason.UNSUPPORTED, mode.technical)
 
-        val results = execBatch(b, plan)
-            ?: return ActionResult.Failed(ActionResult.Reason.EXECUTION_FAILED, "特权通道不可用")
+        val results = execBatch(b, plan).getOrElse {
+            // 带上真实原因：「特权服务未连接」与「binder 已失效」的处理方式完全不同
+            return ActionResult.Failed(
+                ActionResult.Reason.EXECUTION_FAILED,
+                "特权通道不可用 · " + it.message.orEmpty().ifEmpty { it.javaClass.simpleName },
+            )
+        }
 
         var softFailure: String? = null
         plan.forEachIndexed { index, command ->
@@ -521,7 +526,7 @@ class RotationController(
                 "cmd window get-ignore-orientation-request",
                 "cmd window get-fix-to-user-rotation".takeUnless { fixToUserUnsupported },
             ),
-        )
+        ).getOrNull()
         val ignore = probes?.getOrNull(0)
             ?.takeIf { it.ok }
             ?.output
@@ -630,15 +635,14 @@ class RotationController(
      * 与逐条执行的唯一差别：前面的命令失败不再中断后面的。调用方照样按顺序
      * 逐条判定退出码，第一条硬失败仍然是最终结论。
      *
-     * @return null 表示这一次 shell 整个没跑起来（特权通道断了）。
+     * @return failure 表示这一次 shell 整个没跑起来（特权通道断了），带着原因。
      */
     private suspend fun execBatch(
         b: PrivilegedBackend,
         commands: List<String>,
-    ): List<ShellResult>? {
-        if (commands.isEmpty()) return emptyList()
-        val raw = b.exec(batchScript(commands)).getOrNull() ?: return null
-        return parseBatch(commands.size, raw.output)
+    ): Result<List<ShellResult>> {
+        if (commands.isEmpty()) return Result.success(emptyList())
+        return b.exec(batchScript(commands)).map { parseBatch(commands.size, it.output) }
     }
 
     private companion object {

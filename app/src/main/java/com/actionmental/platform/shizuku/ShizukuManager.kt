@@ -237,9 +237,49 @@ class ShizukuManager(
         scope.launch(Dispatchers.IO) { bindIfPossible() }
     }
 
+    /**
+     * 手里的特权服务 binder 已经死了，但 onServiceDisconnected 还没来（或者永远不来）。
+     *
+     * 特权进程被杀时这条回调并不可靠：`service` 留着一个死 binder，[awaitService]
+     * 看它非空就直接交出去，每一次调用都立刻抛 DeadObjectException，而谁也不会再去绑定 ——
+     * 盘上那串每两秒一次的「特权通道不可用」就是这么来的。
+     */
+    private fun dropDeadService(svc: IPrivilegedService, cause: Throwable?) {
+        if (service !== svc) return
+        service = null
+        _status.value = _status.value.copy(serviceBound = false)
+        onEvent(
+            true,
+            "特权服务 binder 已失效，重新绑定",
+            (cause?.let { it.javaClass.simpleName + " · " } ?: "") + describe(),
+        )
+    }
+
+    /**
+     * 在特权服务上执行一次调用；binder 死了就丢掉、重绑、再试一次。
+     *
+     * 只重试 [android.os.DeadObjectException]：那表示调用根本没送到对面，重发不会重复执行。
+     */
+    private suspend fun <T> withService(call: (IPrivilegedService) -> T): Result<T> {
+        repeat(2) { attempt ->
+            val svc = awaitService()
+                ?: return Result.failure(IllegalStateException(unavailableMessage()))
+            try {
+                return Result.success(call(svc))
+            } catch (e: android.os.DeadObjectException) {
+                dropDeadService(svc, e)
+                if (attempt == 1) return Result.failure(IllegalStateException("特权服务已断开 · 重绑后仍失败", e))
+            } catch (e: Exception) {
+                return Result.failure(e)
+            }
+        }
+        return Result.failure(IllegalStateException(unavailableMessage()))
+    }
+
     /** 拿到特权服务；不可用或绑不上时返回 null。 */
     private suspend fun awaitService(): IPrivilegedService? {
         if (_status.value.reason != null) return null
+        service?.let { if (!it.asBinder().isBinderAlive) dropDeadService(it, null) }
         if (service == null) {
             bindIfPossible()
             // 绑定是异步的，最多等 1s，避免第一次调用必然失败
@@ -260,11 +300,7 @@ class ShizukuManager(
         _status.value.reason?.message ?: "特权服务未连接"
 
     override suspend fun exec(command: String): Result<ShellResult> = withContext(Dispatchers.IO) {
-        val svc = awaitService()
-            ?: return@withContext Result.failure(IllegalStateException(unavailableMessage()))
-
-        runCatching {
-            val raw = svc.exec(command)
+        withService { it.exec(command) }.map { raw ->
             val newline = raw.indexOf('\n')
             if (newline < 0) ShellResult(raw.trim().toIntOrNull() ?: -1, "")
             else ShellResult(raw.substring(0, newline).trim().toIntOrNull() ?: -1, raw.substring(newline + 1))
@@ -273,20 +309,14 @@ class ShizukuManager(
 
     override suspend fun injectKey(keyCode: Int, metaState: Int): Result<Unit> =
         withContext(Dispatchers.IO) {
-            val svc = awaitService()
-                ?: return@withContext Result.failure<Unit>(IllegalStateException(unavailableMessage()))
-            runCatching {
-                val error = svc.injectKey(keyCode, metaState)
+            withService { it.injectKey(keyCode, metaState) }.mapCatching { error ->
                 if (error.isNotEmpty()) throw IllegalStateException(error)
             }
         }
 
     override suspend fun injectKeyState(keyCode: Int, metaState: Int, down: Boolean): Result<Unit> =
         withContext(Dispatchers.IO) {
-            val svc = awaitService()
-                ?: return@withContext Result.failure<Unit>(IllegalStateException(unavailableMessage()))
-            runCatching {
-                val error = svc.injectKeyState(keyCode, metaState, down)
+            withService { it.injectKeyState(keyCode, metaState, down) }.mapCatching { error ->
                 if (error.isNotEmpty()) throw IllegalStateException(error)
             }
         }
@@ -301,10 +331,7 @@ class ShizukuManager(
     private val userId: Int get() = android.os.Process.myUid() / PER_USER_RANGE
 
     suspend fun watchClipboard(sink: IClipSink): Result<Unit> = withContext(Dispatchers.IO) {
-        val svc = awaitService()
-            ?: return@withContext Result.failure(IllegalStateException(unavailableMessage()))
-        runCatching {
-            val error = svc.watchClipboard(sink, userId)
+        withService { it.watchClipboard(sink, userId) }.mapCatching { error ->
             if (error.isNotEmpty()) throw IllegalStateException(error)
         }
     }
@@ -315,16 +342,11 @@ class ShizukuManager(
     }
 
     suspend fun readClipboard(): Result<String?> = withContext(Dispatchers.IO) {
-        val svc = awaitService()
-            ?: return@withContext Result.failure(IllegalStateException(unavailableMessage()))
-        runCatching { svc.readClipboard(userId) }
+        withService { it.readClipboard(userId) }
     }
 
     suspend fun writeClipboard(text: String): Result<Unit> = withContext(Dispatchers.IO) {
-        val svc = awaitService()
-            ?: return@withContext Result.failure(IllegalStateException(unavailableMessage()))
-        runCatching {
-            val error = svc.writeClipboard(text, userId)
+        withService { it.writeClipboard(text, userId) }.mapCatching { error ->
             if (error.isNotEmpty()) throw IllegalStateException(error)
         }
     }
