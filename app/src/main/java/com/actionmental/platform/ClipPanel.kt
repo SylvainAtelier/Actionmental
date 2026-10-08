@@ -15,6 +15,7 @@ import android.os.Looper
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
@@ -71,6 +72,8 @@ class ClipPanel(
     /** 这颗键是不是唤出面板的那个快捷键：再按一次就是关上。 */
     private val isToggle: (NormalizedKeyEvent) -> Boolean,
     private val onInsert: (ClipEntry) -> Unit,
+    /** 长按菜单里的「复制到剪贴板」：只写系统剪贴板，不上屏。 */
+    private val onCopy: (ClipEntry) -> Unit,
     /** 删除 / 置顶改过库之后通知一声，让去重忘掉最近那一条。 */
     private val onEdited: () -> Unit,
     private val translate: (String) -> String,
@@ -103,6 +106,9 @@ class ClipPanel(
     private lateinit var queryView: TextView
     private lateinit var countView: TextView
     private lateinit var emptyView: TextView
+
+    /** 长按菜单那一层：开着时盖满整个面板，点它外面只收菜单、不关面板。 */
+    private var menuLayer: View? = null
 
     /** 快捷键入口。在协程里调用，窗口操作一律投递到主线程。 */
     fun toggle(): ActionResult {
@@ -166,6 +172,7 @@ class ClipPanel(
         pipeline.modal = null
         open = false
         generation++
+        menuLayer = null
         val view = root ?: return
         root = null
         runCatching { owner?.getSystemService(WindowManager::class.java)?.removeViewImmediate(view) }
@@ -185,6 +192,11 @@ class ClipPanel(
         if (e.isModifier) return false
         // 自己吞掉的按下，抬起由管线负责拦；别人的抬起原样放行
         if (!e.down) return false
+        // 菜单开着时 Esc 只收菜单；别的键先收菜单再照常处理，键盘操作不会被一个菜单卡住
+        if (menuLayer != null) {
+            dismissMenu()
+            if (e.keyCode == KeyEvent.KEYCODE_ESCAPE) return true
+        }
         if (e.repeatCount == 0 && isToggle(e)) {
             close()
             return true
@@ -220,6 +232,10 @@ class ClipPanel(
             is PanelEffect.Insert -> {
                 close()
                 onInsert(effect.entry)
+            }
+            is PanelEffect.Copy -> {
+                close()
+                onCopy(effect.entry)
             }
             is PanelEffect.TogglePin -> edit { store.setPinned(effect.entry.id, !effect.entry.pinned) }
             is PanelEffect.Delete -> edit { store.delete(effect.entry.id) }
@@ -443,6 +459,93 @@ class ClipPanel(
         }
     }
 
+    /**
+     * 长按一行弹出的菜单：置顶 / 取消置顶、复制到剪贴板。
+     *
+     * 画在面板自己的窗口里，而不是 PopupMenu：面板窗口不可聚焦，挂在它下面的子窗口在一些 ROM 上
+     * 弹不出来或拿不到触摸。菜单贴着那一行的右缘，下方放得下就放下方，否则翻到上方。
+     */
+    private fun showMenu(row: View, entry: ClipEntry) {
+        val host = root ?: return
+        dismissMenu()
+        val context = host.context
+        val menu = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            val padV = dp(context, 6f).toInt()
+            setPadding(0, padV, 0, padV)
+            background = GradientDrawable().apply {
+                cornerRadius = dp(context, 14f)
+                setColor(palette.surface)
+                setStroke(dp(context, 1f).toInt(), palette.line)
+            }
+            elevation = dp(context, 16f)
+            minimumWidth = dp(context, 160f).toInt()
+            isClickable = true
+            addView(menuItem(context, if (entry.pinned) "取消置顶" else "置顶这一条") {
+                dismissMenu()
+                apply(PanelEffect.TogglePin(entry))
+            })
+            addView(menuItem(context, "复制到剪贴板") {
+                dismissMenu()
+                apply(PanelEffect.Copy(entry))
+            })
+        }
+        val layer = FrameLayout(context).apply {
+            // 点菜单外面只收菜单：面板还开着，用户多半是要接着挑
+            setOnClickListener { dismissMenu() }
+            addView(menu, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        host.addView(layer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        menuLayer = layer
+
+        menu.measure(
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+        )
+        val hostAt = IntArray(2).also(host::getLocationInWindow)
+        val rowAt = IntArray(2).also(row::getLocationInWindow)
+        val rowLeft = rowAt[0] - hostAt[0]
+        val rowTop = rowAt[1] - hostAt[1]
+        val gap = dp(context, 4f).toInt()
+        val edge = dp(context, 8f).toInt()
+        val below = rowTop + row.height + gap
+        val top = if (below + menu.measuredHeight <= host.height - edge) below
+        else (rowTop - gap - menu.measuredHeight).coerceAtLeast(edge)
+        val left = (rowLeft + row.width - menu.measuredWidth - dp(context, 8f).toInt())
+            .coerceIn(edge, (host.width - menu.measuredWidth - edge).coerceAtLeast(edge))
+        (menu.layoutParams as FrameLayout.LayoutParams).apply {
+            leftMargin = left
+            topMargin = top
+        }
+        menu.alpha = 0f
+        menu.scaleX = 0.96f
+        menu.scaleY = 0.96f
+        menu.pivotX = menu.measuredWidth.toFloat()
+        menu.pivotY = if (top >= below) 0f else menu.measuredHeight.toFloat()
+        menu.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(120).start()
+    }
+
+    private fun dismissMenu() {
+        val layer = menuLayer ?: return
+        menuLayer = null
+        (layer.parent as? ViewGroup)?.removeView(layer)
+    }
+
+    private fun menuItem(context: Context, label: String, onClick: () -> Unit): View {
+        val mask = GradientDrawable().apply { setColor(Color.WHITE) }
+        return TextView(context).apply {
+            text = translate(label)
+            setTextColor(palette.ink)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            gravity = Gravity.CENTER_VERTICAL
+            minHeight = dp(context, 44f).toInt()
+            setPadding(dp(context, 16f).toInt(), 0, dp(context, 16f).toInt(), 0)
+            background = RippleDrawable(ColorStateList.valueOf(palette.ripple), null, mask)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            setOnClickListener { guarded("剪贴板长按菜单") { onClick() } }
+        }
+    }
+
     private fun labelOf(context: Context, pkg: String): String = labels.getOrPut(pkg) {
         runCatching {
             val pm = context.packageManager
@@ -507,8 +610,12 @@ class ClipPanel(
                 state = state.copy(selected = position)
                 state.current?.let { apply(PanelEffect.Insert(it)) }
             }
-            setOnItemLongClickListener { _, _, position, _ ->
-                state.entries.getOrNull(position)?.let { apply(PanelEffect.TogglePin(it)) }
+            setOnItemLongClickListener { _, row, position, _ ->
+                state.entries.getOrNull(position)?.let { entry ->
+                    state = state.copy(selected = position)
+                    apply(PanelEffect.Render)
+                    showMenu(row, entry)
+                }
                 true
             }
             setOnScrollListener(object : AbsListView.OnScrollListener {

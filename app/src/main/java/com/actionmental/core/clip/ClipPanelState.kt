@@ -121,6 +121,8 @@ sealed interface PanelEffect {
     data class Insert(val entry: ClipEntry) : PanelEffect
     data class TogglePin(val entry: ClipEntry) : PanelEffect
     data class Delete(val entry: ClipEntry) : PanelEffect
+    /** 只放回系统剪贴板，不上屏。目前只有长按菜单会发出。 */
+    data class Copy(val entry: ClipEntry) : PanelEffect
     data object None : PanelEffect
 }
 

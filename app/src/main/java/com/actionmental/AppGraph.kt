@@ -348,6 +348,7 @@ class AppGraph private constructor(context: Context) {
             } ?: false
         },
         onInsert = ::insertClip,
+        onCopy = ::copyClip,
         onEdited = clipRecorder::forget,
         translate = ::translate,
         dark = ::overlayDark,
@@ -512,6 +513,23 @@ class AppGraph private constructor(context: Context) {
         toggleClipboardHistory = clipPanel::toggle,
         privileged = { actionBackend },
     )
+
+    /** 面板长按菜单里的「复制到剪贴板」：只放回系统剪贴板，等用户自己去粘贴。 */
+    private fun copyClip(entry: ClipEntry) {
+        scope.launch {
+            val text = clipHistoryStore.fullText(entry)
+            val copied = clipboardWriter.write("clip", text)
+            if (copied) clipHistoryStore.markUsed(entry.id)
+            val language = settingsRepository.settings.value.language
+            triggerHud.show(
+                TriggerFeedback(
+                    AppTranslations.translate(if (copied) "已复制到剪贴板" else "复制失败", language),
+                    value = ClipPolicy.preview(entry.text, 40),
+                    failed = !copied,
+                ),
+            )
+        }
+    }
 
     /**
      * 面板里选中了一条：直接写进原来的输入框。
