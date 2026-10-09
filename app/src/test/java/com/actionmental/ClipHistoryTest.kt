@@ -521,6 +521,23 @@ class ClipHistoryTest {
     }
 
     @Test
+    fun `导航栏的返回键交给面板关掉它，抬起也不漏给应用`() {
+        val pipeline = KeyPipeline()
+        pipeline.onTrigger = { _, _ -> false }
+        pipeline.modal = { e, _, _ ->
+            if (e.down && e.keyCode == KeyEvent.KEYCODE_BACK) pipeline.modal = null
+            e.down
+        }
+        val back = { down: Boolean -> key(down, KeyEvent.KEYCODE_BACK).copy(virtual = true) }
+        assertTrue(pipeline.dispatch(back(true)))
+        assertTrue(pipeline.dispatch(back(false)))
+        // 面板关了，返回键回到系统手里
+        assertFalse(pipeline.dispatch(back(true)))
+        assertFalse(pipeline.dispatch(back(false)))
+        assertEquals(PanelKey.Escape, PanelKeys.map(KeyEvent.KEYCODE_BACK, 0, null))
+    }
+
+    @Test
     fun `长按方向键的连发照样交给面板`() {
         val pipeline = KeyPipeline()
         var moves = 0

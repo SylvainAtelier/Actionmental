@@ -167,6 +167,17 @@ class KeyPipeline(
         // 自己注入的按键原样放行：既不触发快捷键，也不再被映射改写一次
         if (normalized.virtual) {
             appendTrace(normalized)
+            // 唯一的例外：导航栏 / 返回手势发出的返回键也是虚拟键，面板开着时交给面板去关它，
+            // 不然返回落到底下的应用，面板还挂着、应用却退了一页
+            if (normalized.keyCode == KeyEvent.KEYCODE_BACK) {
+                modal?.let { handler ->
+                    val consumed = handler(normalized, 0, null)
+                    if (consumed && normalized.down) consumedKeyCodes += normalized.keyCode
+                    return consumed
+                }
+                // 按下时关掉了面板，抬起也一起吞掉，不留半个返回给应用
+                if (!normalized.down && consumedKeyCodes.remove(normalized.keyCode)) return true
+            }
             return false
         }
 

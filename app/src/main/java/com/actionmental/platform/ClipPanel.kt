@@ -193,10 +193,10 @@ class ClipPanel(
         if (e.isModifier) return false
         // 自己吞掉的按下，抬起由管线负责拦；别人的抬起原样放行
         if (!e.down) return false
-        // 菜单开着时 Esc 只收菜单；别的键先收菜单再照常处理，键盘操作不会被一个菜单卡住
+        // 菜单开着时 Esc / 返回只收菜单；别的键先收菜单再照常处理，键盘操作不会被一个菜单卡住
         if (menuLayer != null) {
             dismissMenu()
-            if (e.keyCode == KeyEvent.KEYCODE_ESCAPE) return true
+            if (e.keyCode == KeyEvent.KEYCODE_ESCAPE || e.keyCode == KeyEvent.KEYCODE_BACK) return true
         }
         if (e.repeatCount == 0 && isToggle(e)) {
             close()

@@ -102,7 +102,7 @@ object PanelKeys {
             keyCode == KeyEvent.KEYCODE_PAGE_UP -> PanelKey.PageUp
             keyCode == KeyEvent.KEYCODE_PAGE_DOWN -> PanelKey.PageDown
             keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER -> PanelKey.Enter
-            keyCode == KeyEvent.KEYCODE_ESCAPE -> PanelKey.Escape
+            keyCode == KeyEvent.KEYCODE_ESCAPE || keyCode == KeyEvent.KEYCODE_BACK -> PanelKey.Escape
             keyCode == KeyEvent.KEYCODE_FORWARD_DEL -> PanelKey.Delete
             keyCode == KeyEvent.KEYCODE_DEL -> if (ctrl) PanelKey.ClearQuery else PanelKey.Backspace
             ctrl && keyCode == KeyEvent.KEYCODE_P -> PanelKey.TogglePin
