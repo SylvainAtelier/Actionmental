@@ -10,6 +10,7 @@ import com.actionmental.platform.PrivilegedBackend
 import com.actionmental.platform.ShellResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -77,6 +78,10 @@ class ShizukuManager(
         private const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
         private const val BIND_NUDGE_INTERVAL_MS = 5_000L
 
+        /** 请求绑定后等这么久还没回音，就认定这次绑定卡死，重置后重来；之后每次翻倍。 */
+        private const val BIND_TIMEOUT_MS = 3_000L
+        private const val BIND_TIMEOUT_MAX_MS = 30_000L
+
         /** UserHandle.PER_USER_RANGE：uid / 100000 就是用户 id。 */
         private const val PER_USER_RANGE = 100_000
     }
@@ -100,9 +105,28 @@ class ShizukuManager(
     @Volatile
     private var awaitTimeoutLogged = false
 
+    /**
+     * 特权服务的版本号，跟着每一次安装走。
+     *
+     * 原来写死成 4：覆盖安装后 Shizuku 那边还挂着上一个安装留下的同版本记录，
+     * 新进程来绑定时它认为「同一个服务、同一个版本」，只把回调挂上去等那条旧记录启动 ——
+     * 而那条记录永远起不来。盘上 19:08 那次重装之后，特权服务就再也没连上过，
+     * 旋转每两秒失败一次。版本号一变，Shizuku 会丢掉旧记录、按新 apk 重新拉起服务。
+     */
+    private val serviceVersion: Int = runCatching {
+        val updated = context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime
+        ((updated / 1000) % Int.MAX_VALUE).toInt().coerceAtLeast(1)
+    }.getOrDefault(4)
+
     private val userServiceArgs = Shizuku.UserServiceArgs(
         ComponentName(context.packageName, PrivilegedUserService::class.java.name)
-    ).daemon(false).processNameSuffix("privileged").debuggable(false).version(4)
+    ).daemon(false).processNameSuffix("privileged").debuggable(false).version(serviceVersion)
+
+    /** 守着一次绑定直到连上；超时就重置重绑。同一时刻只有一个。 */
+    private val bindLock = Any()
+
+    @Volatile
+    private var bindWatchdog: Job? = null
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -132,6 +156,8 @@ class ShizukuManager(
 
     private val binderDead = Shizuku.OnBinderDeadListener {
         service = null
+        // Shizuku 都没了，这次绑定不会再有回音；binder 回来时由 binderReceived 重新发起
+        synchronized(bindLock) { bindWatchdog?.cancel(); bindWatchdog = null }
         refresh()
         onEvent(true, "Shizuku binder 死亡", describe())
     }
@@ -174,15 +200,65 @@ class ShizukuManager(
 
     fun reconnect() {
         service = null
+        synchronized(bindLock) { bindWatchdog?.cancel(); bindWatchdog = null }
         refresh()
         bindIfPossible()
     }
 
+    /**
+     * 发起绑定，并派一个看门狗守到连上为止。
+     *
+     * 只发一次 bindUserService 是不够的：Shizuku 那边的记录可能卡在「启动中」，
+     * 之后再怎么重复请求，它都只是把回调挂上去继续等 —— 原来就是这样，
+     * 每次调用都再请求一遍、空等 1 秒、失败，几分钟都连不上。
+     * 看门狗超时后先把这条记录连同进程一起拆掉，再重新绑定。
+     */
     private fun bindIfPossible() {
         if (!_status.value.granted || service != null) return
+        synchronized(bindLock) {
+            if (bindWatchdog?.isActive == true) return // 已有一次绑定在路上，交给看门狗
+            requestBind()
+            bindWatchdog = scope.launch(Dispatchers.IO) { watchBind() }
+        }
+    }
+
+    private fun requestBind() {
         bindRequestedAtMs = System.currentTimeMillis()
         runCatching { Shizuku.bindUserService(userServiceArgs, connection) }
             .onFailure { onEvent(true, "请求绑定特权服务失败", it.javaClass.simpleName + " · " + it.message.orEmpty()) }
+    }
+
+    private suspend fun watchBind() {
+        var timeout = BIND_TIMEOUT_MS
+        var attempt = 1
+        while (true) {
+            var waited = 0L
+            while (service == null && waited < timeout) {
+                delay(100)
+                waited += 100
+            }
+            // 连上了，或者 Shizuku 掉了 / 授权没了：后者等 binder 回来时会重新发起
+            if (service != null || !_status.value.granted) return
+            onEvent(
+                true,
+                "绑定特权服务 " + timeout / 1000 + "s 无回应，重置后重绑",
+                "第 " + attempt + " 次 · " + describe(),
+            )
+            resetUserService()
+            if (service != null) return
+            requestBind()
+            attempt++
+            timeout = (timeout * 2).coerceAtMost(BIND_TIMEOUT_MAX_MS)
+        }
+    }
+
+    /**
+     * 把卡住的绑定彻底拆掉：先摘掉本地缓存的连接对象（否则新的请求还会复用它），
+     * 再让 Shizuku 删掉服务记录并结束那个进程。两步各自失败都不影响后面重绑。
+     */
+    private fun resetUserService() {
+        runCatching { Shizuku.unbindUserService(userServiceArgs, connection, false) }
+        runCatching { Shizuku.unbindUserService(userServiceArgs, connection, true) }
     }
 
     /** 一行说清楚此刻的 Shizuku：给「特权服务未连接」这类失败配上下文。 */
