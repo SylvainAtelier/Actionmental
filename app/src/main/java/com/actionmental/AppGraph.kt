@@ -354,7 +354,52 @@ class AppGraph private constructor(context: Context) {
         dark = ::overlayDark,
         accent = { settingsRepository.settings.value.accent },
         onError = { what, error -> eventLog.error("clip", what + " 出错", error) },
+        quickSlots = {
+            val all = shortcutRepository.shortcuts.value
+            settingsRepository.settings.value.clipQuickShortcuts.map { id ->
+                all.firstOrNull { it.id == id }?.let(::quickActionOf)
+            }
+        },
+        // 唤出面板的那一条放进去没有意义：点了只是关上面板
+        quickCandidates = {
+            shortcutRepository.shortcuts.value
+                .filter { it.enabled && it.action != Action.ClipboardHistory }
+                .map(::quickActionOf)
+        },
+        onAssignQuick = { slot, id ->
+            scope.launch {
+                settingsRepository.update { s ->
+                    val slots = MutableList(maxOf(s.clipQuickShortcuts.size, slot + 1)) { s.clipQuickShortcuts.getOrElse(it) { "" } }
+                    slots[slot] = id.orEmpty()
+                    s.copy(clipQuickShortcuts = slots)
+                }
+            }
+        },
+        onRunQuick = ::runQuickShortcut,
+        onShown = accessibility::markOverlayShown,
     )
+
+    private fun quickActionOf(shortcut: Shortcut): ClipPanel.QuickAction {
+        val name = DesktopName.of(shortcut, ::translate)
+        return ClipPanel.QuickAction(shortcut.id, name, DesktopName.glyphOf(name), shortcut.combo.toString())
+    }
+
+    /**
+     * 面板顶上那一格被点了。面板已经关上，但焦点回到原应用还要一小会儿：
+     * 发按键、上屏这类动作要落在原应用上，先等它拿回焦点再执行。
+     */
+    private fun runQuickShortcut(id: String) {
+        scope.launch {
+            val shortcut = shortcutRepository.find(id) ?: return@launch
+            if (pausedNow && shortcut.action !is Action.Awake) {
+                triggerHud.show(TriggerFeedback(translate("已暂停 · 先在设置里恢复运行"), failed = true))
+                return@launch
+            }
+            accessibility.awaitInputBack()
+            delay(QUICK_RUN_DELAY_MS)
+            runShortcut(shortcut, fromDesktop = false)
+        }
+    }
 
     /**
      * 常驻屏幕边缘的剪贴板按钮。点它和按快捷键是同一个入口；
@@ -536,13 +581,15 @@ class AppGraph private constructor(context: Context) {
     /**
      * 面板里选中了一条：直接写进原来的输入框。
      *
-     * 面板不抢焦点，所以输入连接一直是原来那个框的。没有输入框获得焦点（停在桌面上）时
+     * 面板拿过焦点，但不碰输入法，输入连接多半一直是原来那个框的；被收走了就等它接回来。没有输入框获得焦点（停在桌面上）时
      * 退一步放进剪贴板，由提示说清楚要用户自己粘贴 —— 不静默失败。
      */
     private fun insertClip(entry: ClipEntry) {
         scope.launch {
             // 面板里拿着的只是预览，上屏要全文
             val text = clipHistoryStore.fullText(entry)
+            // 面板拿过焦点：输入连接若被收走，等它接回原来的输入框再写
+            accessibility.awaitInputBack()
             val committed = withContext(Dispatchers.Main) { accessibility.commitText(text) }
             clipHistoryStore.markUsed(entry.id)
             if (committed) return@launch
@@ -1920,6 +1967,9 @@ class AppGraph private constructor(context: Context) {
         accessibility.isEnabledInSettings(KeyboardAccessibilityService::class.java)
 
     companion object {
+        /** 面板关上后等多久再执行快捷操作：让焦点先回到原应用，发出的按键才落得到它身上。 */
+        private const val QUICK_RUN_DELAY_MS = 150L
+
         private const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
 
         // 直接用字面值，免得为了两个常量把 ComponentCallbacks2 拖进领域层

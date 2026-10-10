@@ -1,7 +1,11 @@
 package com.actionmental.service
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.InputMethod
+import android.os.Build
 import android.view.KeyEvent
+import android.view.inputmethod.EditorInfo
+import androidx.annotation.RequiresApi
 import android.view.accessibility.AccessibilityEvent
 import com.actionmental.AppGraph
 
@@ -53,6 +57,23 @@ class KeyboardAccessibilityService : AccessibilityService() {
             }
         } catch (t: Throwable) {
             graph.eventLog.error("service", "前台变化处理异常", t)
+        }
+    }
+
+    /**
+     * 输入连接接上 / 断开时告诉桥一声。剪贴板面板关上后要等连接接回原来的输入框再上屏，
+     * 靠的就是这两个回调。
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    override fun onCreateInputMethod(): InputMethod = object : InputMethod(this) {
+        override fun onStartInput(attribute: EditorInfo, restarting: Boolean) {
+            super.onStartInput(attribute, restarting)
+            graph.accessibility.onInputStarted()
+        }
+
+        override fun onFinishInput() {
+            super.onFinishInput()
+            graph.accessibility.onInputFinished()
         }
     }
 

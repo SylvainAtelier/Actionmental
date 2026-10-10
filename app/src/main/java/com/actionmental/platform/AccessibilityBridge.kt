@@ -15,6 +15,8 @@ import androidx.annotation.RequiresApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * AccessibilityService 与应用其余部分之间唯一的桥。
@@ -207,6 +209,39 @@ class AccessibilityBridge(private val context: Context) {
      * 走的是 flagInputMethodEditor 给这个服务的那条输入连接（Android 13+），不经剪贴板：
      * 不触发「已读取剪贴板」提示，也不受 ROM 对后台写剪贴板的限制。没有输入框获得焦点时返回 false。
      */
+    /**
+     * 输入连接此刻是不是接在某个输入框上。由服务的 InputMethod 回调维护（Android 13+）。
+     *
+     * 剪贴板面板为了收到系统返回键要拿窗口焦点：焦点挪走时，部分系统会把输入连接一并收走，
+     * 面板关上、焦点回到原应用后再重新接上。上屏之前得等它接回来，不然字写进的是一条断掉的连接。
+     */
+    private val _inputLive = MutableStateFlow(false)
+
+    /** 面板打开那一刻有没有输入框。没有的话关上之后也不会有，不必等。 */
+    @Volatile
+    private var inputLiveAtOverlay = false
+
+    fun onInputStarted() { _inputLive.value = true }
+    fun onInputFinished() { _inputLive.value = false }
+
+    /** 抢焦点的浮层打开时调用一次。 */
+    fun markOverlayShown() {
+        // 服务连上之前就开始的输入不会补发 onStartInput，再问一次输入法自己
+        val started = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            runCatching { service?.inputMethod?.currentInputStarted == true }.getOrDefault(false)
+        if (started) _inputLive.value = true
+        inputLiveAtOverlay = _inputLive.value
+    }
+
+    /**
+     * 浮层关上后、上屏之前调用：打开时有输入框、此刻连接却断着，就等它接回来，最多 [timeoutMs]。
+     * 连接没断过（大多数系统上焦点去了不碰输入法的窗口时不会断）就立即返回。
+     */
+    suspend fun awaitInputBack(timeoutMs: Long = 800L) {
+        if (!inputLiveAtOverlay || _inputLive.value) return
+        withTimeoutOrNull(timeoutMs) { _inputLive.first { it } }
+    }
+
     fun commitText(text: String): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
         val connection = service?.inputMethod?.currentInputConnection ?: return false

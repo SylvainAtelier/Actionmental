@@ -20,12 +20,17 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
 import android.widget.AbsListView
 import android.widget.BaseAdapter
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ListView
+import android.widget.ScrollView
 import android.widget.TextView
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
+import androidx.annotation.RequiresApi
 import androidx.compose.ui.graphics.toArgb
 import androidx.core.graphics.ColorUtils
 import com.actionmental.core.action.ActionResult
@@ -49,12 +54,14 @@ import kotlin.math.abs
 /**
  * 剪贴板历史面板：快捷键唤出，浮在当前应用上面。
  *
- * 窗口和触发提示一样挂 `TYPE_ACCESSIBILITY_OVERLAY`，并且**不可聚焦** —— 原来那个输入框的
- * 焦点和输入连接一直留着，选中之后直接经无障碍输入通道上屏，不用等焦点回来、也没有闪烁。
- * 不可聚焦也意味着收不到按键，所以按键改由 [KeyPipeline.modal] 在无障碍服务那一层截下来交给面板。
+ * 窗口和触发提示一样挂 `TYPE_ACCESSIBILITY_OVERLAY`。它**可聚焦但不碰输入法**（ALT_FOCUSABLE_IM）：
+ * 拿焦点是为了收到导航栏返回键与返回手势 —— 系统只把它们发给有焦点的窗口；不碰输入法是为了
+ * 让原来那个输入框的输入连接尽量留着，选中之后经无障碍输入通道上屏。
+ * 实体键盘的按键仍由 [KeyPipeline.modal] 在无障碍服务那一层截下来交给面板，比窗口分发更早。
  *
- * 版式跟着窗口走（见 [PanelRoot]）：宽度随屏宽、封顶 600dp；高度随内容、到可用空间为止，
- * 再多就在列表里滚。列表是 ListView：只为看得见的那几行建视图并循环复用，数据按页懒加载，
+ * 顶上三格快捷操作：放用户挑的三条快捷键，点一下关面板、执行它。空格子点开就是选单。
+ *
+ * 版式跟着窗口走（见 [PanelRoot]）：卡片居中、封顶 640dp 宽，四周留足白；列表在卡片里滚。列表是 ListView：只为看得见的那几行建视图并循环复用，数据按页懒加载，
  * 每行只拿预览 —— 几万条历史时滑动也只动十来个视图、几十条数据。
  *
  * 状态机在 [ClipPanelState]，这里只管窗口、绘制和把效果落地。除 [toggle] / [dismiss] 外全在主线程。
@@ -82,7 +89,20 @@ class ClipPanel(
     private val accent: () -> UserSettings.Accent,
     /** 面板内部出错时记日志，而不是让异常把进程带走。 */
     private val onError: (what: String, error: Throwable) -> Unit,
+    /** 顶上三格快捷操作此刻放的是什么，空格子是 null。每次打开时问一次。 */
+    private val quickSlots: () -> List<QuickAction?> = { emptyList() },
+    /** 能放进格子里的快捷键：已配置、由按键触发的那些。打开选单时才问。 */
+    private val quickCandidates: () -> List<QuickAction> = { emptyList() },
+    /** 第 slot 格换成 id 那条快捷键；null 是清空这一格。 */
+    private val onAssignQuick: (slot: Int, id: String?) -> Unit = { _, _ -> },
+    /** 点了一格：面板已经关上，执行那条快捷键。 */
+    private val onRunQuick: (id: String) -> Unit = {},
+    /** 窗口加上去之前调用：面板要抢焦点，输入连接可能被收走，桥得先记下此刻的状态。 */
+    private val onShown: () -> Unit = {},
 ) {
+    /** 一格快捷操作。[glyph] 是图标中央那一个字，[combo] 是触发它的组合键写法。 */
+    data class QuickAction(val id: String, val name: String, val glyph: String, val combo: String)
+
     private val main = Handler(Looper.getMainLooper())
 
     @Volatile
@@ -110,6 +130,10 @@ class ClipPanel(
 
     /** 长按菜单那一层：开着时盖满整个面板，点它外面只收菜单、不关面板。 */
     private var menuLayer: View? = null
+
+    /** 三格快捷操作此刻的内容，长度恒为 [QUICK_SLOTS]。 */
+    private var quick: List<QuickAction?> = List(QUICK_SLOTS) { null }
+    private lateinit var quickBar: LinearLayout
 
     /** 快捷键入口。在协程里调用，窗口操作一律投递到主线程。 */
     fun toggle(): ActionResult {
@@ -149,18 +173,24 @@ class ClipPanel(
         limit = ClipPanelState.PAGE_SIZE
         hasMore = false
         loadingMore = false
+        quick = quickSlots().let { slots -> List(QUICK_SLOTS) { slots.getOrNull(it) } }
         val view = build(service)
+        // 可聚焦：系统的返回键 / 返回手势只发给有焦点的窗口，不可聚焦的面板永远收不到，
+        // 返回会落到底下的应用上。ALT_FOCUSABLE_IM 让这个窗口不碰输入法：输入法不会因为它收起，
+        // 输入连接在多数系统上也继续留在原来的输入框上（没留住的，上屏前由桥等它接回来）。
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT,
         ).apply {
             windowAnimations = 0
             title = TAG
         }
+        onShown()
         if (runCatching { wm.addView(view, params) }.isFailure) return
+        view.playEnter()
         root = view
         owner = service
         open = true
@@ -460,41 +490,66 @@ class ClipPanel(
         }
     }
 
-    /**
-     * 长按一行弹出的菜单：置顶 / 取消置顶、复制到剪贴板。
-     *
-     * 画在面板自己的窗口里，而不是 PopupMenu：面板窗口不可聚焦，挂在它下面的子窗口在一些 ROM 上
-     * 弹不出来或拿不到触摸。菜单贴着那一行的右缘，下方放得下就放下方，否则翻到上方。
-     */
+    /** 弹出菜单里的一项。[trailing] 画在右侧（组合键之类）；[enabled] 为 false 时只是一行说明。 */
+    private class MenuEntry(
+        val label: String,
+        val trailing: String? = null,
+        val checked: Boolean = false,
+        val enabled: Boolean = true,
+        val onClick: () -> Unit = {},
+    )
+
+    /** 长按一行：置顶 / 取消置顶、复制到剪贴板。菜单贴着那一行的右缘。 */
     private fun showMenu(row: View, entry: ClipEntry) {
+        showPopup(
+            row,
+            listOf(
+                MenuEntry(translate(if (entry.pinned) "取消置顶" else "置顶这一条")) { apply(PanelEffect.TogglePin(entry)) },
+                MenuEntry(translate("复制到剪贴板")) { apply(PanelEffect.Copy(entry)) },
+            ),
+            alignEnd = true,
+        )
+    }
+
+    /**
+     * 在面板自己的窗口里弹一个小菜单，而不是 PopupMenu：挂在浮层下面的子窗口在一些 ROM 上
+     * 弹不出来或拿不到触摸。下方放得下就放下方，否则翻到上方；太长就在菜单里滚。
+     */
+    private fun showPopup(anchor: View, entries: List<MenuEntry>, alignEnd: Boolean, title: String? = null, minWidthDp: Float = 168f) {
         val host = root ?: return
         dismissMenu()
         val context = host.context
-        val menu = LinearLayout(context).apply {
+        val column = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             val padV = dp(context, 6f).toInt()
             setPadding(0, padV, 0, padV)
+            title?.let {
+                addView(TextView(context).apply {
+                    text = it
+                    setTextColor(palette.faint)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+                    setPadding(dp(context, 16f).toInt(), dp(context, 6f).toInt(), dp(context, 16f).toInt(), dp(context, 6f).toInt())
+                })
+            }
+            entries.forEach { addView(menuItem(context, it)) }
+        }
+        val menu = ScrollView(context).apply {
+            isVerticalScrollBarEnabled = true
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
             background = GradientDrawable().apply {
-                cornerRadius = dp(context, 14f)
+                cornerRadius = dp(context, 16f)
                 setColor(palette.surface)
                 setStroke(dp(context, 1f).toInt(), palette.line)
             }
+            clipToOutline = true
             elevation = dp(context, 16f)
-            minimumWidth = dp(context, 160f).toInt()
             isClickable = true
-            addView(menuItem(context, if (entry.pinned) "取消置顶" else "置顶这一条") {
-                dismissMenu()
-                apply(PanelEffect.TogglePin(entry))
-            })
-            addView(menuItem(context, "复制到剪贴板") {
-                dismissMenu()
-                apply(PanelEffect.Copy(entry))
-            })
+            addView(column)
         }
         val layer = FrameLayout(context).apply {
-            // 兄弟视图按 Z 排绘制和分发触摸：这一层不抬过卡片的 12dp，菜单就画在卡片底下、点也点不到。
+            // 兄弟视图按 Z 排绘制和分发触摸：这一层不抬过卡片，菜单就画在卡片底下、点也点不到。
             // 层本身没有背景，抬高不会投出整屏的影子
-            elevation = dp(context, 24f)
+            elevation = dp(context, 40f)
             // 点菜单外面只收菜单：面板还开着，用户多半是要接着挑
             setOnClickListener { dismissMenu() }
             addView(menu, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -502,31 +557,39 @@ class ClipPanel(
         host.addView(layer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         menuLayer = layer
 
-        menu.measure(
-            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+        val edge = dp(context, 12f).toInt()
+        val maxWidth = (host.width - edge * 2).coerceAtLeast(0)
+        column.measure(
+            View.MeasureSpec.makeMeasureSpec(maxWidth, View.MeasureSpec.AT_MOST),
             View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
         )
+        val width = maxOf(column.measuredWidth, dp(context, minWidthDp).toInt()).coerceAtMost(maxWidth)
         val hostAt = IntArray(2).also(host::getLocationInWindow)
-        val rowAt = IntArray(2).also(row::getLocationInWindow)
-        val rowLeft = rowAt[0] - hostAt[0]
-        val rowTop = rowAt[1] - hostAt[1]
-        val gap = dp(context, 4f).toInt()
-        val edge = dp(context, 8f).toInt()
-        val below = rowTop + row.height + gap
-        val top = if (below + menu.measuredHeight <= host.height - edge) below
-        else (rowTop - gap - menu.measuredHeight).coerceAtLeast(edge)
-        val left = (rowLeft + row.width - menu.measuredWidth - dp(context, 8f).toInt())
-            .coerceIn(edge, (host.width - menu.measuredWidth - edge).coerceAtLeast(edge))
+        val anchorAt = IntArray(2).also(anchor::getLocationInWindow)
+        val anchorLeft = anchorAt[0] - hostAt[0]
+        val anchorTop = anchorAt[1] - hostAt[1]
+        val gap = dp(context, 6f).toInt()
+        val below = anchorTop + anchor.height + gap
+        val spaceBelow = host.height - edge - below
+        val spaceAbove = anchorTop - gap - edge
+        val wanted = column.measuredHeight
+        val placeBelow = wanted <= spaceBelow || spaceBelow >= spaceAbove
+        val height = wanted.coerceAtMost(maxOf(if (placeBelow) spaceBelow else spaceAbove, dp(context, 56f).toInt()))
+        val top = if (placeBelow) below else (anchorTop - gap - height).coerceAtLeast(edge)
+        val left = (if (alignEnd) anchorLeft + anchor.width - width - dp(context, 8f).toInt() else anchorLeft)
+            .coerceIn(edge, (host.width - width - edge).coerceAtLeast(edge))
         (menu.layoutParams as FrameLayout.LayoutParams).apply {
+            this.width = width
+            this.height = height
             leftMargin = left
             topMargin = top
         }
         menu.alpha = 0f
         menu.scaleX = 0.96f
         menu.scaleY = 0.96f
-        menu.pivotX = menu.measuredWidth.toFloat()
-        menu.pivotY = if (top >= below) 0f else menu.measuredHeight.toFloat()
-        menu.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(120).start()
+        menu.pivotX = if (alignEnd) width.toFloat() else 0f
+        menu.pivotY = if (placeBelow) 0f else height.toFloat()
+        menu.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(140).setInterpolator(DecelerateInterpolator()).start()
     }
 
     private fun dismissMenu() {
@@ -535,19 +598,201 @@ class ClipPanel(
         (layer.parent as? ViewGroup)?.removeView(layer)
     }
 
-    private fun menuItem(context: Context, label: String, onClick: () -> Unit): View {
-        val mask = GradientDrawable().apply { setColor(Color.WHITE) }
-        return TextView(context).apply {
-            text = translate(label)
-            setTextColor(palette.ink)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            gravity = Gravity.CENTER_VERTICAL
-            minHeight = dp(context, 44f).toInt()
-            setPadding(dp(context, 16f).toInt(), 0, dp(context, 16f).toInt(), 0)
-            background = RippleDrawable(ColorStateList.valueOf(palette.ripple), null, mask)
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            setOnClickListener { guarded("剪贴板长按菜单") { onClick() } }
+    private fun menuItem(context: Context, entry: MenuEntry): View {
+        val label = TextView(context).apply {
+            text = entry.label
+            setTextColor(if (!entry.enabled) palette.faint else if (entry.checked) palette.accent else palette.ink)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, if (entry.enabled) 14f else 12.5f)
+            if (entry.checked) typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            isSingleLine = entry.enabled
+            ellipsize = if (entry.enabled) TextUtils.TruncateAt.END else null
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
+        return LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(context, 44f).toInt()
+            val padV = dp(context, if (entry.enabled) 0f else 8f).toInt()
+            setPadding(dp(context, 16f).toInt(), padV, dp(context, 16f).toInt(), padV)
+            addView(label)
+            entry.trailing?.takeIf { it.isNotBlank() }?.let {
+                addView(TextView(context).apply {
+                    text = it
+                    setTextColor(palette.faint)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+                    typeface = Typeface.MONOSPACE
+                    isSingleLine = true
+                    setPadding(dp(context, 16f).toInt(), 0, 0, 0)
+                })
+            }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            if (entry.enabled) {
+                val mask = GradientDrawable().apply { setColor(Color.WHITE) }
+                background = RippleDrawable(ColorStateList.valueOf(palette.ripple), null, mask)
+                setOnClickListener {
+                    guarded("面板菜单") {
+                        dismissMenu()
+                        entry.onClick()
+                    }
+                }
+            }
+        }
+    }
+
+    // --- 快捷操作 --------------------------------------------------------------
+
+    /** 顶上那一排三格。每格的内容由 [bindQuick] 填，换了内容只重填那一格。 */
+    private fun buildQuickBar(context: Context): LinearLayout {
+        quickBar = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { topMargin = dp(context, 14f).toInt() }
+        }
+        repeat(QUICK_SLOTS) { slot ->
+            val tile = FrameLayout(context).apply {
+                layoutParams = LinearLayout.LayoutParams(0, dp(context, 56f).toInt(), 1f)
+                    .apply { if (slot > 0) marginStart = dp(context, 10f).toInt() }
+                setOnClickListener { guarded("快捷操作") { onQuickTap(slot, this) } }
+                setOnLongClickListener {
+                    guarded("快捷操作") { onQuickLongPress(slot, this) }
+                    true
+                }
+            }
+            quickBar.addView(tile)
+            bindQuick(slot)
+        }
+        return quickBar
+    }
+
+    private fun bindQuick(slot: Int) {
+        val tile = quickBar.getChildAt(slot) as? FrameLayout ?: return
+        val context = tile.context
+        tile.removeAllViews()
+        val action = quick.getOrNull(slot)
+        val radius = dp(context, 16f)
+        val mask = GradientDrawable().apply { cornerRadius = radius; setColor(Color.WHITE) }
+        if (action == null) {
+            // 空格子：虚线框 + 一个加号，告诉人这里能放东西，又不抢列表的戏
+            val frame = GradientDrawable().apply {
+                cornerRadius = radius
+                setColor(Color.TRANSPARENT)
+                setStroke(dp(context, 1.2f).toInt(), palette.line, dp(context, 5f), dp(context, 4f))
+            }
+            tile.background = RippleDrawable(ColorStateList.valueOf(palette.ripple), frame, mask)
+            tile.contentDescription = translate("添加快捷操作")
+            tile.addView(
+                TextView(context).apply {
+                    text = "＋  " + translate("添加快捷操作")
+                    setTextColor(palette.faint)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+                    isSingleLine = true
+                    ellipsize = TextUtils.TruncateAt.END
+                    gravity = Gravity.CENTER
+                    setPadding(dp(context, 8f).toInt(), 0, dp(context, 8f).toInt(), 0)
+                },
+                FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+            )
+            return
+        }
+        val fill = GradientDrawable().apply {
+            cornerRadius = radius
+            setColor(palette.field)
+            setStroke(dp(context, 1f).toInt(), palette.line)
+        }
+        tile.background = RippleDrawable(ColorStateList.valueOf(palette.ripple), fill, mask)
+        tile.contentDescription = action.name
+        val glyphSize = dp(context, 30f).toInt()
+        val glyph = TextView(context).apply {
+            text = action.glyph
+            setTextColor(palette.accent)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(palette.accentSoft)
+            }
+            layoutParams = LinearLayout.LayoutParams(glyphSize, glyphSize).apply { marginEnd = dp(context, 10f).toInt() }
+        }
+        val name = TextView(context).apply {
+            text = action.name
+            setTextColor(palette.ink)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        val combo = TextView(context).apply {
+            text = action.combo
+            setTextColor(palette.faint)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+            typeface = Typeface.MONOSPACE
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+            visibility = if (action.combo.isBlank()) View.GONE else View.VISIBLE
+        }
+        val text = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            addView(name)
+            addView(combo)
+        }
+        tile.addView(
+            LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(context, 10f).toInt(), 0, dp(context, 10f).toInt(), 0)
+                addView(glyph)
+                addView(text)
+            },
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+        )
+    }
+
+    /** 有内容就关面板、执行；空格子就弹选单。 */
+    private fun onQuickTap(slot: Int, tile: View) {
+        dismissMenu()
+        val action = quick.getOrNull(slot) ?: return showQuickPicker(slot, tile)
+        close()
+        onRunQuick(action.id)
+    }
+
+    /** 长按有内容的格子：更换或移除。空格子长按与点按一样。 */
+    private fun onQuickLongPress(slot: Int, tile: View) {
+        if (quick.getOrNull(slot) == null) return showQuickPicker(slot, tile)
+        showPopup(
+            tile,
+            listOf(
+                MenuEntry(translate("更换快捷操作")) { showQuickPicker(slot, tile) },
+                MenuEntry(translate("移除")) { assignQuick(slot, null) },
+            ),
+            alignEnd = slot == QUICK_SLOTS - 1,
+        )
+    }
+
+    private fun showQuickPicker(slot: Int, tile: View) {
+        val current = quick.getOrNull(slot)?.id
+        val candidates = quickCandidates()
+        val entries = if (candidates.isEmpty()) {
+            listOf(MenuEntry(translate("还没有快捷键 · 先在 Actionmental 的「快捷键」页添加"), enabled = false))
+        } else {
+            candidates.map { action ->
+                MenuEntry(action.name, trailing = action.combo, checked = action.id == current) { assignQuick(slot, action) }
+            }
+        }
+        showPopup(
+            tile,
+            entries,
+            alignEnd = slot == QUICK_SLOTS - 1,
+            title = translate("选择放进这一格的快捷键"),
+            minWidthDp = 240f,
+        )
+    }
+
+    private fun assignQuick(slot: Int, action: QuickAction?) {
+        quick = quick.toMutableList().also { it[slot] = action }
+        bindQuick(slot)
+        onAssignQuick(slot, action?.id)
     }
 
     private fun labelOf(context: Context, pkg: String): String = labels.getOrPut(pkg) {
@@ -558,12 +803,12 @@ class ClipPanel(
     }
 
     private fun build(context: Context): PanelRoot {
-        val pad = dp(context, 14f).toInt()
+        val pad = dp(context, 18f).toInt()
 
         val title = TextView(context).apply {
             text = translate("剪贴板历史")
             setTextColor(palette.ink)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
@@ -584,15 +829,15 @@ class ClipPanel(
             typeface = Typeface.MONOSPACE
             isSingleLine = true
             ellipsize = TextUtils.TruncateAt.START
-            val padV = dp(context, 9f).toInt()
+            val padV = dp(context, 10f).toInt()
             setPadding(dp(context, 12f).toInt(), padV, dp(context, 12f).toInt(), padV)
             background = GradientDrawable().apply {
-                cornerRadius = dp(context, 12f)
+                cornerRadius = dp(context, 14f)
                 setColor(palette.field)
                 setStroke(dp(context, 1f).toInt(), palette.line)
             }
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                .apply { topMargin = dp(context, 10f).toInt(); bottomMargin = dp(context, 8f).toInt() }
+                .apply { topMargin = dp(context, 12f).toInt(); bottomMargin = dp(context, 10f).toInt() }
         }
         // 先赋值、再配置：setOnScrollListener 会当场回调一次 onScroll，
         // 回调里要用到 listView —— 写在 `listView = ListView().apply { … }` 里时字段还没赋上，
@@ -655,14 +900,15 @@ class ClipPanel(
             orientation = LinearLayout.VERTICAL
             setPadding(pad - dp(context, 4f).toInt(), pad, pad - dp(context, 4f).toInt(), pad - dp(context, 2f).toInt())
             background = GradientDrawable().apply {
-                cornerRadius = dp(context, 20f)
+                cornerRadius = dp(context, 24f)
                 setColor(palette.surface)
                 setStroke(dp(context, 1f).toInt(), palette.line)
             }
-            elevation = dp(context, 12f)
+            elevation = dp(context, 24f)
             // 吃掉卡片上的点击，免得穿到背景上把面板关了
             isClickable = true
             addView(header)
+            addView(buildQuickBar(context))
             addView(queryView)
             addView(listView)
             addView(emptyView)
@@ -681,9 +927,13 @@ class ClipPanel(
     /**
      * 面板的根：每次测量时按当前窗口重算卡片四周的留白，转屏、分屏、小窗都自动跟上。
      *
-     * - 卡片铺满避开系统栏之后的区域，四边留同样宽的白：短边不到 480dp 时 12dp，否则 24dp；
+     * - 卡片浮在避开系统栏之后的区域正中，四周留足白：基础留白按短边取（不到 480dp 时 24dp，
+     *   否则 48dp），上下再按可用高度的 8% 取大的那个；宽度封顶 [MAX_CARD_WIDTH_DP]，宽屏上不摊成一条；
      * - 列表在卡片里滚，条目少时下面空着，卡片的边框不随内容跳；
      * - 按键提示随宽度换繁简两版，窄窗口不折成三行。
+     *
+     * 返回键也在这里收：返回手势 / 导航栏返回发给有焦点的窗口，Android 13+ 走 OnBackInvokedCallback
+     * （targetSdk 36 起不再派发 KEYCODE_BACK），更早的系统走按键分发。两条路都只关一次。
      */
     private inner class PanelRoot(
         context: Context,
@@ -691,17 +941,57 @@ class ClipPanel(
         private val hint: TextView,
     ) : FrameLayout(context) {
 
+        private val backHook: Any? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) BackHook { onBack() } else null
+
+        /** 返回：菜单开着先收菜单，否则关面板。 */
+        private fun onBack() = guarded("返回键关闭剪贴板面板") {
+            if (menuLayer != null) dismissMenu() else if (root === this) close()
+        }
+
+        override fun onAttachedToWindow() {
+            super.onAttachedToWindow()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) (backHook as? BackHook)?.register(this)
+        }
+
+        override fun onDetachedFromWindow() {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) (backHook as? BackHook)?.unregister(this)
+            super.onDetachedFromWindow()
+        }
+
+        override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+            if (event.keyCode == KeyEvent.KEYCODE_BACK || event.keyCode == KeyEvent.KEYCODE_ESCAPE) {
+                if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) onBack()
+                return true
+            }
+            return super.dispatchKeyEvent(event)
+        }
+
+        /** 打开时的一下：遮罩淡入，卡片从略小、略低的地方浮上来。 */
+        fun playEnter() {
+            alpha = 0f
+            animate().alpha(1f).setDuration(160).start()
+            card.scaleX = 0.97f
+            card.scaleY = 0.97f
+            card.translationY = dp(context, 12f)
+            card.animate().scaleX(1f).scaleY(1f).translationY(0f)
+                .setDuration(220).setInterpolator(DecelerateInterpolator(1.6f)).start()
+        }
+
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
             val width = MeasureSpec.getSize(widthMeasureSpec)
             val height = MeasureSpec.getSize(heightMeasureSpec)
             val insets = systemInsets()
             // 留白按短边取：横屏时也是同一个数，四周看起来一样宽
-            val gutter = dp(context, if (px2dp(minOf(width, height)) < 480) 12f else 24f).toInt()
+            val gutter = dp(context, if (px2dp(minOf(width, height)) < 480) 24f else 48f).toInt()
+            val availWidth = width - insets[0] - insets[2]
+            val availHeight = height - insets[1] - insets[3]
+            val side = maxOf(gutter, (availWidth - dp(context, MAX_CARD_WIDTH_DP).toInt()) / 2)
+            val vertical = maxOf(gutter, (availHeight * 0.08f).toInt())
             val lp = card.layoutParams as LayoutParams
-            lp.leftMargin = insets[0] + gutter
-            lp.topMargin = insets[1] + gutter
-            lp.rightMargin = insets[2] + gutter
-            lp.bottomMargin = insets[3] + gutter
+            lp.leftMargin = insets[0] + side
+            lp.topMargin = insets[1] + vertical
+            lp.rightMargin = insets[2] + side
+            lp.bottomMargin = insets[3] + vertical
             val cardWidth = width - lp.leftMargin - lp.rightMargin
 
             val wanted = translate(
@@ -744,6 +1034,12 @@ class ClipPanel(
 
         /** 光标离可见区超过这么多条就直接跳，不做平滑滚动。 */
         const val JUMP_THRESHOLD = 12
+
+        /** 顶上快捷操作的格数。 */
+        const val QUICK_SLOTS = 3
+
+        /** 卡片最宽多少 dp：再宽一行字就长得读不过来了。 */
+        const val MAX_CARD_WIDTH_DP = 640f
     }
 
     /**
@@ -763,6 +1059,9 @@ class ClipPanel(
         val faint = c.inkMuted.toArgb()
         val accent = c.accent.toArgb()
         val onAccent = Color.WHITE
+
+        /** 快捷操作图标的底：强调色淡淡一层。 */
+        val accentSoft = ColorUtils.blendARGB(surface, accent, if (dark) 0.26f else 0.14f)
         val selected = ColorUtils.blendARGB(surface, accent, if (dark) 0.24f else 0.14f)
         val ripple = ColorUtils.setAlphaComponent(accent, if (dark) 0x40 else 0x2E)
 
@@ -772,5 +1071,23 @@ class ClipPanel(
         companion object {
             fun of(dark: Boolean, accent: UserSettings.Accent): Palette = Palette(amColorsFor(dark, accent), dark)
         }
+    }
+}
+
+/**
+ * 面板窗口的返回回调。单独成类，免得低版本系统在加载 [ClipPanel] 时碰到 Android 13 才有的类型。
+ * PRIORITY_OVERLAY：浮层之上的返回先归它，不落到同窗口别的回调上。
+ */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+private class BackHook(private val onBack: () -> Unit) {
+    private val callback = OnBackInvokedCallback { onBack() }
+
+    fun register(view: View) {
+        view.findOnBackInvokedDispatcher()
+            ?.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_OVERLAY, callback)
+    }
+
+    fun unregister(view: View) {
+        view.findOnBackInvokedDispatcher()?.unregisterOnBackInvokedCallback(callback)
     }
 }

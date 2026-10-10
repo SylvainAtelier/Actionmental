@@ -114,6 +114,11 @@ data class UserSettings(
     val clipBubbleY: Float = 0.6f,
     /** 面板里直选第几条用哪组键。默认 Ctrl + 数字；光按数字永远是搜索。 */
     val clipPickKeys: com.actionmental.core.clip.PickKeys = com.actionmental.core.clip.PickKeys.CTRL_DIGITS,
+    /**
+     * 面板顶上那三格快捷操作，按位置存快捷键的 id；空串是空格子。
+     * 快捷键被删了就当空格子显示，不在这里级联清理。
+     */
+    val clipQuickShortcuts: List<String> = emptyList(),
 ) {
     enum class Theme(val label: String) { LIGHT("浅色"), DARK("深色"), SYSTEM("跟随系统") }
 
