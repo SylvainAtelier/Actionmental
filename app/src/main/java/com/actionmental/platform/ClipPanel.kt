@@ -250,7 +250,7 @@ class ClipPanel(
         when (effect) {
             PanelEffect.None -> Unit
             PanelEffect.Render -> {
-                adapter.notifyDataSetChanged()
+                refreshSelection()
                 updateCount()
                 revealSelected()
                 maybeLoadMore(state.selected)
@@ -401,7 +401,6 @@ class ClipPanel(
             val view = convertView ?: createRow(parent.context)
             val holder = view.tag as RowHolder
             val entry = state.entries[position]
-            val selected = position == state.selected
 
             holder.preview.text = ClipPolicy.preview(entry.text)
             holder.meta.text = listOfNotNull(
@@ -410,12 +409,30 @@ class ClipPanel(
                 translate(ClipPolicy.age(System.currentTimeMillis(), entry.lastUsedAtMs)),
             ).joinToString(" · ")
             holder.meta.setTextColor(if (entry.pinned) palette.accent else palette.mid)
-            holder.background.setColor(if (selected) palette.selected else Color.TRANSPARENT)
-            holder.bar.visibility = if (selected) View.VISIBLE else View.INVISIBLE
-            bindBadge(holder, position, badgeBase())
+            bindSelection(holder, position, badgeBase())
 
             maybeLoadMore(position)
             return view
+        }
+    }
+
+    private fun bindSelection(holder: RowHolder, position: Int, base: Int) {
+        val selected = position == state.selected
+        holder.background.setColor(if (selected) palette.selected else Color.TRANSPARENT)
+        holder.bar.visibility = if (selected) View.VISIBLE else View.INVISIBLE
+        bindBadge(holder, position, base)
+    }
+
+    /**
+     * 光标挪动只改看得见那几行的高亮，不 notifyDataSetChanged：
+     * 后者会让 ListView 重新布局，正在进行的平滑滚动被打断、整页跳一下。
+     */
+    private fun refreshSelection() {
+        val base = badgeBase()
+        val first = listView.firstVisiblePosition
+        for (i in 0 until listView.childCount) {
+            val holder = listView.getChildAt(i).tag as? RowHolder ?: continue
+            bindSelection(holder, first + i, base)
         }
     }
 
@@ -842,8 +859,10 @@ class ClipPanel(
         // 先赋值、再配置：setOnScrollListener 会当场回调一次 onScroll，
         // 回调里要用到 listView —— 写在 `listView = ListView().apply { … }` 里时字段还没赋上，
         // lateinit 当场抛异常，整个无障碍进程跟着崩掉（真机上唤出面板即闪退就是这个）。
-        listView = ListView(context)
+        listView = TouchModeListView(context)
         listView.apply {
+            // 光标由面板自己画，ListView 不该再有一套焦点 / 选中项
+            isFocusable = false
             adapter = this@ClipPanel.adapter
             divider = null
             dividerHeight = dp(context, 2f).toInt()
@@ -1072,6 +1091,18 @@ class ClipPanel(
             fun of(dark: Boolean, accent: UserSettings.Accent): Palette = Palette(amColorsFor(dark, accent), dark)
         }
     }
+}
+
+/**
+ * 始终按触摸模式工作的 ListView。
+ *
+ * 面板窗口可聚焦，用户又多半刚在别的应用里用实体键盘打过字，窗口常常处在非触摸模式。
+ * 非触摸模式下 ListView 会把 setSelection 当成「选中项」记下来，之后每次布局（数据刷新、
+ * 翻页加载）都把视野拉回那一项：方向键往下滚一点又被弹回顶上，来回闪、滑不下去。
+ * 光标由面板自己画，ListView 只负责滚动，所以让它永远走触摸模式那条路：setSelection 只是定位。
+ */
+private class TouchModeListView(context: Context) : ListView(context) {
+    override fun isInTouchMode(): Boolean = true
 }
 
 /**

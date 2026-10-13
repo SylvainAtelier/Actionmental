@@ -26,6 +26,14 @@ data class UserSettings(
     val globalRotationMode: RotationMode = RotationMode.NORMAL,
     val appRulesEnabled: Boolean = true,
     /**
+     * 折叠屏合上、在外屏上继续用时，把 [globalRotationMode] 改回 0° 竖屏。
+     *
+     * 内屏配着键盘强制横屏，合上之后窄长的外屏也跟着横过来，几乎没法用。
+     * 改的是全局意图本身（等同于在方向页点 0°），展开后不会自动回到横屏。
+     * 默认关闭：它会替用户改掉一个明确设过的方向。
+     */
+    val coverScreenPortrait: Boolean = false,
+    /**
      * 屏幕常亮的意图。
      *
      * 唤醒锁随进程消失，所以重启后必须靠它重建 —— 否则用户上次开着的常亮

@@ -30,6 +30,7 @@ import com.actionmental.ui.components.AmCard
 import com.actionmental.ui.components.AmLabel
 import com.actionmental.ui.components.AmSecondaryButton
 import com.actionmental.ui.components.AmSegmented
+import com.actionmental.ui.components.AmSwitch
 import com.actionmental.ui.components.DataRow
 import com.actionmental.ui.components.StatusDot
 import com.actionmental.ui.i18n.Text
@@ -78,6 +79,7 @@ private fun RotationControlSection(vm: AppViewModel, modifier: Modifier = Modifi
     val c = amColors
     val state by vm.rotationState.collectAsStateWithLifecycle()
     val access by vm.settingsAccess.collectAsStateWithLifecycle()
+    val settings by vm.settings.collectAsStateWithLifecycle()
     val writable = state.writable
 
     Column(
@@ -139,6 +141,33 @@ private fun RotationControlSection(vm: AppViewModel, modifier: Modifier = Modifi
                     "恢复",
                     onClick = { vm.setRotation(RotationMode.NORMAL) },
                     enabled = writable,
+                )
+            }
+        }
+
+        AmCard(Modifier.fillMaxWidth()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("折叠屏外屏回到 0°", style = AmType.body, color = c.ink)
+                    Text(
+                        if (settings.coverScreenPortrait) "已启用 · 合上后在外屏继续使用时改为 0° 竖屏"
+                        else "未启用 · 合上折叠屏时方向保持不变",
+                        style = AmType.data,
+                        color = c.inkFaint,
+                    )
+                }
+                AmSwitch(
+                    settings.coverScreenPortrait,
+                    onCheckedChange = { on -> vm.updateSettings { it.copy(coverScreenPortrait = on) } },
+                )
+            }
+            if (settings.coverScreenPortrait) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "改的是全局方向本身，展开后不会自动回到原来的角度；前台应用有自己的规则时以规则为准。" +
+                        "进程启动时已经在外屏上的，要展开再合上一次才认得出。",
+                    style = AmType.secondary,
+                    color = c.inkMid,
                 )
             }
         }

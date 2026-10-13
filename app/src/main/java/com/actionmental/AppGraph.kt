@@ -40,6 +40,7 @@ import com.actionmental.core.rotation.AppOverrideController
 import com.actionmental.core.rotation.AppRotationRuleManager
 import com.actionmental.core.rotation.OrientationCompatKeeper
 import com.actionmental.core.rotation.RotationController
+import com.actionmental.core.rotation.RotationMode
 import com.actionmental.core.shortcut.DesktopName
 import com.actionmental.core.shortcut.Shortcut
 import com.actionmental.core.shortcut.ShortcutMatcher
@@ -61,6 +62,7 @@ import com.actionmental.platform.ClipCapture
 import com.actionmental.platform.ClipPanel
 import com.actionmental.platform.ClipboardWriter
 import com.actionmental.platform.ConfigBackupFile
+import com.actionmental.platform.CoverScreenWatch
 import com.actionmental.platform.AudioBackend
 import com.actionmental.platform.DesktopShortcuts
 import com.actionmental.platform.HardeningNotifier
@@ -293,6 +295,9 @@ class AppGraph private constructor(context: Context) {
             else eventLog.info("rotation", message, detail)
         },
     )
+
+    /** 折叠屏合上、在外屏上继续用。开关见 [com.actionmental.data.UserSettings.coverScreenPortrait]。 */
+    private val coverScreen = CoverScreenWatch(context) { scope.launch { onEnterCoverScreen() } }
 
     /**
      * 屏幕常亮。
@@ -763,6 +768,8 @@ class AppGraph private constructor(context: Context) {
             if (intent?.action == Intent.ACTION_USER_PRESENT) {
                 unlocked.value = true
                 scope.launch { clipCapture.catchUp() }
+                // 合上后停在锁屏上，解锁这一下才算在外屏上用起来；解锁不会让屏幕报变化
+                coverScreen.check()
             }
             // 没设锁屏的机器亮屏即可用，收不到 USER_PRESENT 也要把按钮放出来
             if (intent?.action == Intent.ACTION_SCREEN_ON &&
@@ -843,6 +850,29 @@ class AppGraph private constructor(context: Context) {
                 )
             }
         }
+    }
+
+    /**
+     * 合上折叠屏、在外屏上用起来了：把全局意图改回 0° 竖屏。
+     *
+     * 走 [RotationController.setGlobal]，与在方向页点 0° 完全同一条路：意图落盘、按事实去重、
+     * 写完回读。应用规则照旧压在它上面 —— 前台应用有自己的规则时以规则为准。
+     * 暂停期间不动：暂停的承诺是不改屏幕旋转。
+     */
+    private suspend fun onEnterCoverScreen() {
+        if (!settingsRepository.load().coverScreenPortrait) return
+        val from = rotation.globalMode
+        if (pausedNow) {
+            eventLog.debug("rotation", "切到外屏 · 暂停中，不改方向", "全局意图=" + from.label)
+            return
+        }
+        // 换了一块屏，上一次看到的系统状态不再当真
+        rotation.invalidateObservedState()
+        val result = rotation.setGlobal(RotationMode.FORCE_PORTRAIT)
+        val message = "切到外屏 · 全局方向 " + from.label + " → " + RotationMode.FORCE_PORTRAIT.label
+        val detail = "前台=" + (accessibility.foregroundPackage.value ?: "?") + " · " + result.message
+        if (result is ActionResult.Failed) eventLog.warn("rotation", message + " 失败", detail)
+        else eventLog.info("rotation", message, detail)
     }
 
     private fun onDevicesChanged() {
@@ -1041,6 +1071,13 @@ class AppGraph private constructor(context: Context) {
             }
         }
         scope.launch { rotation.refresh() }
+
+        // 外屏回 0° 的监听只在开关打开时挂着：每次转屏、亮灭屏 display 0 都会报一次变化
+        scope.launch {
+            settingsRepository.settings.map { it.coverScreenPortrait }.distinctUntilChanged().collect {
+                coverScreen.setEnabled(it)
+            }
+        }
 
         // 唤醒锁随进程消失，所以「上次开着常亮」只能靠盘上的意图重建。
         // 用 load() 而不是订阅 settings：这里只要开机那一次，

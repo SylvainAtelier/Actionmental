@@ -125,6 +125,11 @@ Shizuku 是唯一能「向系统注入任意按键」「执行 `cmd window`」�
 读不到），仍然转不过去就撤掉窗口、退到锁定并如实提示 —— 留着它回读会谎报「已强制」。
 悬浮层随服务实例作废，服务重绑、Shizuku 来去时 `RotationController.reapplyAsync()` 按意图重新落一次。
 
+折叠屏外屏回 0°（`coverScreenPortrait`，默认关）：`CoverScreenWatch` 只在开关打开时监听 display 0，
+按 `Display.Mode` 物理尺寸认「换到了更小、长宽比不同的另一块面板」（`CoverScreenDetector`，
+不用 600dp 一类绝对阈值 —— Flip 的内屏本身就在阈值以下），亮屏且解锁、再稳 1s 后
+走 `setGlobal(FORCE_PORTRAIT)`：改的是全局意图，应用规则照旧优先，暂停期间不动，每段外屏只报一次。
+
 **映射（`KeyOutput` / `KeyRouting`）**
 
 按键线程上同步挑路，发不出去就不拦源键（绝不吞键）：
