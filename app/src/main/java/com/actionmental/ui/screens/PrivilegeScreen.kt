@@ -129,6 +129,15 @@ fun PrivilegeScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                 AmSecondaryButton("重新连接", vm::reconnectShizuku)
                 AmSecondaryButton("重新检测", vm::refreshAll)
             }
+            if (shizuku.bindStuck) {
+                Spacer(Modifier.height(AmSpace.s1))
+                Text(
+                    "已授权，但特权服务反复绑定超时，本应用重试解决不了。请在 Shizuku 里停止服务后重新启动一次；" +
+                        "常见原因是 Shizuku 被启动了两次，同时运行着两个服务端。",
+                    style = AmType.secondary,
+                    color = c.accent,
+                )
+            }
             if (!shizuku.installed) {
                 Spacer(Modifier.height(AmSpace.s1))
                 Text(

@@ -20,6 +20,7 @@ sealed interface ActionResult {
         TERMUX_NOT_INSTALLED("Termux 未安装"),
         TERMUX_PERMISSION_DENIED("未授予 Termux 执行权限"),
         TERMUX_OVERLAY_DENIED("Termux 缺少「显示在其他应用上层」权限"),
+        TERMUX_START_BLOCKED("系统拦下了 Termux 的启动 · 先打开一次 Termux，或在系统设置里允许它自启动与关联启动"),
         EXECUTION_FAILED("执行失败"),
     }
 

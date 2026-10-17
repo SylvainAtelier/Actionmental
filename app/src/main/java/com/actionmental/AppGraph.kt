@@ -1747,6 +1747,7 @@ class AppGraph private constructor(context: Context) {
     /**
      * Termux 在后台跑完一条命令，结果经 [com.actionmental.service.TermuxResultReceiver] 送到这里。
      * 日志与通知各留一份：通知会被划掉，日志是事后唯一能对上时间线的地方。
+     * 顶部提示开着时，转着的那枚胶囊原地换成结果卡 —— 视线不用离开手上的事去翻通知栏。
      */
     fun onTermuxResult(intent: android.content.Intent) {
         val (name, outcome) = termux.parse(intent)
@@ -1757,6 +1758,7 @@ class AppGraph private constructor(context: Context) {
         } else {
             eventLog.error("termux", outcome.title(name) { it }, command + " · " + summary)
         }
+        if (settingsRepository.settings.value.triggerHud) triggerHud.show(TriggerFeedback.of(name, outcome, ::translate))
         termux.notify(name, outcome)
     }
 

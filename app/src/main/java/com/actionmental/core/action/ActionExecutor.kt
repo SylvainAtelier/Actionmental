@@ -55,7 +55,7 @@ class ActionExecutor(
         }
         is Action.WirelessDebug -> copyWirelessDebug(action.target)
         is Action.ClipboardHistory -> toggleClipboardHistory()
-        is Action.Termux -> termux.run(action)
+        is Action.Termux -> termux.run(action, privileged())
         is Action.Shell -> shell(action.command)
     }
 

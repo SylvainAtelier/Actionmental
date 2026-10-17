@@ -108,6 +108,7 @@ fun RemapScreen(modifier: Modifier = Modifier) {
                     InjectionStatusCard(
                         usable = status.shizuku.usable,
                         bound = status.shizuku.serviceBound,
+                        bindStuck = status.shizuku.bindStuck,
                         conclusion = status.shizuku.conclusion,
                         accessibilityConnected = status.accessibilityConnected,
                         injectError = injectError,
@@ -273,6 +274,7 @@ private fun degradedHint(remap: KeyRemap): String {
 private fun InjectionStatusCard(
     usable: Boolean,
     bound: Boolean,
+    bindStuck: Boolean,
     conclusion: String,
     accessibilityConnected: Boolean,
     injectError: String?,
@@ -281,6 +283,7 @@ private fun InjectionStatusCard(
 ) {
     val c = amColors
     val injectReady = usable && bound
+    val unbound = if (bindStuck) "特权服务反复绑定超时" else "特权服务未连接"
     val inputChannel = Build.VERSION.SDK_INT >= 33
     val healthy = accessibilityConnected && injectReady && injectError == null
     AmCard(Modifier.fillMaxWidth(), alert = !healthy) {
@@ -307,7 +310,7 @@ private fun InjectionStatusCard(
                     injectError ?: if (injectReady) {
                         "任意键都经 Shizuku 发回系统，系统级组合键也认。"
                     } else {
-                        "Shizuku " + (if (usable) "特权服务未连接" else conclusion) +
+                        "Shizuku " + (if (usable) unbound else conclusion) +
                             "。发不出去的键不会被拦下，原键照常工作。"
                     },
                     style = AmType.secondary,
@@ -317,7 +320,7 @@ private fun InjectionStatusCard(
             AmSecondaryButton("自检", onSelfTest, enabled = usable)
         }
         Spacer(Modifier.height(AmSpace.s1))
-        DataRow("Shizuku 注入", if (injectReady) "就绪" else if (usable) "特权服务未连接" else conclusion)
+        DataRow("Shizuku 注入", if (injectReady) "就绪" else if (usable) unbound else conclusion)
         DataRow("系统键 / 媒体键", if (accessibilityConnected) "可用 · 返回、主页、截屏、锁屏、方向键、音量…" else "不可用")
         DataRow(
             "无障碍输入通道",

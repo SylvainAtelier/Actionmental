@@ -6,6 +6,7 @@ package com.actionmental.core.action
  * 字段对应 Termux `RUN_COMMAND` 结果包里的同名键。[err] 是 Termux 自己的错误码：
  * [ERR_OK]（-1）表示命令确实跑了，结论看 [exitCode]；其余值说明 Termux 根本没执行
  * （最常见的是没在 termux.properties 里打开 allow-external-apps），原因在 [errmsg]。
+ * [durationMs] 不在结果包里，是本应用从发出到收到算出来的；算不出时为 null。
  */
 data class TermuxOutcome(
     val stdout: String = "",
@@ -13,6 +14,7 @@ data class TermuxOutcome(
     val exitCode: Int? = null,
     val err: Int = ERR_OK,
     val errmsg: String = "",
+    val durationMs: Long? = null,
 ) {
     val executed: Boolean get() = err == ERR_OK
     val succeeded: Boolean get() = executed && exitCode == 0
@@ -46,9 +48,9 @@ data class TermuxOutcome(
         const val MAX_CHARS = 1_200
 
         /** 行数与字数两道上限：一行几千字的 JSON 也不该把通知撑爆。 */
-        fun tail(text: String): String {
-            val lines = text.trimEnd().lines().takeLast(MAX_LINES).joinToString("\n")
-            return if (lines.length <= MAX_CHARS) lines else "…" + lines.takeLast(MAX_CHARS)
+        fun tail(text: String, maxLines: Int = MAX_LINES, maxChars: Int = MAX_CHARS): String {
+            val lines = text.trimEnd().lines().takeLast(maxLines).joinToString("\n")
+            return if (lines.length <= maxChars) lines else "…" + lines.takeLast(maxChars)
         }
     }
 }

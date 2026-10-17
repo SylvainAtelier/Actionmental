@@ -9,6 +9,7 @@ import com.actionmental.platform.TermuxBackend
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -104,5 +105,79 @@ class TermuxActionTest {
         )!!
         assertTrue(denied.failed)
         assertEquals("未授予 Termux 执行权限", denied.value)
+    }
+
+    @Test
+    fun `后台命令发出后一直转着，等太久才换成仍在运行`() {
+        val sent = TriggerFeedback.of(Action.Termux("sleep 60", title = "等"), ActionResult.Ok(), identity)!!
+        assertTrue(sent.pending)
+        assertEquals(TriggerFeedback.RUNNING_HOLD_MS, sent.holdMs)
+        val later = sent.then!!
+        assertFalse(later.pending)
+        assertEquals("仍在运行 · 结果见通知", later.value)
+
+        val session = TriggerFeedback.of(Action.Termux("htop", background = false), ActionResult.Ok(), identity)!!
+        assertFalse(session.pending)
+        assertNull(session.then)
+    }
+
+    @Test
+    fun `成功的结果卡给耗时和输出末尾几行`() {
+        val output = (1..9).joinToString("\n") { "line $it" }
+        val card = TriggerFeedback.of("同步", TermuxOutcome(stdout = output, exitCode = 0, durationMs = 1_234), identity)
+        assertTrue(card.succeeded)
+        assertFalse(card.failed)
+        assertEquals("1.2s", card.meta)
+        assertEquals((6..9).joinToString("\n") { "line $it" }, card.output)
+        assertEquals(TriggerFeedback.LONG_HOLD_MS + 4 * TriggerFeedback.PER_LINE_MS, card.holdMs)
+    }
+
+    @Test
+    fun `成功但没有输出时不展开，只留结论`() {
+        val card = TriggerFeedback.of("清理", TermuxOutcome(exitCode = 0, durationMs = 300), identity)
+        assertNull(card.output)
+        assertEquals("0.3s", card.meta)
+        assertEquals(TriggerFeedback.SHORT_HOLD_MS, card.holdMs)
+    }
+
+    @Test
+    fun `失败的结果卡给退出码和 stderr，停得更久`() {
+        val card = TriggerFeedback.of(
+            "同步",
+            TermuxOutcome(stdout = "partial", stderr = "fatal: boom", exitCode = 128, durationMs = 4_800),
+            identity,
+        )
+        assertTrue(card.failed)
+        assertFalse(card.succeeded)
+        assertEquals("退出码 128 · 4.8s", card.meta)
+        assertEquals("fatal: boom", card.output)
+        assertEquals(TriggerFeedback.FAILED_OUTPUT_HOLD_MS + TriggerFeedback.PER_LINE_MS, card.holdMs)
+
+        val long = TriggerFeedback.of("同步", TermuxOutcome(stderr = "x\n".repeat(50), exitCode = 1), identity)
+        assertEquals(TriggerFeedback.FAILED_OUTPUT_HOLD_MS + TriggerFeedback.OUTPUT_LINES * TriggerFeedback.PER_LINE_MS, long.holdMs)
+        assertEquals("退出码 1", long.meta)
+    }
+
+    @Test
+    fun `Termux 拒绝时结果卡转述原因`() {
+        val card = TriggerFeedback.of("同步", TermuxOutcome(err = 2, errmsg = "allow-external-apps is not true"), identity)
+        assertTrue(card.failed)
+        assertEquals("Termux 拒绝执行", card.meta)
+        assertEquals("allow-external-apps is not true", card.output)
+    }
+
+    @Test
+    fun `命令输出原样显示，不过翻译表`() {
+        val shout: (String) -> String = { "EN:$it" }
+        val card = TriggerFeedback.of("同步", TermuxOutcome(stdout = "执行完成", exitCode = 0), shout)
+        assertEquals("执行完成", card.output)
+    }
+
+    @Test
+    fun `计时写法随长度换档`() {
+        assertEquals("0.0s", TriggerFeedback.seconds(0))
+        assertEquals("9.9s", TriggerFeedback.seconds(9_949))
+        assertEquals("12s", TriggerFeedback.seconds(12_900))
+        assertEquals("1m05s", TriggerFeedback.seconds(65_000))
     }
 }

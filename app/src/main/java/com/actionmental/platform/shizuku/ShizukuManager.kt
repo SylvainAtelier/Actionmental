@@ -27,6 +27,8 @@ data class ShizukuStatus(
     val uid: Int = -1,
     val versionCode: Int = -1,
     val serviceBound: Boolean = false,
+    /** 已授权，但特权服务连续多次绑定超时：问题多半在 Shizuku 那边，本应用重试解决不了。 */
+    val bindStuck: Boolean = false,
 ) {
     val identity: String
         get() = when {
@@ -82,6 +84,19 @@ class ShizukuManager(
         private const val BIND_TIMEOUT_MS = 3_000L
         private const val BIND_TIMEOUT_MAX_MS = 30_000L
 
+        /** 连续这么多次绑定超时（3 + 6 + 12s ≈ 21s）就认定是卡死，向用户提示去重启 Shizuku。 */
+        private const val BIND_STUCK_ATTEMPTS = 3
+
+        /**
+         * 绑定卡死时的提示。
+         *
+         * 盘上见过的一例：Shizuku 被启动了两次，设备上同时跑着两个 shizuku_server。
+         * 服务记录建在其中一个上，特权进程起来后却经 Shizuku App 报到另一个，
+         * 回的是 `unable to find token`，于是每次都等满 30 秒超时。授权检查连哪个都能过，
+         * 所以界面一直是「已授权」。同机其他依赖 user service 的应用会以同样的方式失败。
+         */
+        const val BIND_STUCK_HINT = "特权服务反复绑定超时 · 请彻底停止并重新启动 Shizuku（可能同时运行着多个服务端）"
+
         /** UserHandle.PER_USER_RANGE：uid / 100000 就是用户 id。 */
         private const val PER_USER_RANGE = 100_000
     }
@@ -135,6 +150,7 @@ class ShizukuManager(
             if (service != null) {
                 boundAtMs = System.currentTimeMillis()
                 awaitTimeoutLogged = false
+                _status.value = _status.value.copy(bindStuck = false)
                 onEvent(false, "特权服务已连接", "距请求绑定 " + sinceMs(bindRequestedAtMs) + "ms")
             } else {
                 onEvent(true, "特权服务回调了连接，但 binder 为空", describe())
@@ -158,6 +174,8 @@ class ShizukuManager(
         service = null
         // Shizuku 都没了，这次绑定不会再有回音；binder 回来时由 binderReceived 重新发起
         synchronized(bindLock) { bindWatchdog?.cancel(); bindWatchdog = null }
+        // Shizuku 重启过了，卡死的那批记录也随之没了，先不再提示
+        _status.value = _status.value.copy(bindStuck = false)
         refresh()
         onEvent(true, "Shizuku binder 死亡", describe())
     }
@@ -189,6 +207,7 @@ class ShizukuManager(
             uid = if (running) runCatching { Shizuku.getUid() }.getOrDefault(-1) else -1,
             versionCode = if (running) runCatching { Shizuku.getVersion() }.getOrDefault(-1) else -1,
             serviceBound = service != null,
+            bindStuck = _status.value.bindStuck && service == null,
         )
     }
 
@@ -244,6 +263,10 @@ class ShizukuManager(
                 "绑定特权服务 " + timeout / 1000 + "s 无回应，重置后重绑",
                 "第 " + attempt + " 次 · " + describe(),
             )
+            if (attempt == BIND_STUCK_ATTEMPTS) {
+                _status.value = _status.value.copy(bindStuck = true)
+                onEvent(true, BIND_STUCK_HINT, describe())
+            }
             resetUserService()
             if (service != null) return
             requestBind()
@@ -300,7 +323,7 @@ class ShizukuManager(
 
     /** [injectReady] 为假时的原因，一句话。 */
     fun injectUnavailableReason(): String =
-        _status.value.reason?.message ?: if (service == null) "特权服务未连接" else "可用"
+        _status.value.reason?.message ?: if (service == null) unboundMessage() else "可用"
 
     @Volatile
     private var lastBindNudgeMs = 0L
@@ -373,7 +396,10 @@ class ShizukuManager(
     }
 
     private fun unavailableMessage(): String =
-        _status.value.reason?.message ?: "特权服务未连接"
+        _status.value.reason?.message ?: unboundMessage()
+
+    private fun unboundMessage(): String =
+        if (_status.value.bindStuck) BIND_STUCK_HINT else "特权服务未连接"
 
     override suspend fun exec(command: String): Result<ShellResult> = withContext(Dispatchers.IO) {
         withService { it.exec(command) }.map { raw ->

@@ -64,6 +64,9 @@ import kotlin.math.abs
  * 版式跟着窗口走（见 [PanelRoot]）：卡片居中、封顶 640dp 宽，四周留足白；列表在卡片里滚。列表是 ListView：只为看得见的那几行建视图并循环复用，数据按页懒加载，
  * 每行只拿预览 —— 几万条历史时滑动也只动十来个视图、几十条数据。
  *
+ * 置顶与最近分开摆：宽窗口（卡片 ≥ [SPLIT_MIN_DP]）左右两栏各自滚动；窄窗口是同一列表里的两段，
+ * 置顶的压成单行，多了收起成前 [PIN_PEEK] 条。←→ 在两段之间跳。没有置顶时与以前一样只有一串。
+ *
  * 状态机在 [ClipPanelState]，这里只管窗口、绘制和把效果落地。除 [toggle] / [dismiss] 外全在主线程。
  */
 class ClipPanel(
@@ -122,8 +125,44 @@ class ClipPanel(
     private var loadingMore = false
 
     private val labels = HashMap<String, String>()
-    private val adapter = RowAdapter()
+
+    /** 最近一次查回来的两段：置顶的（全部）与最近的（按页）。界面上实际列出的由 [refreshData] 拼出来。 */
+    private var allPins: List<ClipEntry> = emptyList()
+    private var recents: List<ClipEntry> = emptyList()
+
+    /**
+     * 有没有置顶的条目，按最近一次不带搜索词的查询算。决定宽窗口要不要分两栏：
+     * 搜索时置顶段可能一条不剩，版式不该跟着字一个个敲进去来回跳。跨次打开保留，下一次打开第一帧就是对的版式。
+     */
+    private var hasPins = false
+
+    /** 两栏并排（宽窗口且有置顶）；否则置顶作为一段排在同一列表的最上面。由 [PanelRoot.onMeasure] 定。 */
+    private var columns = false
+
+    /** 单列时置顶段收起成前 [PIN_PEEK] 条；展开靠点「展开」那一行，或按 ← 跳进置顶段。每次打开都从收起开始。 */
+    private var pinsExpanded = false
+
+    /**
+     * 两个列表各自的行。非负数是 [ClipPanelState.entries] 里的下标，负数是分段标题等非条目行（ROW_*）。
+     * 用 IntArray 而不是对象列表：每次刷新只分配一个数组，滚动时取行不分配。
+     */
+    private var pinRows = IntArray(0)
+    private var mainRows = IntArray(0)
+    private val pinAdapter = RowAdapter { pinRows }
+    private val mainAdapter = RowAdapter { mainRows }
+
+    /** 角标 1…9 依次对应哪一条（entries 下标）。读的顺序：先左栏、再右栏，各自从上往下。 */
+    private var badgeOrder = IntArray(MAX_BADGES)
+    private var badgeScratch = IntArray(MAX_BADGES)
+    private var badgeCount = 0
+
     private lateinit var listView: ListView
+    private lateinit var pinList: ListView
+    private lateinit var pinColumn: View
+    private lateinit var pinTitle: TextView
+    private lateinit var recentTitle: TextView
+    private lateinit var columnGap: View
+    private lateinit var lists: View
     private lateinit var queryView: TextView
     private lateinit var countView: TextView
     private lateinit var emptyView: TextView
@@ -173,6 +212,10 @@ class ClipPanel(
         limit = ClipPanelState.PAGE_SIZE
         hasMore = false
         loadingMore = false
+        allPins = emptyList()
+        recents = emptyList()
+        pinsExpanded = false
+        badgeCount = 0
         quick = quickSlots().let { slots -> List(QUICK_SLOTS) { slots.getOrNull(it) } }
         val view = build(service)
         // 可聚焦：系统的返回键 / 返回手势只发给有焦点的窗口，不可聚焦的面板永远收不到，
@@ -235,16 +278,30 @@ class ClipPanel(
         val key = PanelKeys.map(e.keyCode, modifiers, typed, pick) ?: return true
         // 直选键选的是角标上那个数：从第一条完整可见的开始数
         val absolute = if (key is PanelKey.Pick) {
-            if (key.index >= visibleBadges()) return true
-            PanelKey.Pick(badgeBase() + key.index)
+            if (key.index >= badgeCount) return true
+            PanelKey.Pick(badgeOrder[key.index])
         } else {
             key
         }
+        // 单列且置顶段收起时：← 先展开再跳进去，才跳得到被收起的那些；→ 先跳出来再收起，光标不落进收起的部分
+        if (key == PanelKey.Left) setPinsExpanded(true)
         val (next, effect) = state.reduce(absolute)
         state = next
         apply(effect)
+        if (key == PanelKey.Right) setPinsExpanded(false)
         return true
     }
+
+    /** 单列时展开 / 收起置顶段，光标跟着原来那一条。两栏时置顶栏自己能滚，不收起。 */
+    private fun setPinsExpanded(expanded: Boolean) {
+        if (pinsExpanded == expanded || columns || !pinsCollapsible()) return
+        pinsExpanded = expanded
+        refreshData(follow = true)
+        revealSelected()
+    }
+
+    /** 置顶多到值得收起：单列、没在搜索（搜索结果要全摆出来）、收起后至少藏得住两条。 */
+    private fun pinsCollapsible(): Boolean = !columns && state.query.isEmpty() && allPins.size > PIN_PEEK + 1
 
     private fun apply(effect: PanelEffect) {
         when (effect) {
@@ -290,7 +347,9 @@ class ClipPanel(
     private fun load(query: String, count: Int) {
         val gen = ++generation
         scope.launch {
-            val rows = runCatching { store.search(query, count) }.getOrDefault(emptyList())
+            // 两段分开查：置顶的一次取完（封顶 PIN_LIMIT），最近的按页取 —— 置顶再多也不占「最近」的页
+            val pins = runCatching { store.search(query, PIN_LIMIT, pinned = true) }.getOrDefault(emptyList())
+            val rows = runCatching { store.search(query, count, pinned = false) }.getOrDefault(emptyList())
             main.post {
                 // 打字快过查询时，旧结果到得晚也不能盖掉新结果
                 if (gen != generation || root == null) return@post
@@ -300,14 +359,55 @@ class ClipPanel(
                     loadingMore = false
                     val firstPage = state.entries.isEmpty() || query != lastLoadedQuery
                     lastLoadedQuery = query
-                    state = state.withEntries(rows)
-                    render()
-                    // 换了搜索词回到顶上；翻页、删改保持原位
+                    allPins = pins
+                    recents = rows
+                    if (query.isEmpty() && hasPins != pins.isNotEmpty()) {
+                        hasPins = pins.isNotEmpty()
+                        // 版式由 PanelRoot 按新的 hasPins 重新决定
+                        root?.requestLayout()
+                    }
+                    refreshData(follow = !firstPage)
+                    // 换了搜索词回到顶上；翻页、删改保持原位（光标跟着原来那条）
                     // 空列表不能 setSelection：ListView 会不查越界直接 getItemId(0)
-                    if (firstPage) { if (state.entries.isNotEmpty()) listView.setSelection(0) } else revealSelected()
+                    if (firstPage) {
+                        if (mainRows.isNotEmpty()) listView.setSelection(0)
+                        if (pinRows.isNotEmpty()) pinList.setSelection(0)
+                    } else {
+                        revealSelected()
+                    }
                 }
             }
         }
+    }
+
+    /**
+     * 由两段拼出界面上列出的条目和两个列表各自的行，再重画。
+     * 单列：[置顶标题, 置顶…, (展开/收起), 最近标题, 最近…]，没有置顶时就是一串最近，不加标题；
+     * 两栏：左栏是置顶，右栏是最近，标题是列表外面固定的两行字。
+     */
+    private fun refreshData(follow: Boolean) {
+        val collapsed = pinsCollapsible() && !pinsExpanded
+        val shownPins = if (collapsed) allPins.subList(0, PIN_PEEK) else allPins
+        state = state.copy(columns = columns).withEntries(if (recents.isEmpty()) shownPins else shownPins + recents, follow)
+        val pinCount = shownPins.size
+        val total = state.entries.size
+        if (columns) {
+            pinRows = if (pinCount == 0) intArrayOf(ROW_EMPTY_PINS) else IntArray(pinCount) { it }
+            mainRows = if (total == pinCount) intArrayOf(ROW_EMPTY_RECENT) else IntArray(total - pinCount) { pinCount + it }
+        } else {
+            pinRows = IntArray(0)
+            val toggle = pinsCollapsible()
+            val headed = pinCount > 0
+            val rows = IntArray(total + (if (headed) 1 else 0) + (if (toggle) 1 else 0) + (if (headed && total > pinCount) 1 else 0))
+            var at = 0
+            if (headed) rows[at++] = ROW_PIN_HEADER
+            for (i in 0 until pinCount) rows[at++] = i
+            if (toggle) rows[at++] = ROW_TOGGLE
+            if (headed && total > pinCount) rows[at++] = ROW_RECENT_HEADER
+            for (i in pinCount until total) rows[at++] = i
+            mainRows = rows
+        }
+        render()
     }
 
     private var lastLoadedQuery = ""
@@ -326,17 +426,33 @@ class ClipPanel(
     private fun render() {
         renderQuery()
         updateCount()
-        adapter.notifyDataSetChanged()
+        pinAdapter.notifyDataSetChanged()
+        mainAdapter.notifyDataSetChanged()
         val empty = state.entries.isEmpty()
         emptyView.visibility = if (empty) View.VISIBLE else View.GONE
-        listView.visibility = if (empty) View.GONE else View.VISIBLE
-        emptyView.text = translate(
-            when {
-                state.query.isNotEmpty() -> "没有匹配的记录"
-                !capturing() -> "还没有开启记录 · 在 Actionmental 的「剪贴板历史」页打开"
-                else -> "还没有记录 · 复制点什么试试"
-            },
-        )
+        lists.visibility = if (empty) View.GONE else View.VISIBLE
+        emptyView.text = emptyText()
+        pinTitle.text = sectionTitle("置顶", allPins.size)
+    }
+
+    private fun emptyText(): String = translate(
+        when {
+            state.query.isNotEmpty() -> "没有匹配的记录"
+            !capturing() -> "还没有开启记录 · 在 Actionmental 的「剪贴板历史」页打开"
+            else -> "还没有记录 · 复制点什么试试"
+        },
+    )
+
+    /** 「置顶  12」：数字和标题之间两个空格，比「·」轻。 */
+    private fun sectionTitle(label: String, count: Int): String =
+        translate(label) + if (count > 0) "  $count" else ""
+
+    /** 两栏版式：置顶栏与栏间的空隙跟着显隐，右栏顶上加一行「最近」与左栏对齐。 */
+    private fun applyColumns() {
+        val v = if (columns) View.VISIBLE else View.GONE
+        pinColumn.visibility = v
+        columnGap.visibility = v
+        recentTitle.visibility = v
     }
 
     private fun renderQuery() {
@@ -349,78 +465,191 @@ class ClipPanel(
         countView.text = if (size == 0) "" else (state.selected + 1).toString() + " / " + size + if (hasMore) "+" else ""
     }
 
-    /** 键盘挪动光标后让它露出来：近的平滑滚过去，远的（PageDown 连按）直接跳。 */
+    /** 第 [index] 条在哪个列表的第几行。 */
+    private fun locate(index: Int): Pair<ListView, Int>? {
+        if (columns && index < state.pinned) return pinList to index
+        val row = if (columns) index - state.pinned else mainRows.indexOf(index)
+        return if (row in mainRows.indices) listView to row else null
+    }
+
+    /**
+     * 键盘挪动光标后让它露出来：近的平滑滚过去，远的（PageDown 连按）直接跳。
+     * 往上滚到一段的第一条时连上面的分段标题一起露出来，不然看不出自己进了哪一段。
+     */
     private fun revealSelected() {
         val target = state.selected
-        if (listView.childCount == 0 || target !in state.entries.indices) return
-        val first = listView.firstVisiblePosition
-        val last = listView.lastVisiblePosition
-        if (target in (first + 1) until last) return
-        if (abs(target - first) > JUMP_THRESHOLD) listView.setSelection(target)
-        else listView.smoothScrollToPosition(target)
+        if (target !in state.entries.indices) return
+        val (list, at) = locate(target) ?: return
+        if (list.childCount == 0) return
+        val rows = if (list === pinList) pinRows else mainRows
+        val first = list.firstVisiblePosition
+        val last = list.lastVisiblePosition
+        if (at in (first + 1) until last) return
+        val row = if (at <= first && (rows.getOrNull(at - 1) ?: 0) < 0) at - 1 else at
+        if (abs(row - first) > JUMP_THRESHOLD) list.setSelection(row) else list.smoothScrollToPosition(row)
     }
 
-    /** 第一条完整可见的位置：顶上那条被裁掉一大半时不给它编号。 */
-    private fun badgeBase(): Int {
-        val first = listView.firstVisiblePosition
-        val top = listView.getChildAt(0) ?: return first
-        return if (top.top < listView.paddingTop - top.height / 3) first + 1 else first
-    }
-
-    /** 屏幕上编了号的有几条（至多 9 条，对应直选键的 1…9）。 */
-    private fun visibleBadges(): Int =
-        (listView.lastVisiblePosition - badgeBase() + 1).coerceIn(0, MAX_BADGES)
-
-    /** 滚动之后只改看得见的那十来个角标，不重新绑定整行。 */
+    /**
+     * 重新编角标：看得见、没被裁掉一大截的条目依次编 1…9，先左栏、再右栏。编号真变了才重画角标。
+     * 滚动时每帧都会调到，所以只走屏幕上那十来行、不分配。
+     */
     private fun refreshBadges() {
-        val base = badgeBase()
-        for (i in 0 until listView.childCount) {
-            val holder = listView.getChildAt(i).tag as? RowHolder ?: continue
-            bindBadge(holder, listView.firstVisiblePosition + i, base)
+        val next = badgeScratch
+        var n = 0
+        if (columns) n = collectBadges(pinList, pinRows, next, n)
+        n = collectBadges(listView, mainRows, next, n)
+        if (n == badgeCount && sameBadges(next, n)) return
+        badgeScratch = badgeOrder
+        badgeOrder = next
+        badgeCount = n
+        if (columns) rebindBadges(pinList)
+        rebindBadges(listView)
+    }
+
+    private fun sameBadges(next: IntArray, n: Int): Boolean {
+        for (i in 0 until n) if (next[i] != badgeOrder[i]) return false
+        return true
+    }
+
+    private fun collectBadges(list: ListView, rows: IntArray, out: IntArray, from: Int): Int {
+        var n = from
+        val first = list.firstVisiblePosition
+        val top = list.paddingTop
+        val bottom = list.height - list.paddingBottom
+        for (i in 0 until list.childCount) {
+            if (n >= MAX_BADGES) break
+            val row = rows.getOrNull(first + i) ?: break
+            if (row < 0) continue
+            val child = list.getChildAt(i)
+            // 顶上、底下被裁掉一大半的不编号：看不清的那条不该占一个数
+            if (child.top < top - child.height / 3 || child.bottom > bottom + child.height / 3) continue
+            out[n++] = row
+        }
+        return n
+    }
+
+    private fun rebindBadges(list: ListView) {
+        for (i in 0 until list.childCount) {
+            val holder = list.getChildAt(i).tag as? RowHolder ?: continue
+            bindBadge(holder)
         }
     }
 
-    private fun bindBadge(holder: RowHolder, position: Int, base: Int) {
-        val number = position - base + 1
-        val selected = position == state.selected
-        val numbered = number in 1..MAX_BADGES
-        holder.badge.visibility = if (numbered) View.VISIBLE else View.INVISIBLE
+    /** 第 [index] 条的角标是几（1 起）；没编号是 0。 */
+    private fun numberOf(index: Int): Int {
+        for (i in 0 until badgeCount) if (badgeOrder[i] == index) return i + 1
+        return 0
+    }
+
+    private fun bindBadge(holder: RowHolder) {
+        val number = numberOf(holder.index)
+        val selected = holder.index == state.selected
+        holder.badge.visibility = if (number > 0) View.VISIBLE else View.INVISIBLE
         // 没编号的行照样占同样宽的位：写成「10」会把这一行的正文挤得和别的行对不齐
-        holder.badge.text = pick.badge(if (numbered) number else 1)
+        holder.badge.text = pick.badge(if (number > 0) number else 1)
         holder.badge.setTextColor(if (selected) palette.onAccent else palette.mid)
         holder.badgeBg.setColor(if (selected) palette.accent else palette.field)
     }
 
-    private inner class RowAdapter : BaseAdapter() {
-        override fun getCount() = state.entries.size
-        override fun getItem(position: Int) = state.entries[position]
-        override fun getItemId(position: Int) = state.entries[position].id
+    /** 一个列表的适配器。行从 [rows] 取（见 [pinRows]），条目、分段标题、展开行三种视图各自复用。 */
+    private inner class RowAdapter(private val rows: () -> IntArray) : BaseAdapter() {
+        override fun getCount() = rows().size
+        override fun getItem(position: Int): Any? = state.entries.getOrNull(rows()[position])
+
+        // 条目的 id 都是正数，非条目行用自己的负数常量，两者不会撞
+        override fun getItemId(position: Int): Long = rows()[position].let { if (it >= 0) state.entries[it].id else it.toLong() }
         override fun hasStableIds() = true
+        override fun getViewTypeCount() = 3
+        override fun getItemViewType(position: Int) = rows()[position].let {
+            if (it >= 0) TYPE_ENTRY else if (it == ROW_TOGGLE) TYPE_TOGGLE else TYPE_LABEL
+        }
+        override fun areAllItemsEnabled() = false
+        override fun isEnabled(position: Int) = rows()[position].let { it >= 0 || it == ROW_TOGGLE }
 
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-            val view = convertView ?: createRow(parent.context)
-            val holder = view.tag as RowHolder
-            val entry = state.entries[position]
-
-            holder.preview.text = ClipPolicy.preview(entry.text)
-            holder.meta.text = listOfNotNull(
-                if (entry.pinned) "★ " + translate("置顶") else null,
-                entry.sourcePackage?.let { labelOf(parent.context, it) },
-                translate(ClipPolicy.age(System.currentTimeMillis(), entry.lastUsedAtMs)),
-            ).joinToString(" · ")
-            holder.meta.setTextColor(if (entry.pinned) palette.accent else palette.mid)
-            bindSelection(holder, position, badgeBase())
-
-            maybeLoadMore(position)
-            return view
+            val row = rows()[position]
+            return when {
+                row >= 0 -> entryView(row, convertView, parent)
+                row == ROW_TOGGLE -> toggleView(convertView, parent.context)
+                else -> labelView(row, convertView, parent.context)
+            }
         }
     }
 
-    private fun bindSelection(holder: RowHolder, position: Int, base: Int) {
-        val selected = position == state.selected
+    private fun entryView(index: Int, convertView: View?, parent: ViewGroup): View {
+        val view = convertView ?: createRow(parent.context)
+        val holder = view.tag as RowHolder
+        val entry = state.entries[index]
+        holder.index = index
+        holder.preview.text = ClipPolicy.preview(entry.text)
+        if (entry.pinned) {
+            // 置顶的待在自己那一段里，不必再写「置顶」；它们是反复用的固定内容，认得出正文就够了。
+            // 单列时压成一行，把高度让给最近的；两栏时左栏自己滚，给两行
+            holder.preview.maxLines = if (columns) 2 else 1
+            holder.meta.visibility = View.GONE
+            view.minimumHeight = dp(view.context, 44f).toInt()
+        } else {
+            holder.preview.maxLines = 2
+            holder.meta.visibility = View.VISIBLE
+            holder.meta.text = listOfNotNull(
+                entry.sourcePackage?.let { labelOf(parent.context, it) },
+                translate(ClipPolicy.age(System.currentTimeMillis(), entry.lastUsedAtMs)),
+            ).joinToString(" · ")
+            view.minimumHeight = dp(view.context, 52f).toInt()
+        }
+        bindSelection(holder)
+        maybeLoadMore(index)
+        return view
+    }
+
+    /** 分段标题（单列时的「置顶」「最近」），或两栏里某一栏空着时的那句说明。 */
+    private fun labelView(row: Int, convertView: View?, context: Context): View {
+        val view = convertView as? TextView ?: TextView(context).apply {
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        val empty = row == ROW_EMPTY_PINS || row == ROW_EMPTY_RECENT
+        view.text = when (row) {
+            ROW_PIN_HEADER -> sectionTitle("置顶", allPins.size)
+            ROW_RECENT_HEADER -> translate("最近")
+            ROW_EMPTY_PINS -> translate("没有匹配的置顶")
+            else -> emptyText()
+        }
+        view.setTextColor(if (empty) palette.faint else palette.mid)
+        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, if (empty) 12.5f else 11.5f)
+        view.typeface = if (empty) Typeface.DEFAULT else Typeface.DEFAULT_BOLD
+        view.gravity = if (empty) Gravity.CENTER else Gravity.START or Gravity.CENTER_VERTICAL
+        // 和条目的序号角标左缘对齐；「最近」上面多留一点，两段之间隔得开
+        val top = dp(context, if (empty) 20f else if (row == ROW_RECENT_HEADER) 14f else 6f).toInt()
+        val bottom = dp(context, if (empty) 20f else 4f).toInt()
+        view.setPadding(dp(context, 16f).toInt(), top, dp(context, 12f).toInt(), bottom)
+        return view
+    }
+
+    /** 单列时置顶段末尾那一行：「展开其余 n 条」/「收起置顶」。一整行都能点，至少 44dp 高。 */
+    private fun toggleView(convertView: View?, context: Context): View {
+        val view = convertView as? TextView ?: TextView(context).apply {
+            setTextColor(palette.accent)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            typeface = Typeface.DEFAULT_BOLD
+            isSingleLine = true
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            minHeight = dp(context, 44f).toInt()
+            setPadding(dp(context, 16f).toInt(), 0, dp(context, 12f).toInt(), 0)
+        }
+        view.text = if (pinsExpanded) {
+            translate("收起置顶") + "  ▴"
+        } else {
+            translate("展开其余 %d 条").format(allPins.size - PIN_PEEK) + "  ▾"
+        }
+        return view
+    }
+
+    private fun bindSelection(holder: RowHolder) {
+        val selected = holder.index == state.selected
         holder.background.setColor(if (selected) palette.selected else Color.TRANSPARENT)
         holder.bar.visibility = if (selected) View.VISIBLE else View.INVISIBLE
-        bindBadge(holder, position, base)
+        bindBadge(holder)
     }
 
     /**
@@ -428,11 +657,14 @@ class ClipPanel(
      * 后者会让 ListView 重新布局，正在进行的平滑滚动被打断、整页跳一下。
      */
     private fun refreshSelection() {
-        val base = badgeBase()
-        val first = listView.firstVisiblePosition
-        for (i in 0 until listView.childCount) {
-            val holder = listView.getChildAt(i).tag as? RowHolder ?: continue
-            bindSelection(holder, first + i, base)
+        if (columns) rebindSelection(pinList)
+        rebindSelection(listView)
+    }
+
+    private fun rebindSelection(list: ListView) {
+        for (i in 0 until list.childCount) {
+            val holder = list.getChildAt(i).tag as? RowHolder ?: continue
+            bindSelection(holder)
         }
     }
 
@@ -443,7 +675,10 @@ class ClipPanel(
         val preview: TextView,
         val meta: TextView,
         val background: GradientDrawable,
-    )
+    ) {
+        /** 这一行此刻画的是第几条（entries 下标）。 */
+        var index = -1
+    }
 
     /** 一行：左侧强调条 + 序号角标 + 两行预览与来源。至少 52dp 高，手指点得准。 */
     private fun createRow(context: Context): View {
@@ -819,6 +1054,50 @@ class ClipPanel(
         }.getOrDefault(pkg)
     }
 
+    /** 两个列表一样的配置。点、长按、滚动都先经 [rows] 把行翻成条目下标，标题行点不着。 */
+    private fun configureList(list: ListView, adapter: RowAdapter, rows: () -> IntArray) {
+        val context = list.context
+        list.apply {
+            // 光标由面板自己画，ListView 不该再有一套焦点 / 选中项
+            isFocusable = false
+            this.adapter = adapter
+            divider = null
+            dividerHeight = dp(context, 2f).toInt()
+            selector = GradientDrawable().apply { setColor(Color.TRANSPARENT) }
+            cacheColorHint = Color.TRANSPARENT
+            isVerticalScrollBarEnabled = true
+            isVerticalFadingEdgeEnabled = true
+            setFadingEdgeLength(dp(context, 16f).toInt())
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            setOnItemClickListener { _, _, position, _ ->
+                val row = rows().getOrNull(position) ?: return@setOnItemClickListener
+                if (row == ROW_TOGGLE) return@setOnItemClickListener setPinsExpanded(!pinsExpanded)
+                val entry = state.entries.getOrNull(row) ?: return@setOnItemClickListener
+                state = state.copy(selected = row)
+                apply(PanelEffect.Insert(entry))
+            }
+            setOnItemLongClickListener { _, view, position, _ ->
+                val row = rows().getOrNull(position) ?: -1
+                state.entries.getOrNull(row)?.let { entry ->
+                    state = state.copy(selected = row)
+                    apply(PanelEffect.Render)
+                    showMenu(view, entry)
+                }
+                true
+            }
+            setOnScrollListener(object : AbsListView.OnScrollListener {
+                override fun onScrollStateChanged(view: AbsListView, scrollState: Int) = Unit
+                override fun onScroll(view: AbsListView, first: Int, visible: Int, total: Int) {
+                    // 布局完也会回调到这里：新数据、换版式之后角标都在这一处重编
+                    refreshBadges()
+                    if (visible > 0 && list === listView) {
+                        maybeLoadMore(rows().getOrNull(first + visible - 1)?.takeIf { it >= 0 } ?: state.entries.size)
+                    }
+                }
+            })
+        }
+    }
+
     private fun build(context: Context): PanelRoot {
         val pad = dp(context, 18f).toInt()
 
@@ -857,47 +1136,45 @@ class ClipPanel(
                 .apply { topMargin = dp(context, 12f).toInt(); bottomMargin = dp(context, 10f).toInt() }
         }
         // 先赋值、再配置：setOnScrollListener 会当场回调一次 onScroll，
-        // 回调里要用到 listView —— 写在 `listView = ListView().apply { … }` 里时字段还没赋上，
+        // 回调里要用到两个列表 —— 写在 `listView = ListView().apply { … }` 里时字段还没赋上，
         // lateinit 当场抛异常，整个无障碍进程跟着崩掉（真机上唤出面板即闪退就是这个）。
         listView = TouchModeListView(context)
-        listView.apply {
-            // 光标由面板自己画，ListView 不该再有一套焦点 / 选中项
-            isFocusable = false
-            adapter = this@ClipPanel.adapter
-            divider = null
-            dividerHeight = dp(context, 2f).toInt()
-            selector = GradientDrawable().apply { setColor(Color.TRANSPARENT) }
-            cacheColorHint = Color.TRANSPARENT
-            isVerticalScrollBarEnabled = true
-            isVerticalFadingEdgeEnabled = true
-            setFadingEdgeLength(dp(context, 16f).toInt())
-            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
-            // 高度随内容、到卡片能给的为止：weight 让它在放不下时收缩成可滚动的区域
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            setOnItemClickListener { _, _, position, _ ->
-                state = state.copy(selected = position)
-                state.current?.let { apply(PanelEffect.Insert(it)) }
-            }
-            setOnItemLongClickListener { _, row, position, _ ->
-                state.entries.getOrNull(position)?.let { entry ->
-                    state = state.copy(selected = position)
-                    apply(PanelEffect.Render)
-                    showMenu(row, entry)
-                }
-                true
-            }
-            setOnScrollListener(object : AbsListView.OnScrollListener {
-                private var lastFirst = -1
-                override fun onScrollStateChanged(view: AbsListView, scrollState: Int) = Unit
-                override fun onScroll(view: AbsListView, first: Int, visible: Int, total: Int) {
-                    if (first != lastFirst) {
-                        lastFirst = first
-                        refreshBadges()
-                    }
-                    if (visible > 0) maybeLoadMore(first + visible)
-                }
-            })
+        pinList = TouchModeListView(context)
+        configureList(listView, mainAdapter) { mainRows }
+        configureList(pinList, pinAdapter) { pinRows }
+
+        fun columnTitle() = TextView(context).apply {
+            setTextColor(palette.mid)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+            typeface = Typeface.DEFAULT_BOLD
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(dp(context, 16f).toInt(), dp(context, 2f).toInt(), dp(context, 12f).toInt(), dp(context, 6f).toInt())
         }
+        pinTitle = columnTitle()
+        recentTitle = columnTitle().apply { text = translate("最近") }
+        fun column(title: TextView, list: ListView, weight: Float) = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(title)
+            addView(list, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight)
+        }
+        // 左栏窄一些（2 : 3）：置顶多是短的固定内容，最近的才需要宽度读两行预览
+        pinColumn = column(pinTitle, pinList, 2f)
+        columnGap = View(context).apply {
+            setBackgroundColor(palette.line)
+            layoutParams = LinearLayout.LayoutParams(dp(context, 1f).toInt(), ViewGroup.LayoutParams.MATCH_PARENT)
+                .apply { marginStart = dp(context, 8f).toInt(); marginEnd = dp(context, 8f).toInt() }
+        }
+        lists = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(pinColumn)
+            addView(columnGap)
+            addView(column(recentTitle, listView, 3f))
+            // 占住卡片剩下的高度：列表在里面滚，条目少时下面空着，卡片的边框不随内容跳
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+        applyColumns()
         emptyView = TextView(context).apply {
             setTextColor(palette.mid)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
@@ -929,7 +1206,7 @@ class ClipPanel(
             addView(header)
             addView(buildQuickBar(context))
             addView(queryView)
-            addView(listView)
+            addView(lists)
             addView(emptyView)
             addView(hint)
             layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
@@ -1004,7 +1281,16 @@ class ClipPanel(
             val gutter = dp(context, if (px2dp(minOf(width, height)) < 480) 24f else 48f).toInt()
             val availWidth = width - insets[0] - insets[2]
             val availHeight = height - insets[1] - insets[3]
-            val side = maxOf(gutter, (availWidth - dp(context, MAX_CARD_WIDTH_DP).toInt()) / 2)
+            // 有置顶、且去掉留白后放得下两栏才分栏：横屏手机、平板、展开的折叠屏；竖屏手机与副屏仍是单列
+            val split = hasPins && px2dp(availWidth - gutter * 2) >= SPLIT_MIN_DP
+            if (split != columns) {
+                // 测量子视图之前换好：本趟测量就按新版式来，不闪一帧旧的
+                columns = split
+                applyColumns()
+                refreshData(follow = true)
+            }
+            val maxCard = if (split) MAX_SPLIT_CARD_WIDTH_DP else MAX_CARD_WIDTH_DP
+            val side = maxOf(gutter, (availWidth - dp(context, maxCard).toInt()) / 2)
             val vertical = maxOf(gutter, (availHeight * 0.08f).toInt())
             val lp = card.layoutParams as LayoutParams
             lp.leftMargin = insets[0] + side
@@ -1014,8 +1300,12 @@ class ClipPanel(
             val cardWidth = width - lp.leftMargin - lp.rightMargin
 
             val wanted = translate(
-                if (px2dp(cardWidth) < 420) "↑↓ 选择 · Enter 输入 · Ctrl+1…9 直选 · Esc 关闭"
-                else "↑↓ 选择 · Enter 输入 · Ctrl+1…9 直选 · Ctrl+C 复制 · Ctrl+P 置顶 · Del 删除 · Esc 关闭",
+                when {
+                    px2dp(cardWidth) < 420 -> "↑↓ 选择 · Enter 输入 · Ctrl+1…9 直选 · Esc 关闭"
+                    // 有置顶时多一句 ←→：两段之间怎么跳，不看提示猜不到
+                    hasPins -> "↑↓ 选择 · ←→ 置顶 / 最近 · Enter 输入 · Ctrl+1…9 直选 · Ctrl+C 复制 · Ctrl+P 置顶 · Del 删除 · Esc 关闭"
+                    else -> "↑↓ 选择 · Enter 输入 · Ctrl+1…9 直选 · Ctrl+C 复制 · Ctrl+P 置顶 · Del 删除 · Esc 关闭"
+                },
             ).replace(PickKeys.TEMPLATE, pick.hint)
             if (hint.text.toString() != wanted) hint.text = wanted
             super.onMeasure(widthMeasureSpec, heightMeasureSpec)
@@ -1059,6 +1349,29 @@ class ClipPanel(
 
         /** 卡片最宽多少 dp：再宽一行字就长得读不过来了。 */
         const val MAX_CARD_WIDTH_DP = 640f
+
+        /** 分两栏时卡片最宽多少 dp：左栏 2 份、右栏 3 份，右栏仍不超过单列时的宽度。 */
+        const val MAX_SPLIT_CARD_WIDTH_DP = 960f
+
+        /** 卡片能有多宽（dp）时才分两栏：再窄右栏的两行预览就读不下一句话了。 */
+        const val SPLIT_MIN_DP = 600f
+
+        /** 单列时置顶段收起后露出几条。 */
+        const val PIN_PEEK = 3
+
+        /** 置顶的一次最多取多少条：置顶是手挑的，几百条已经远超实际用法。 */
+        const val PIN_LIMIT = 500
+
+        /** 列表里的非条目行，见 [pinRows]。负数，和条目下标不撞。 */
+        const val ROW_PIN_HEADER = -1
+        const val ROW_RECENT_HEADER = -2
+        const val ROW_TOGGLE = -3
+        const val ROW_EMPTY_PINS = -4
+        const val ROW_EMPTY_RECENT = -5
+
+        const val TYPE_ENTRY = 0
+        const val TYPE_LABEL = 1
+        const val TYPE_TOGGLE = 2
     }
 
     /**

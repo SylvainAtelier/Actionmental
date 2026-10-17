@@ -7,6 +7,10 @@ import com.actionmental.core.key.KeyCombo
 sealed interface PanelKey {
     data object Up : PanelKey
     data object Down : PanelKey
+
+    /** ← / →：在「置顶」与「最近」两段之间来回，回到上次在那一段停的那一条。 */
+    data object Left : PanelKey
+    data object Right : PanelKey
     data object PageUp : PanelKey
     data object PageDown : PanelKey
     data object Enter : PanelKey
@@ -98,6 +102,8 @@ object PanelKeys {
         return when {
             keyCode == KeyEvent.KEYCODE_DPAD_UP -> PanelKey.Up
             keyCode == KeyEvent.KEYCODE_DPAD_DOWN -> PanelKey.Down
+            keyCode == KeyEvent.KEYCODE_DPAD_LEFT -> PanelKey.Left
+            keyCode == KeyEvent.KEYCODE_DPAD_RIGHT -> PanelKey.Right
             keyCode == KeyEvent.KEYCODE_TAB -> if (shift) PanelKey.Up else PanelKey.Down
             keyCode == KeyEvent.KEYCODE_PAGE_UP -> PanelKey.PageUp
             keyCode == KeyEvent.KEYCODE_PAGE_DOWN -> PanelKey.PageDown
@@ -135,20 +141,38 @@ sealed interface PanelEffect {
  *
  * 结果列表由平台层异步查回来再塞进 [withEntries]：查询期间的按键照样能动光标，
  * 光标在新结果到达时夹回合法范围。
+ *
+ * 列表分两段：开头 [pinned] 条是置顶的，其余是最近的。←→ 在两段之间跳；
+ * 两段并排成两栏时（[columns]）↑↓ 与翻页不越过栏界 —— 往下按到左栏底，光标不该忽然跑到右栏顶上。
  */
 data class ClipPanelState(
     val query: String = "",
     val entries: List<ClipEntry> = emptyList(),
     val selected: Int = 0,
+    val columns: Boolean = false,
+    /** 另一段上次停在哪一条（按 id 记，重查之后照样认得）。 */
+    val awayId: Long? = null,
 ) {
     val current: ClipEntry? get() = entries.getOrNull(selected)
 
-    fun withEntries(list: List<ClipEntry>): ClipPanelState =
-        copy(entries = list, selected = selected.coerceIn(0, (list.size - 1).coerceAtLeast(0)))
+    /** 开头有几条是置顶的。 */
+    val pinned: Int = entries.indexOfFirst { !it.pinned }.let { if (it < 0) entries.size else it }
+
+    /**
+     * 换上新结果。[follow] 为 true 时光标跟着原来那一条走（置顶之后它挪到了另一段、
+     * 展开收起之后位置变了），找不到了才按位置夹回范围；换了搜索词时不跟，回到第一条。
+     */
+    fun withEntries(list: List<ClipEntry>, follow: Boolean = false): ClipPanelState {
+        val id = if (follow) current?.id else null
+        val kept = if (id == null) -1 else list.indexOfFirst { it.id == id }
+        return copy(entries = list, selected = if (kept >= 0) kept else selected.coerceIn(0, (list.size - 1).coerceAtLeast(0)))
+    }
 
     fun reduce(key: PanelKey): Pair<ClipPanelState, PanelEffect> = when (key) {
         PanelKey.Up -> move(-1)
         PanelKey.Down -> move(1)
+        PanelKey.Left -> switchTo(0 until pinned)
+        PanelKey.Right -> switchTo(pinned until entries.size)
         PanelKey.PageUp -> move(-PAGE)
         PanelKey.PageDown -> move(PAGE)
         PanelKey.Escape -> this to PanelEffect.Close
@@ -170,8 +194,19 @@ data class ClipPanelState(
 
     private fun move(delta: Int): Pair<ClipPanelState, PanelEffect> {
         if (entries.isEmpty()) return this to PanelEffect.None
-        val next = (selected + delta).coerceIn(0, entries.size - 1)
+        val range = if (columns) sectionOf(selected) else entries.indices
+        val next = (selected + delta).coerceIn(range.first, range.last)
         return if (next == selected) this to PanelEffect.None else copy(selected = next) to PanelEffect.Render
+    }
+
+    private fun sectionOf(index: Int): IntRange = if (index < pinned) 0 until pinned else pinned until entries.size
+
+    /** 跳到另一段：回到上次在那里停的那一条，没有就是那一段的第一条。 */
+    private fun switchTo(range: IntRange): Pair<ClipPanelState, PanelEffect> {
+        if (range.isEmpty() || selected in range) return this to PanelEffect.None
+        val back = entries.indexOfFirst { it.id == awayId }
+        val next = if (back in range) back else range.first
+        return copy(selected = next, awayId = current?.id) to PanelEffect.Render
     }
 
     /** 搜索词一变，光标回到第一条：新结果的第一条才是最相关的。 */

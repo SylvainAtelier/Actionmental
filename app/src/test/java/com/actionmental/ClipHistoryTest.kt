@@ -376,6 +376,47 @@ class ClipHistoryTest {
         assertEquals(0, s.withEntries(emptyList()).selected)
     }
 
+    /** 两条置顶在前，三条最近在后。 */
+    private val sections = listOf(entry(10, pinned = true), entry(11, pinned = true)) + (1L..3L).map { entry(it) }
+
+    @Test
+    fun `左右在置顶与最近之间跳，回到上次停的那一条`() {
+        var s = ClipPanelState().withEntries(sections)
+        assertEquals(2, s.pinned)
+        s = s.reduce(PanelKey.Down).first // 停在第二条置顶
+        val (right, effect) = s.reduce(PanelKey.Right)
+        assertEquals(2, right.selected)
+        assertEquals(PanelEffect.Render, effect)
+        s = right.reduce(PanelKey.Down).first.reduce(PanelKey.Down).first
+        assertEquals(4, s.selected)
+        s = s.reduce(PanelKey.Left).first
+        assertEquals(1, s.selected)
+        assertEquals(4, s.reduce(PanelKey.Right).first.selected)
+        assertEquals(PanelEffect.None, s.reduce(PanelKey.Left).second)
+        // 没有置顶时左右什么都不做
+        assertEquals(PanelEffect.None, ClipPanelState().withEntries(five).reduce(PanelKey.Left).second)
+    }
+
+    @Test
+    fun `两栏时上下不越过栏界，单列时连成一串`() {
+        val single = ClipPanelState(selected = 1).withEntries(sections)
+        assertEquals(2, single.reduce(PanelKey.Down).first.selected)
+        val split = single.copy(columns = true)
+        assertEquals(PanelEffect.None, split.reduce(PanelKey.Down).second)
+        assertEquals(1, split.reduce(PanelKey.PageDown).first.selected)
+        assertEquals(2, split.copy(selected = 4).reduce(PanelKey.PageUp).first.selected)
+    }
+
+    @Test
+    fun `换上新结果时光标可以跟着原来那一条走`() {
+        val s = ClipPanelState(selected = 3).withEntries(sections) // 最近里的第 2 条，id 2
+        val pinnedNow = listOf(entry(2, pinned = true)) + sections.filter { it.id != 2L }
+        assertEquals(0, s.withEntries(pinnedNow, follow = true).selected)
+        assertEquals(3, s.withEntries(pinnedNow).selected)
+        // 跟的那条没了就按位置夹回范围
+        assertEquals(3, s.withEntries(sections.filter { it.id != 2L }, follow = true).selected)
+    }
+
     @Test
     fun `面板键位`() {
         val ctrl = KeyCombo.MOD_CTRL
@@ -383,6 +424,8 @@ class ClipHistoryTest {
         val shift = KeyCombo.MOD_SHIFT
         assertEquals(PanelKey.Up, PanelKeys.map(KeyEvent.KEYCODE_DPAD_UP, 0, null))
         assertEquals(PanelKey.Down, PanelKeys.map(KeyEvent.KEYCODE_TAB, 0, null))
+        assertEquals(PanelKey.Left, PanelKeys.map(KeyEvent.KEYCODE_DPAD_LEFT, 0, null))
+        assertEquals(PanelKey.Right, PanelKeys.map(KeyEvent.KEYCODE_DPAD_RIGHT, 0, null))
         assertEquals(PanelKey.Up, PanelKeys.map(KeyEvent.KEYCODE_TAB, shift, null))
         assertEquals(PanelKey.Enter, PanelKeys.map(KeyEvent.KEYCODE_NUMPAD_ENTER, 0, null))
         assertEquals(PanelKey.Backspace, PanelKeys.map(KeyEvent.KEYCODE_DEL, 0, null))

@@ -12,6 +12,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -30,6 +31,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * - 授予本应用 [PERMISSION]（运行时权限，编辑页里就能申请）；
  * - 在 Termux 里写 `allow-external-apps=true` 到 `~/.termux/termux.properties`。
  *   这一条从外面查不到，没开时 Termux 会在结果里报错，通知照实转述。
+ *
+ * Termux 没在运行时，ColorOS 等 ROM 的启动管理不许后台应用把它拉起来
+ * （logcat：`OplusAppStartupManager: prevent start com.termux ... Type ss`）。
+ * 被拦时 `startForegroundService` 不抛异常，只返回 null —— 所以必须看返回值，见 [run]。
  *
  * [translate] 把通知文案换成当前界面语言 —— 结果回来时界面多半不在前台。
  */
@@ -79,7 +84,12 @@ class TermuxBackend(
     fun permissionGranted(): Boolean =
         ContextCompat.checkSelfPermission(context, PERMISSION) == PackageManager.PERMISSION_GRANTED
 
-    fun run(action: Action.Termux): ActionResult {
+    /**
+     * 发命令。被系统拦下（返回 null）且 Shizuku 可用时，先以 shell 身份查一次 Termux 的文档 provider ——
+     * shell 不受启动管理约束，查询会在不弹界面的情况下拉起 Termux 的进程；进程活着时再发就放行了。
+     * 没有 Shizuku 或拉起后仍被拦，如实报告，不假装已经发出去。
+     */
+    suspend fun run(action: Action.Termux, privileged: PrivilegedBackend): ActionResult {
         if (!installed()) return ActionResult.Failed(ActionResult.Reason.TERMUX_NOT_INSTALLED)
         if (!permissionGranted()) return ActionResult.Failed(ActionResult.Reason.TERMUX_PERMISSION_DENIED)
         // 只拦「确定没有」：查不到时照发，交给 Termux 自己去试
@@ -103,7 +113,11 @@ class TermuxBackend(
 
         // Termux 的 RunCommandService 会自己转成前台服务；后台发起时只能走 startForegroundService
         return try {
-            context.startForegroundService(intent)
+            var started = context.startForegroundService(intent) != null
+            if (!started && privileged.availability().succeeded && privileged.exec(WAKE).isSuccess) {
+                started = context.startForegroundService(intent) != null
+            }
+            if (!started) return ActionResult.Failed(ActionResult.Reason.TERMUX_START_BLOCKED)
             ActionResult.Ok(if (action.background) "已交给 Termux 执行" else "已在 Termux 中打开")
         } catch (e: SecurityException) {
             ActionResult.Failed(ActionResult.Reason.TERMUX_PERMISSION_DENIED, e.message.orEmpty())
@@ -117,11 +131,13 @@ class TermuxBackend(
      * 回传结果的 PendingIntent。必须是 MUTABLE：Termux 要把结果包填进来。
      * 组件是显式的本应用接收器，所以可变也不会被别的应用截走。
      * requestCode 每次不同，连按两次的结果不会互相覆盖。
+     * 带上发出的时刻（开机时钟，不受改系统时间影响），结果回来时算耗时。
      */
     private fun resultIntent(action: Action.Termux): PendingIntent {
         val intent = Intent(context, TermuxResultReceiver::class.java)
             .putExtra(EXTRA_NAME, action.displayName)
             .putExtra(EXTRA_COMMAND, action.command)
+            .putExtra(EXTRA_STARTED, SystemClock.elapsedRealtime())
         return PendingIntent.getBroadcast(
             context,
             runIds.incrementAndGet(),
@@ -134,8 +150,10 @@ class TermuxBackend(
     fun parse(intent: Intent): Pair<String, TermuxOutcome> {
         val name = intent.getStringExtra(EXTRA_NAME).orEmpty().ifBlank { "Termux" }
         val bundle: Bundle? = intent.getBundleExtra(RESULT_BUNDLE)
+        val started = intent.getLongExtra(EXTRA_STARTED, 0L)
+        val duration = if (started > 0) (SystemClock.elapsedRealtime() - started).coerceAtLeast(0) else null
         val outcome = if (bundle == null) {
-            TermuxOutcome(err = 1, errmsg = translate("Termux 没有回传结果"))
+            TermuxOutcome(err = 1, errmsg = translate("Termux 没有回传结果"), durationMs = duration)
         } else {
             TermuxOutcome(
                 stdout = bundle.getString(RESULT_STDOUT).orEmpty(),
@@ -143,6 +161,7 @@ class TermuxBackend(
                 exitCode = if (bundle.containsKey(RESULT_EXIT_CODE)) bundle.getInt(RESULT_EXIT_CODE) else null,
                 err = bundle.getInt(RESULT_ERR, TermuxOutcome.ERR_OK),
                 errmsg = bundle.getString(RESULT_ERRMSG).orEmpty(),
+                durationMs = duration,
             )
         }
         return name to outcome
@@ -217,6 +236,9 @@ class TermuxBackend(
         /** 交给 bash 的参数：`bash -c WRAPPER actionmental <command>`，`$0` 只是个名字。 */
         fun arguments(command: String): Array<String> = arrayOf("-c", WRAPPER, "actionmental", command)
 
+        /** 只读一行根目录信息：查询本身就是目的，它让系统把 Termux 的进程拉起来。 */
+        private const val WAKE = "content query --uri content://com.termux.documents/root --projection root_id"
+
         const val PROPERTIES_HINT = "echo \"allow-external-apps=true\" >> ~/.termux/termux.properties && termux-reload-settings"
 
         private const val SERVICE = "com.termux.app.RunCommandService"
@@ -242,6 +264,7 @@ class TermuxBackend(
 
         private const val EXTRA_NAME = "com.actionmental.termux.NAME"
         const val EXTRA_COMMAND = "com.actionmental.termux.COMMAND"
+        private const val EXTRA_STARTED = "com.actionmental.termux.STARTED"
 
         const val CHANNEL_ID = "termux"
         private const val NOTIFICATION_BASE = 5000

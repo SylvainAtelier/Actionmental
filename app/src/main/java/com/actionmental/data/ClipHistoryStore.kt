@@ -186,14 +186,30 @@ class ClipHistoryStore(context: Context, private val keyOf: (String) -> String) 
      *
      * [query] 按空白拆词，每个词都要出现在搜索键里 —— 原文、全拼、首字母任一段都算。
      * 顺着排序索引走、凑够 [limit] 条就停：常见词一两毫秒，只有冷门词才会扫完全表。
+     *
+     * [pinned] 只要置顶的（true）或只要没置顶的（false），null 两样都要。分开查是给面板分栏用的：
+     * 置顶的再多也不会把「最近」挤出第一页。两种都是索引首列上的范围，不多扫一行。
      */
-    suspend fun search(query: String, limit: Int, now: Long = System.currentTimeMillis()): List<ClipEntry> =
+    suspend fun search(
+        query: String,
+        limit: Int,
+        now: Long = System.currentTimeMillis(),
+        pinned: Boolean? = null,
+    ): List<ClipEntry> =
         withContext(Dispatchers.IO) {
             val terms = SearchKey.terms(query)
             val cutoff = ClipPolicy.expiryCutoff(now, retentionDays)
             val conditions = terms.map { "instr(search_key, ?) > 0" } +
-                listOfNotNull(cutoff?.let { "(pinned_at > 0 OR last_used_at >= ?)" })
-            val args = terms + listOfNotNull(cutoff?.toString())
+                listOfNotNull(
+                    when (pinned) {
+                        true -> "pinned_at > 0"
+                        false -> "pinned_at = 0"
+                        null -> null
+                    },
+                    // 只要置顶的就不必管过期：置顶的本来就不过期
+                    cutoff?.takeIf { pinned != true }?.let { "(pinned_at > 0 OR last_used_at >= ?)" },
+                )
+            val args = terms + listOfNotNull(cutoff?.takeIf { pinned != true }?.toString())
             val where = if (conditions.isEmpty()) "" else " WHERE " + conditions.joinToString(" AND ")
             helper.readableDatabase.rawQuery(
                 "SELECT id, substr(text, 1, " + ClipPolicy.PREVIEW_CHARS + "), source, created_at, " +
