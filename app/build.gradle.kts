@@ -149,6 +149,11 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.shizuku.api)
     implementation(libs.shizuku.provider)
+    // smbj 自带的 bcprov 1.85.2 里有 Java 25 的 multi-release 类（META-INF/versions/25），
+    // Compose 编译器插件的映射任务读不了；排除后显式锁在 1.80.2。
+    // 只用到 BC 的轻量 API（HMAC / MD4 / AES-CMAC / GCM），旧一点的版本完全够用。
+    implementation(libs.smbj) { exclude(group = "org.bouncycastle") }
+    implementation(libs.bouncycastle)
     debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation("junit:junit:4.13.2")
 }

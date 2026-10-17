@@ -20,13 +20,15 @@ object DesktopName {
         shortcut.label.trim().ifBlank { of(shortcut.action).let { if (isBuiltIn(shortcut.action)) translate(it) else it } }
 
     fun isBuiltIn(action: Action): Boolean =
-        action !is Action.LaunchApp && action !is Action.OpenUrl && action !is Action.Termux && action !is Action.Shell
+        action !is Action.LaunchApp && action !is Action.OpenUrl && action !is Action.Termux && action !is Action.Shell &&
+            action !is Action.FolderSync
 
     fun of(action: Action): String = when (action) {
         is Action.LaunchApp -> action.appLabel
         is Action.OpenUrl -> action.title.ifBlank { hostOf(action.url) }
         is Action.Termux -> action.displayName
         is Action.Shell -> action.title.ifBlank { action.command }
+        is Action.FolderSync -> action.config.displayName
         else -> action.label
     }
 

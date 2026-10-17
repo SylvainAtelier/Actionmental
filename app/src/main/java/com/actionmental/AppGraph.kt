@@ -79,6 +79,8 @@ import com.actionmental.platform.SettingsReader
 import com.actionmental.platform.SystemSettingsAccess
 import com.actionmental.platform.TermuxBackend
 import com.actionmental.platform.TriggerHud
+import com.actionmental.platform.sync.SyncBackend
+import com.actionmental.platform.sync.SyncCredentials
 import com.actionmental.platform.WirelessDebugBackend
 import com.actionmental.platform.shizuku.ShizukuManager
 import com.actionmental.service.KeepAliveService
@@ -165,6 +167,11 @@ class AppGraph private constructor(context: Context) {
     val termux = TermuxBackend(context, translate = { text ->
         AppTranslations.translate(text, settingsRepository.settings.value.language)
     })
+    val syncBackend = SyncBackend(
+        context,
+        SyncCredentials(context),
+        translate = { text -> AppTranslations.translate(text, settingsRepository.settings.value.language) },
+    )
     val appCatalog = AppCatalog(
         packages = packages,
         scope = scope,
@@ -561,6 +568,7 @@ class AppGraph private constructor(context: Context) {
         awake = screenAwake,
         wirelessDebug = wirelessDebug,
         termux = termux,
+        sync = syncBackend,
         clipboard = clipboardWriter,
         toggleClipboardHistory = clipPanel::toggle,
         privileged = { actionBackend },
@@ -1040,6 +1048,7 @@ class AppGraph private constructor(context: Context) {
             ContextCompat.RECEIVER_EXPORTED,
         )
         notifier.ensureChannel()
+        syncBackend.onFinished = ::onSyncFinished
         // 应用清单刻意不在这里预热。这个进程多数时候是被开机广播、无障碍绑定
         // 或者上一次被杀之后的重启拉起来的 —— 那些时刻根本没有界面，
         // 而 queryIntentActivities 要把几百个包连同 disabled 的一起取回来，
@@ -1760,6 +1769,28 @@ class AppGraph private constructor(context: Context) {
         }
         if (settingsRepository.settings.value.triggerHud) triggerHud.show(TriggerFeedback.of(name, outcome, ::translate))
         termux.notify(name, outcome)
+    }
+
+    /**
+     * 一次文件夹同步结束。日志与顶部提示各留一份，通知由 [SyncBackend] 自己发。
+     * 顶部提示开着时，快捷键按下那一刻转着的胶囊原地换成结果卡。
+     */
+    private fun onSyncFinished(config: com.actionmental.core.sync.SyncConfig, report: com.actionmental.core.sync.SyncReport) {
+        val line = com.actionmental.core.sync.SyncSummary.line(report) { it }
+        val meta = com.actionmental.core.sync.SyncSummary.meta(report)
+        val detail = line + (if (meta.isNotEmpty()) " · $meta" else "")
+        if (report.succeeded) {
+            eventLog.debug("sync", config.displayName + " · 完成", detail)
+        } else {
+            eventLog.error(
+                "sync",
+                com.actionmental.core.sync.SyncSummary.title(config.displayName, report) { it },
+                detail + report.failures.take(3).joinToString("") { "\n" + it.path + " · " + it.reason },
+            )
+        }
+        if (settingsRepository.settings.value.triggerHud) {
+            triggerHud.show(TriggerFeedback.of(config, report, ::translate))
+        }
     }
 
     fun onTrimMemory(level: Int) {

@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Shizuku：唯一的高权限入口。应用本身不申请网络 / 存储 / 通讯录 / 位置。 -->
+    <!-- Shizuku：唯一的高权限入口。应用本身不申请通讯录 / 位置；网络与存储只服务于「文件夹同步」一个动作（见下）。 -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
@@ -33,6 +33,20 @@
 
     <!-- 「Termux 命令」动作：经 Termux 的 RUN_COMMAND 接口执行用户配置的命令。运行时权限，编辑页里申请。 -->
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+
+    <!--
+        「文件夹同步」动作：经 SMB 连局域网里的 NAS，读写手机共享存储里的目录。
+        - INTERNET / ACCESS_NETWORK_STATE：连 NAS，以及判断此刻是不是 Wi-Fi（可选「仅 Wi-Fi 同步」）。
+        - MANAGE_EXTERNAL_STORAGE：用普通文件接口读写任意目录并保留修改时间。不用 SAF，
+          因为同步靠「大小 + 修改时间」判断变化，而 SAF 每个文件一次跨进程查询、也不能可靠设置修改时间。
+          没用到「文件夹同步」的人永远不会被要求授予它。
+        - FOREGROUND_SERVICE_DATA_SYNC：同步期间的前台服务类型。
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
@@ -126,6 +140,15 @@
                 android:value="keeps the physical-keyboard listener process resident" />
         </service>
 
+        <!--
+            文件夹同步期间的前台服务，只在同步进行时存在。它不运行同步，只是让系统知道进程在传数据。
+            exported=false：没有外部调用者。
+        -->
+        <service
+            android:name=".service.SyncService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <service
             android:name=".service.ScreenAwakeTileService"
             android:exported="true"
@@ -178,6 +201,12 @@
         <!-- 常亮通知上的「关闭常亮」按钮。只有本应用发得出这条广播。 -->
         <receiver
             android:name=".service.ScreenAwakeReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
+        <!-- 同步进度通知上的「取消」按钮。只有本应用发得出这条广播。 -->
+        <receiver
+            android:name=".service.SyncCancelReceiver"
             android:enabled="true"
             android:exported="false" />
 

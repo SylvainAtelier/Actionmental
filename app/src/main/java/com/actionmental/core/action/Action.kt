@@ -2,6 +2,8 @@ package com.actionmental.core.action
 
 import android.view.KeyEvent
 import com.actionmental.core.rotation.RotationMode
+import com.actionmental.core.sync.SyncConfig
+import com.actionmental.core.sync.SyncDirection
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -18,6 +20,7 @@ enum class ActionCategory(val label: String, val code: String) {
     CLIPBOARD("剪贴板", "CLIPBOARD"),
     SHELL("Shell", "SHELL"),
     TERMUX("Termux", "TERMUX"),
+    SYNC("同步", "SYNC"),
 }
 
 /**
@@ -231,6 +234,26 @@ sealed interface Action {
         override val detail get() = command
     }
 
+    /**
+     * 本地文件夹与 NAS（SMB）共享目录的同步。
+     *
+     * 整份配置就在动作里，没有独立的「同步任务」实体：快捷键就是任务。
+     * 方向、同名文件怎么处理、要不要同步删除都是这条动作自己的参数；密码不在这里，见 SyncCredentials。
+     */
+    @Serializable
+    @SerialName("sync")
+    data class FolderSync(val config: SyncConfig) : Action {
+        override val category get() = ActionCategory.SYNC
+        override val label get() = "同步 · " + config.displayName
+        override val technical get() = config.direction.code
+        override val detail
+            get() = config.localPath.trimEnd('/').substringAfterLast('/') + " " + when (config.direction) {
+                SyncDirection.UPLOAD -> "→"
+                SyncDirection.DOWNLOAD -> "←"
+                SyncDirection.BOTH -> "⇄"
+            } + " " + config.remoteLabel
+    }
+
     /** 高级动作：必须由用户逐条明确配置命令内容（PRD 26）。 */
     @Serializable
     @SerialName("shell")
@@ -276,6 +299,7 @@ object ActionCatalog {
     const val GROUP_URL = "url"
     const val GROUP_SHELL = "shell"
     const val GROUP_TERMUX = "termux"
+    const val GROUP_SYNC = "sync"
 
     val groups: List<Group> = listOf(
         Group("rotation", "屏幕方向", "ROTATION", "角度、切换与循环", rotation),
@@ -299,6 +323,7 @@ object ActionCatalog {
         Group("clipboard", "剪贴板", "CLIPBOARD", "历史记录面板", listOf(Action.ClipboardHistory)),
         Group(GROUP_APP, "启动应用", "LAUNCH APP", "先选应用，再选入口", direct = true),
         Group(GROUP_URL, "打开链接", "OPEN URL", "用默认浏览器打开网址", direct = true),
+        Group(GROUP_SYNC, "文件夹同步", "FOLDER SYNC", "本地文件夹与 NAS（SMB）互相同步", direct = true),
         Group(GROUP_TERMUX, "Termux 命令", "TERMUX", "在 Termux 里执行，完成后通知结果", direct = true),
         Group(GROUP_SHELL, "Shell 命令", "SHELL", "逐条明确配置，不做通用包装", direct = true),
     )

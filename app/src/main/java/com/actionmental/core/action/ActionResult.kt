@@ -21,6 +21,12 @@ sealed interface ActionResult {
         TERMUX_PERMISSION_DENIED("未授予 Termux 执行权限"),
         TERMUX_OVERLAY_DENIED("Termux 缺少「显示在其他应用上层」权限"),
         TERMUX_START_BLOCKED("系统拦下了 Termux 的启动 · 先打开一次 Termux，或在系统设置里允许它自启动与关联启动"),
+        SYNC_INCOMPLETE("同步还没配置完整 · 缺本地文件夹、NAS 地址或共享名"),
+        SYNC_STORAGE_DENIED("未授予「所有文件访问」权限 · 读不了本地文件夹"),
+        SYNC_NO_PASSWORD("没有保存 NAS 密码 · 请在动作里重新输入"),
+        SYNC_NETWORK("没有可用网络"),
+        SYNC_WIFI_ONLY("当前不是 Wi-Fi · 已设置为仅 Wi-Fi 同步"),
+        SYNC_RUNNING("已有同步正在进行"),
         EXECUTION_FAILED("执行失败"),
     }
 

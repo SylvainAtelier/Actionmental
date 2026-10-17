@@ -65,6 +65,16 @@ class ShortcutEditorViewModel(application: Application) : AndroidViewModel(appli
         runCatching { getApplication<Application>().startActivity(graph.termux.overlaySettingsIntent()) }
     }
 
+    /** 文件夹同步的前提与动作。密码只经这里进 Keystore，不进草稿，也就不进 DataStore 与配置导出。 */
+    fun syncStorageGranted(): Boolean = graph.syncBackend.storageGranted()
+    fun openSyncStorageSettings() {
+        runCatching { getApplication<Application>().startActivity(graph.syncBackend.storageSettingsIntent()) }
+    }
+    fun syncHasPassword(key: String): Boolean = graph.syncBackend.hasPassword(key)
+    fun saveSyncPassword(key: String, password: String) = graph.syncBackend.savePassword(key, password)
+    suspend fun testSync(config: com.actionmental.core.sync.SyncConfig, password: String): Result<String> =
+        graph.syncBackend.test(config, password)
+
     /** 应用清单：选择器打开时才去要（[ensureApps]），之前没有人为它付钱。 */
     val apps: StateFlow<List<PackageBackend.InstalledApp>> = graph.appCatalog.apps
     val appsLoading: StateFlow<Boolean> = graph.appCatalog.loading

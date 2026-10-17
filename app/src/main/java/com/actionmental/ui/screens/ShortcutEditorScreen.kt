@@ -86,7 +86,7 @@ import com.actionmental.ui.theme.AmType
 import com.actionmental.ui.theme.amColors
 
 /** 编辑页里同一时刻最多打开一个弹层。 */
-private enum class EditorSheet { KEY, ACTION, APP, URL, SHELL, TERMUX }
+private enum class EditorSheet { KEY, ACTION, APP, URL, SHELL, TERMUX, SYNC }
 
 /**
  * 编辑 + 录制 + 冲突确认（PRD 15）。
@@ -318,6 +318,7 @@ fun ShortcutEditorScreen(
                     ActionCatalog.GROUP_APP -> EditorSheet.APP
                     ActionCatalog.GROUP_URL -> EditorSheet.URL
                     ActionCatalog.GROUP_TERMUX -> EditorSheet.TERMUX
+                    ActionCatalog.GROUP_SYNC -> EditorSheet.SYNC
                     else -> EditorSheet.SHELL
                 }
             },
@@ -357,6 +358,13 @@ fun ShortcutEditorScreen(
 
         EditorSheet.TERMUX -> TermuxSheet(
             current = draft.action as? Action.Termux,
+            vm = vm,
+            onConfirm = { action -> vm.setAction(action); sheet = null },
+            onDismiss = { sheet = null },
+        )
+
+        EditorSheet.SYNC -> FolderSyncSheet(
+            current = draft.action as? Action.FolderSync,
             vm = vm,
             onConfirm = { action -> vm.setAction(action); sheet = null },
             onDismiss = { sheet = null },
@@ -762,7 +770,7 @@ private fun TermuxSheet(
 }
 
 @Composable
-private fun TermuxRequirement(
+internal fun TermuxRequirement(
     ok: Boolean,
     text: String,
     warnOnly: Boolean = false,
@@ -784,7 +792,7 @@ private fun TermuxRequirement(
 }
 
 @Composable
-private fun InputSheet(
+internal fun InputSheet(
     title: String,
     subtitle: String,
     confirmText: String,
@@ -825,10 +833,11 @@ private fun InputSheet(
 }
 
 @Composable
-private fun LabeledField(
+internal fun LabeledField(
     label: String,
     value: String,
     placeholder: String,
+    secret: Boolean = false,
     onValueChange: (String) -> Unit,
 ) {
     val c = amColors
@@ -840,6 +849,11 @@ private fun LabeledField(
             onValueChange = onValueChange,
             singleLine = true,
             placeholder = { Text(placeholder, style = AmType.secondary, color = c.inkFaint) },
+            visualTransformation = if (secret) androidx.compose.ui.text.input.PasswordVisualTransformation()
+            else androidx.compose.ui.text.input.VisualTransformation.None,
+            keyboardOptions = if (secret) androidx.compose.foundation.text.KeyboardOptions(
+                keyboardType = androidx.compose.ui.text.input.KeyboardType.Password,
+            ) else androidx.compose.foundation.text.KeyboardOptions.Default,
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(AmShape.key + 2.dp),
         )

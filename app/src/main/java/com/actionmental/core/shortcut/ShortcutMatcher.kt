@@ -24,9 +24,19 @@ class ShortcutMatcher {
      */
     fun match(combo: KeyCombo, device: KeyboardDevice, foregroundPackage: String?): Shortcut? {
         val candidates = index[combo] ?: return null
-        return candidates
-            .filter { it.deviceScope.matches(device.descriptor) && it.appScope.matches(foregroundPackage) }
-            .minByOrNull { specificity(it) }
+        // 一趟扫描挑最具体的，不建中间列表：这条路径跑在按键回调的主线程上，
+        // 每个命中的组合键都会走一遍，连按时少分配一次就少一次回收
+        var best: Shortcut? = null
+        var bestScore = Int.MAX_VALUE
+        for (candidate in candidates) {
+            if (!candidate.deviceScope.matches(device.descriptor) || !candidate.appScope.matches(foregroundPackage)) continue
+            val score = specificity(candidate)
+            if (score < bestScore) {
+                best = candidate
+                bestScore = score
+            }
+        }
+        return best
     }
 
     /** 数值越小越具体：应用限定 > 设备限定 > 全局。 */

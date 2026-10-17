@@ -1,5 +1,9 @@
 package com.actionmental.core.action
 
+import com.actionmental.core.sync.SyncConfig
+import com.actionmental.core.sync.SyncReport
+import com.actionmental.core.sync.SyncSummary
+
 /**
  * 快捷键触发后浮在屏幕顶部的那一枚提示。
  *
@@ -80,6 +84,23 @@ data class TriggerFeedback(
             )
         }
 
+        /**
+         * 文件夹同步跑完的那一张结果卡。和 Termux 的同一种样子：结论靠右，明细在下，成败不只靠颜色。
+         * 路径与失败原因是文件系统与 NAS 自己的话，原样给，不过 [translate]。
+         */
+        fun of(config: SyncConfig, report: SyncReport, translate: (String) -> String): TriggerFeedback {
+            val failures = SyncSummary.failures(report, limit = 3, t = translate)
+            val line = SyncSummary.line(report, translate)
+            val text = if (failures.isEmpty()) line else line + "\n" + failures
+            return TriggerFeedback(
+                title = config.displayName,
+                failed = !report.succeeded,
+                succeeded = report.succeeded,
+                meta = SyncSummary.meta(report).ifBlank { null },
+                output = TermuxOutcome.tail(text, OUTPUT_LINES, OUTPUT_CHARS).ifBlank { null },
+            )
+        }
+
         /** 计时的写法：10 秒内看得出零点几秒，再往后只数整秒，一分钟以上带分。 */
         fun seconds(ms: Long): String = when {
             ms < 10_000 -> "%.1fs".format(java.util.Locale.ROOT, ms / 1000.0)
@@ -123,6 +144,22 @@ data class TriggerFeedback(
                         action.displayName,
                         value = translate(result.reason.message),
                         packageName = TERMUX_PACKAGE,
+                        failed = true,
+                    )
+                }
+                // 同步在后台跑：按下去先转圈，结果回来原地换成结果卡
+                is Action.FolderSync -> when (result) {
+                    is ActionResult.Ok -> TriggerFeedback(
+                        action.config.displayName,
+                        pending = true,
+                        then = TriggerFeedback(
+                            action.config.displayName,
+                            value = translate("仍在同步 · 进度见通知"),
+                        ),
+                    )
+                    is ActionResult.Failed -> TriggerFeedback(
+                        action.config.displayName,
+                        value = translate(result.reason.message),
                         failed = true,
                     )
                 }
