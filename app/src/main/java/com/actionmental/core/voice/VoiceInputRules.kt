@@ -1,5 +1,7 @@
 package com.actionmental.core.voice
 
+import android.view.KeyEvent
+import com.actionmental.core.key.KeyCombo
 import java.util.Locale
 
 /**
@@ -60,6 +62,19 @@ object VoiceInputRules {
 
     private fun normalize(value: CharSequence?): String =
         value?.toString()?.trim()?.lowercase(Locale.ROOT)?.trimEnd('.', '。', '…') ?: ""
+
+    /**
+     * 接实体键盘时，输入法自己认的语音快捷键。按输入法的包名查，没有就是 null。
+     *
+     * 这条路比点语音键可靠得多：Gboard 不开读屏时不给按键提供无障碍节点，语音键根本找不到。
+     * 微信、搜狗目前没有公开的语音快捷键，用户知道的话可以用「发送组合键」自己配。
+     */
+    fun hotkeyFor(imeId: String?): KeyCombo? = when (imeId?.substringBefore('/')) {
+        GBOARD_PACKAGE -> KeyCombo(KeyEvent.KEYCODE_D, KeyCombo.MOD_ALT)
+        else -> null
+    }
+
+    const val GBOARD_PACKAGE = "com.google.android.inputmethod.latin"
 
     /** 已启用的一个输入法，只留挑选要用的几样。 */
     data class Ime(val id: String, val label: String, val subtypeModes: List<String>) {

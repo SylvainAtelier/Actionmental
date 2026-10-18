@@ -83,6 +83,38 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
         }
     }
 
+    /**
+     * 整串注入：组合键发给输入法时用（见 KeyChord）。每颗键的抬起带它自己按下时的 downTime。
+     *
+     * 设备号沿用触发它的那把实体键盘；拿不到时调用方传虚拟键盘。
+     * 没有注入接口时退到 `input keycombination`（Android 13+），它只能以虚拟键盘的身份发。
+     */
+    override fun injectSequence(deviceId: Int, keyCodes: IntArray, downs: IntArray, metaStates: IntArray): String {
+        if (keyCodes.size != downs.size || keyCodes.size != metaStates.size) return "按键序列不完整"
+        val inject = injector ?: return execCombination(keyCodes, downs)
+        return try {
+            val pressedAt = HashMap<Int, Long>()
+            for (i in keyCodes.indices) {
+                val down = downs[i] != 0
+                val now = SystemClock.uptimeMillis()
+                val downTime = if (down) now.also { pressedAt[keyCodes[i]] = it } else pressedAt.remove(keyCodes[i]) ?: now
+                val action = if (down) KeyEvent.ACTION_DOWN else KeyEvent.ACTION_UP
+                val event = event(downTime, action, keyCodes[i], metaStates[i], deviceId)
+                if (!inject(event)) return "系统拒绝了这次注入"
+            }
+            ""
+        } catch (t: Throwable) {
+            t.message ?: t.javaClass.simpleName
+        }
+    }
+
+    private fun execCombination(keyCodes: IntArray, downs: IntArray): String {
+        val pressed = keyCodes.filterIndexed { i, _ -> downs[i] != 0 }
+        val result = exec("input keycombination " + pressed.joinToString(" "))
+        val code = result.substringBefore('\n').trim().toIntOrNull()
+        return if (code == 0) "" else result.substringAfter('\n').trim().ifEmpty { "input keycombination 失败" }
+    }
+
     // --- 剪贴板 ------------------------------------------------------------
     //
     // 内容一律不进 exec 那条路，也不写任何日志：剪贴板里是用户的私人文本。
@@ -156,14 +188,20 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
         return cause.message ?: cause.javaClass.simpleName
     }
 
-    private fun event(downTime: Long, action: Int, keyCode: Int, metaState: Int) = KeyEvent(
+    private fun event(
+        downTime: Long,
+        action: Int,
+        keyCode: Int,
+        metaState: Int,
+        deviceId: Int = KeyCharacterMap.VIRTUAL_KEYBOARD,  // 默认标为虚拟键盘，不冒充任何一把实体键盘
+    ) = KeyEvent(
         downTime,
         SystemClock.uptimeMillis(),
         action,
         keyCode,
         0,
         metaState,
-        KeyCharacterMap.VIRTUAL_KEYBOARD,  // 明确标为虚拟键盘，不冒充任何一把实体键盘
+        deviceId,
         0,
         KeyEvent.FLAG_FROM_SYSTEM,
         InputDevice.SOURCE_KEYBOARD,

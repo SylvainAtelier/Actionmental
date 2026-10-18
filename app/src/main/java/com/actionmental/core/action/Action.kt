@@ -1,6 +1,7 @@
 package com.actionmental.core.action
 
 import android.view.KeyEvent
+import com.actionmental.core.key.KeyCombo
 import com.actionmental.core.rotation.RotationMode
 import com.actionmental.core.sync.SyncConfig
 import com.actionmental.core.sync.SyncDirection
@@ -21,7 +22,7 @@ enum class ActionCategory(val label: String, val code: String) {
     SHELL("Shell", "SHELL"),
     TERMUX("Termux", "TERMUX"),
     SYNC("同步", "SYNC"),
-    INPUT("输入法", "INPUT"),
+    INPUT("输入", "INPUT"),
 }
 
 /**
@@ -270,6 +271,27 @@ sealed interface Action {
     }
 
     /**
+     * 以键盘的身份发出一个组合键，修饰键、主键逐颗按下再倒序抬起，和手按的一样。
+     *
+     * 主要给输入法的快捷键用：Gboard 接实体键盘时 Alt + D 开语音，换成别的键按就得经这里转发。
+     * 发出去的键沿用触发它的那把键盘的设备号 —— 输入法的快捷键只认实体键盘。需要 Shizuku。
+     */
+    @Serializable
+    @SerialName("send_key")
+    data class SendKey(val combo: KeyCombo, val title: String = "") : Action {
+        override val category get() = ActionCategory.INPUT
+        override val label get() = title.ifBlank { "发送 " + combo }
+        override val technical get() = "SEND_KEY"
+        override val requiresPrivilege get() = true
+        override val detail get() = combo.toString() + " · 以实体键盘的身份发出"
+
+        companion object {
+            /** Gboard 接实体键盘时的语音输入快捷键。 */
+            val GBOARD_VOICE = SendKey(KeyCombo(KeyEvent.KEYCODE_D, KeyCombo.MOD_ALT), "Gboard 语音输入")
+        }
+    }
+
+    /**
      * 在 Termux 里执行一条命令（经 Termux 的 RUN_COMMAND 接口）。
      *
      * 和 [Shell] 是两回事：那条走 Shizuku、以 shell 用户身份跑，进不了 Termux 的私有目录；
@@ -359,6 +381,7 @@ object ActionCatalog {
     const val GROUP_TERMUX = "termux"
     const val GROUP_SYNC = "sync"
     const val GROUP_ADB_TCPIP = "adb_tcpip"
+    const val GROUP_SEND_KEY = "send_key"
 
     val groups: List<Group> = listOf(
         Group("rotation", "屏幕方向", "ROTATION", "角度、切换与循环", rotation),
@@ -383,8 +406,9 @@ object ActionCatalog {
         Group("clipboard", "剪贴板", "CLIPBOARD", "历史记录面板", listOf(Action.ClipboardHistory)),
         Group(
             "voice_input", "语音输入", "VOICE INPUT", "唤起 Gboard、微信等输入法的语音",
-            Action.VoiceInput.Mode.entries.map { Action.VoiceInput(it) },
+            Action.VoiceInput.Mode.entries.map { Action.VoiceInput(it) } + Action.SendKey.GBOARD_VOICE,
         ),
+        Group(GROUP_SEND_KEY, "发送组合键", "SEND KEYS", "转发成另一个组合键，如 Gboard 的 Alt + D", direct = true),
         Group(GROUP_APP, "启动应用", "LAUNCH APP", "先选应用，再选入口", direct = true),
         Group(GROUP_URL, "打开链接", "OPEN URL", "用默认浏览器打开网址", direct = true),
         Group(GROUP_SYNC, "文件夹同步", "FOLDER SYNC", "本地文件夹与 NAS（SMB）互相同步", direct = true),

@@ -23,11 +23,14 @@ class VoiceInputTest {
     @Test
     fun `语音输入三条动作在目录里、不强制 Shizuku 且能原样存回来`() {
         val group = ActionCatalog.groups.first { it.id == "voice_input" }
+        val voice = group.actions.filterIsInstance<Action.VoiceInput>()
         assertEquals(
             listOf("VOICE_INPUT", "VOICE_INPUT_KEY", "VOICE_INPUT_IME"),
-            group.actions.map { it.technical },
+            voice.map { it.technical },
         )
-        assertTrue(group.actions.none { it.requiresPrivilege })
+        assertTrue(voice.none { it.requiresPrivilege })
+        // Gboard 的 Alt + D 作为现成的一条跟在后面
+        assertEquals(Action.SendKey.GBOARD_VOICE, group.actions.last())
 
         Action.VoiceInput.Mode.entries.forEach { mode ->
             val shortcut = Shortcut(id = "voice", combo = KeyCombo(0, 0), action = Action.VoiceInput(mode))

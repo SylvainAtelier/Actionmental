@@ -86,7 +86,7 @@ import com.actionmental.ui.theme.AmType
 import com.actionmental.ui.theme.amColors
 
 /** 编辑页里同一时刻最多打开一个弹层。 */
-private enum class EditorSheet { KEY, ACTION, APP, URL, SHELL, TERMUX, SYNC, ADB_TCPIP }
+private enum class EditorSheet { KEY, ACTION, APP, URL, SHELL, TERMUX, SYNC, ADB_TCPIP, SEND_KEY, SEND_KEY_CATALOG }
 
 /**
  * 编辑 + 录制 + 冲突确认（PRD 15）。
@@ -116,6 +116,8 @@ fun ShortcutEditorScreen(
 
     val draft by vm.draft.collectAsStateWithLifecycle()
     val recording by vm.recording.collectAsStateWithLifecycle()
+    val recordingSendKey by vm.recordingSendKey.collectAsStateWithLifecycle()
+    val sendKeyCombo by vm.sendKeyCombo.collectAsStateWithLifecycle()
     val conflict by vm.conflict.collectAsStateWithLifecycle()
     val apps by vm.apps.collectAsStateWithLifecycle()
     val appsLoading by vm.appsLoading.collectAsStateWithLifecycle()
@@ -154,7 +156,7 @@ fun ShortcutEditorScreen(
         AmComboField(
             label = "快捷键 · KEY COMBINATION",
             combo = combo,
-            recording = recording != null,
+            recording = recording != null && !recordingSendKey,
             onStartRecording = vm::startRecording,
             onCancelRecording = vm::cancelRecording,
             onOpenCatalog = {
@@ -320,6 +322,10 @@ fun ShortcutEditorScreen(
                     ActionCatalog.GROUP_TERMUX -> EditorSheet.TERMUX
                     ActionCatalog.GROUP_SYNC -> EditorSheet.SYNC
                     ActionCatalog.GROUP_ADB_TCPIP -> EditorSheet.ADB_TCPIP
+                    ActionCatalog.GROUP_SEND_KEY -> {
+                        vm.editSendKey((draft.action as? Action.SendKey)?.combo)
+                        EditorSheet.SEND_KEY
+                    }
                     else -> EditorSheet.SHELL
                 }
             },
@@ -376,6 +382,27 @@ fun ShortcutEditorScreen(
             vm = vm,
             onConfirm = { action -> vm.setAction(action); sheet = null },
             onDismiss = { sheet = null },
+        )
+
+        EditorSheet.SEND_KEY -> SendKeySheet(
+            current = draft.action as? Action.SendKey,
+            vm = vm,
+            onOpenCatalog = {
+                vm.cancelRecording()
+                openGroup = sendKeyCombo?.let { KeyCatalog.groupOf(it.keyCode)?.id }
+                sheet = EditorSheet.SEND_KEY_CATALOG
+            },
+            onConfirm = { action -> vm.setAction(action); sheet = null },
+            onDismiss = { sheet = null },
+        )
+
+        EditorSheet.SEND_KEY_CATALOG -> AmKeyPickerSheet(
+            selectedKeyCode = sendKeyCombo?.keyCode,
+            openGroupId = openGroup,
+            onOpenGroup = { openGroup = it },
+            onPick = { keyCode -> vm.setSendKeyMain(keyCode); sheet = EditorSheet.SEND_KEY },
+            onDismiss = { sheet = EditorSheet.SEND_KEY },
+            subtitle = "修饰键在上一层勾选，这里只定主键",
         )
 
         null -> Unit

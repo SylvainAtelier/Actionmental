@@ -1,5 +1,6 @@
 package com.actionmental.platform
 
+import com.actionmental.core.key.KeyChord
 import com.actionmental.core.action.ActionResult
 import com.actionmental.core.diag.ShellLog
 
@@ -47,6 +48,9 @@ class LoggingBackend(
 
     override suspend fun injectKeyState(keyCode: Int, metaState: Int, down: Boolean): Result<Unit> =
         delegate.injectKeyState(keyCode, metaState, down)
+
+    override suspend fun injectSequence(steps: List<KeyChord.Step>, deviceId: Int): Result<Unit> =
+        delegate.injectSequence(steps, deviceId)
 
     override suspend fun getSetting(namespace: String, key: String): Result<String?> =
         delegate.getSetting(namespace, key)

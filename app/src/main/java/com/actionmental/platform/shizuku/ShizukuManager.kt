@@ -1,5 +1,6 @@
 package com.actionmental.platform.shizuku
 
+import com.actionmental.core.key.KeyChord
 import android.content.ComponentName
 import android.content.Context
 import android.content.ServiceConnection
@@ -419,6 +420,16 @@ class ShizukuManager(
     override suspend fun injectKeyState(keyCode: Int, metaState: Int, down: Boolean): Result<Unit> =
         withContext(Dispatchers.IO) {
             withService { it.injectKeyState(keyCode, metaState, down) }.mapCatching { error ->
+                if (error.isNotEmpty()) throw IllegalStateException(error)
+            }
+        }
+
+    override suspend fun injectSequence(steps: List<KeyChord.Step>, deviceId: Int): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            val keyCodes = IntArray(steps.size) { steps[it].keyCode }
+            val downs = IntArray(steps.size) { if (steps[it].down) 1 else 0 }
+            val metas = IntArray(steps.size) { steps[it].metaState }
+            withService { it.injectSequence(deviceId, keyCodes, downs, metas) }.mapCatching { error ->
                 if (error.isNotEmpty()) throw IllegalStateException(error)
             }
         }

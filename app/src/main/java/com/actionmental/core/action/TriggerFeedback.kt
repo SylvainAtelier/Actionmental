@@ -203,6 +203,15 @@ data class TriggerFeedback(
                         output = result.detail.ifBlank { null },
                     )
                 }
+                // 输入法对快捷键的反应（语音面板）就是反馈；发不出去时才说一声
+                is Action.SendKey -> (result as? ActionResult.Failed)?.let {
+                    TriggerFeedback(
+                        action.title.ifBlank { action.combo.toString() },
+                        value = translate(it.reason.message),
+                        failed = true,
+                        output = it.detail.ifBlank { null },
+                    )
+                }
                 else -> null
             }
     }

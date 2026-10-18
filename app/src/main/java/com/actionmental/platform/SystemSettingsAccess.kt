@@ -1,5 +1,6 @@
 package com.actionmental.platform
 
+import com.actionmental.core.key.KeyChord
 import android.Manifest
 import android.content.Context
 import android.content.Intent
@@ -101,6 +102,9 @@ class SettingsFirstBackend(
 
     override suspend fun injectKeyState(keyCode: Int, metaState: Int, down: Boolean): Result<Unit> =
         shell.injectKeyState(keyCode, metaState, down)
+
+    override suspend fun injectSequence(steps: List<KeyChord.Step>, deviceId: Int): Result<Unit> =
+        shell.injectSequence(steps, deviceId)
 
     override suspend fun getSetting(namespace: String, key: String): Result<String?> =
         if (direct) settings.getString(namespace, key) else shell.getSetting(namespace, key)

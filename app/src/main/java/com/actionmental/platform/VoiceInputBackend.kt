@@ -3,6 +3,7 @@ package com.actionmental.platform
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
@@ -30,7 +31,8 @@ import kotlin.coroutines.resume
 /**
  * 用快捷键唤起输入法的语音输入。
  *
- * 两条路，各管一类输入法：
+ * 三条路，各管一类输入法：
+ * - 按输入法自己的快捷键：Gboard 接实体键盘时认 Alt + D。最可靠，有就先走它（要 Shizuku 把键送到输入法前面）。
  * - 点语音键：在输入法窗口里按字眼找麦克风那一颗，点下去。Gboard、微信、搜狗、讯飞都是这样 ——
  *   它们的语音是键盘里的一个面板，没有独立的输入法可切。只读输入法这一个窗口，别的窗口一概不碰。
  * - 切语音输入法：Google 语音输入这类专职输入法，切过去就开始听，说完自己切回来。
@@ -43,6 +45,7 @@ class VoiceInputBackend(
     private val accessibility: AccessibilityBridge,
     private val scope: CoroutineScope,
     private val privileged: () -> PrivilegedBackend,
+    private val keyChord: () -> KeyChordSender,
 ) {
 
     private val imm get() = context.getSystemService(InputMethodManager::class.java)
@@ -63,6 +66,7 @@ class VoiceInputBackend(
             Action.VoiceInput.Mode.AUTO -> {
                 // 已经停在语音输入法上：这一下是「切回去」，不该再去找键盘上的键
                 if (VoiceInputRules.isOnVoiceIme(enabledImes(), currentIme())) return@withContext switchVoiceIme(service)
+                sendHotkey(service)?.let { return@withContext it }
                 val tapped = tapVoiceKey(service)
                 val fallback = tapped is ActionResult.Failed && tapped.reason in FALLBACK_REASONS
                 if (!fallback) return@withContext tapped
@@ -73,6 +77,22 @@ class VoiceInputBackend(
         }
     }
 
+    // --- 按输入法的快捷键 --------------------------------------------------------
+
+    /**
+     * 输入法有现成的语音快捷键时直接按它。条件不齐（没接实体键盘、没有输入框、Shizuku 不在）返回 null，
+     * 交给点语音键那条路 —— 这时把 Alt + D 发出去，输入法不接，就落到应用手里成了别的快捷键。
+     */
+    private suspend fun sendHotkey(service: AccessibilityService): ActionResult? {
+        val combo = VoiceInputRules.hotkeyFor(currentIme()) ?: return null
+        if (context.resources.configuration.hardKeyboardHidden != Configuration.HARDKEYBOARDHIDDEN_NO) return null
+        val sender = keyChord()
+        if (!sender.ready()) return null
+        val focus = runCatching { service.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull()
+        if (focus == null || !focus.isEditable) return null
+        return sender.send(combo).takeIf { it is ActionResult.Ok }
+    }
+
     // --- 点语音键 --------------------------------------------------------------
 
     private suspend fun tapVoiceKey(service: AccessibilityService): ActionResult {
@@ -81,16 +101,21 @@ class VoiceInputBackend(
             imeWindow(service) ?: return ActionResult.Failed(ActionResult.Reason.KEYBOARD_HIDDEN)
         }
         // 键盘刚弹出来时节点树可能还没填好，给它几次机会
-        var key: AccessibilityNodeInfo? = null
+        var search = Search(null, 0, 0)
         for (attempt in 0 until KEY_LOOKUP_TRIES) {
             if (attempt > 0) delay(POLL_MS)
             val root = (if (attempt == 0) window else imeWindow(service))?.root ?: continue
-            key = withContext(Dispatchers.Default) { findVoiceKey(root) }
-            if (key != null) break
+            search = withContext(Dispatchers.Default) { findVoiceKey(root) }
+            if (search.key != null) break
         }
-        val target = key ?: return ActionResult.Failed(
+        // 节点数说明是哪一种找不到：只有寥寥几个节点，是键盘没把按键报给无障碍（Gboard 不开读屏时就这样），
+        // 不是认法的问题；节点很多却没有一个像语音键，才是认法要补
+        val target = search.key ?: return ActionResult.Failed(
             ActionResult.Reason.VOICE_KEY_NOT_FOUND,
-            imePackage(window).orEmpty(),
+            listOfNotNull(
+                imePackage(window),
+                "nodes " + search.visited + " · labelled " + search.labelled,
+            ).joinToString(" · "),
         )
         return if (click(service, target)) ActionResult.Ok("已点按语音键")
         else ActionResult.Failed(ActionResult.Reason.EXECUTION_FAILED, "语音键没有响应点按")
@@ -150,16 +175,20 @@ class VoiceInputBackend(
         }
     }
 
-    /** 广度优先，在可见的节点里挑最像语音键的一颗。 */
-    private fun findVoiceKey(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+    private data class Search(val key: AccessibilityNodeInfo?, val visited: Int, val labelled: Int)
+
+    /** 广度优先，在可见的节点里挑最像语音键的一颗。顺带数一数节点，找不到时好说清原因。 */
+    private fun findVoiceKey(root: AccessibilityNodeInfo): Search {
         var best: AccessibilityNodeInfo? = null
         var bestScore = 0
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         queue.add(root)
         var visited = 0
+        var labelled = 0
         while (queue.isNotEmpty() && visited < MAX_NODES) {
             val node = queue.removeFirst()
             visited++
+            if (!node.contentDescription.isNullOrBlank() || !node.text.isNullOrBlank()) labelled++
             if (node.isVisibleToUser) {
                 val score = VoiceInputRules.score(node.text, node.contentDescription, node.viewIdResourceName)
                 if (score > bestScore) {
@@ -169,7 +198,7 @@ class VoiceInputBackend(
             }
             for (i in 0 until node.childCount) node.getChild(i)?.let(queue::add)
         }
-        return best
+        return Search(best, visited, labelled)
     }
 
     /**

@@ -6,6 +6,7 @@ import com.actionmental.core.rotation.RotationController
 import com.actionmental.platform.AccessibilityBridge
 import com.actionmental.platform.AudioBackend
 import com.actionmental.platform.ClipboardWriter
+import com.actionmental.platform.KeyChordSender
 import com.actionmental.platform.PackageBackend
 import com.actionmental.platform.PrivilegedBackend
 import com.actionmental.platform.TermuxBackend
@@ -32,6 +33,7 @@ class ActionExecutor(
     private val sync: SyncBackend,
     private val adbTcpip: AdbTcpipBackend,
     private val voiceInput: VoiceInputBackend,
+    private val keyChord: KeyChordSender,
     private val clipboard: ClipboardWriter,
     /** 剪贴板面板挂在无障碍服务的窗口上，开关它由平台层做；这里只转一手。 */
     private val toggleClipboardHistory: () -> ActionResult,
@@ -63,6 +65,7 @@ class ActionExecutor(
         is Action.AdbTcpip -> switchAdbTcpip(action)
         is Action.ClipboardHistory -> toggleClipboardHistory()
         is Action.VoiceInput -> voiceInput.trigger(action.mode)
+        is Action.SendKey -> keyChord.send(action.combo)
         is Action.Termux -> termux.run(action, privileged())
         is Action.FolderSync -> sync.start(action.config)
         is Action.Shell -> shell(action.command)

@@ -1,6 +1,7 @@
 package com.actionmental.platform
 
 import com.actionmental.core.action.ActionResult
+import com.actionmental.core.key.KeyChord
 
 /** 一次 shell 调用的结果。 */
 data class ShellResult(val exitCode: Int, val output: String) {
@@ -32,6 +33,13 @@ interface PrivilegedBackend {
     suspend fun injectKeyState(keyCode: Int, metaState: Int, down: Boolean): Result<Unit>
 
     /**
+     * 整串注入一个组合键（修饰键按下 → 主键 → 修饰键抬起），发给输入法的快捷键用。
+     * [deviceId] 是触发它的实体键盘，拿不到时传虚拟键盘。同样不进 shell 日志。
+     */
+    suspend fun injectSequence(steps: List<KeyChord.Step>, deviceId: Int): Result<Unit> =
+        Result.failure(UnsupportedOperationException("当前通道不支持整串注入"))
+
+    /**
      * 读取一个 settings 值。
      *
      * 「读失败」与「这个键没有值」必须分开：自愈与重绑都是读出整串、改一项、再整串写回。
@@ -52,6 +60,8 @@ class UnavailableBackend(private val reason: ActionResult.Reason) : PrivilegedBa
     override suspend fun injectKey(keyCode: Int, metaState: Int) =
         Result.failure<Unit>(IllegalStateException(reason.message))
     override suspend fun injectKeyState(keyCode: Int, metaState: Int, down: Boolean) =
+        Result.failure<Unit>(IllegalStateException(reason.message))
+    override suspend fun injectSequence(steps: List<KeyChord.Step>, deviceId: Int) =
         Result.failure<Unit>(IllegalStateException(reason.message))
     override suspend fun getSetting(namespace: String, key: String) =
         Result.failure<String?>(IllegalStateException(reason.message))

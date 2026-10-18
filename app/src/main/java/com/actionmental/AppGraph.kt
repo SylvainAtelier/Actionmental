@@ -68,6 +68,7 @@ import com.actionmental.platform.DesktopShortcuts
 import com.actionmental.platform.HardeningNotifier
 import com.actionmental.platform.IcuPinyin
 import com.actionmental.platform.InputDeviceBackend
+import com.actionmental.platform.KeyChordSender
 import com.actionmental.platform.KeyOutputRouter
 import com.actionmental.platform.LoggingBackend
 import com.actionmental.platform.OverlayRotationBackend
@@ -258,7 +259,14 @@ class AppGraph private constructor(context: Context) {
     )
 
     /** 语音输入：点输入法的语音键，或切到语音输入法。 */
-    private val voiceInput = VoiceInputBackend(context, accessibility, scope, privileged = { actionBackend })
+    private val voiceInput = VoiceInputBackend(
+        context, accessibility, scope,
+        privileged = { actionBackend },
+        keyChord = { keyChord },
+    )
+
+    /** 「发送组合键」：整串注入给输入法。管线在后面才建，所以懒加载。 */
+    private val keyChord by lazy { KeyChordSender(pipeline, privileged = { actionBackend }) }
 
     /**
      * 自愈只读写 secure 表：授过 WRITE_SECURE_SETTINGS 就不必等 Shizuku。
@@ -596,6 +604,7 @@ class AppGraph private constructor(context: Context) {
         sync = syncBackend,
         adbTcpip = adbTcpip,
         voiceInput = voiceInput,
+        keyChord = keyChord,
         clipboard = clipboardWriter,
         toggleClipboardHistory = clipPanel::toggle,
         privileged = { actionBackend },

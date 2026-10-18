@@ -171,15 +171,58 @@ class ShortcutEditorViewModel(application: Application) : AndroidViewModel(appli
         pinAfterSave = false
     }
 
-    fun startRecording() = graph.pipeline.startRecording()
+    fun startRecording() {
+        _recordingSendKey.value = false
+        graph.pipeline.startRecording()
+    }
 
-    fun cancelRecording() = graph.pipeline.cancelRecording()
+    fun cancelRecording() {
+        _recordingSendKey.value = false
+        graph.pipeline.cancelRecording()
+    }
 
-    /** 录制得到的组合键落到草稿上。 */
+    /** 录制得到的组合键落到草稿上：快捷键本身，或者「发送组合键」弹层里的目标键。 */
     fun acceptRecorded() {
         val combo = graph.pipeline.recording.value?.combo ?: return
-        _draft.value = _draft.value.copy(combo = combo)
-        graph.pipeline.cancelRecording()
+        if (_recordingSendKey.value) _sendKeyCombo.value = combo
+        else _draft.value = _draft.value.copy(combo = combo)
+        cancelRecording()
+    }
+
+    // --- 发送组合键的目标键 -------------------------------------------------
+    //
+    // 和快捷键共用同一个录制入口（管线同一时刻只录一样东西），只是录到的结果落在这里。
+
+    private val _recordingSendKey = MutableStateFlow(false)
+
+    /** 正在录的是「发送组合键」的目标，不是快捷键本身。 */
+    val recordingSendKey: StateFlow<Boolean> = _recordingSendKey.asStateFlow()
+
+    private val _sendKeyCombo = MutableStateFlow<KeyCombo?>(null)
+    val sendKeyCombo: StateFlow<KeyCombo?> = _sendKeyCombo.asStateFlow()
+
+    /** 打开弹层时从当前动作带入；没有就从空白开始。 */
+    fun editSendKey(initial: KeyCombo?) {
+        _sendKeyCombo.value = initial
+    }
+
+    fun recordSendKey() {
+        _recordingSendKey.value = true
+        graph.pipeline.startRecording()
+    }
+
+    fun setSendKeyMain(keyCode: Int) {
+        val inherited = _sendKeyCombo.value?.modifiers ?: 0
+        _sendKeyCombo.value = KeyCombo(keyCode, inherited and KeyCombo.selfModifierMask(keyCode).inv())
+    }
+
+    fun setSendKey(combo: KeyCombo) {
+        _sendKeyCombo.value = combo
+    }
+
+    fun toggleSendKeyModifier(mask: Int) {
+        val current = _sendKeyCombo.value ?: KeyCombo(KeyEvent.KEYCODE_UNKNOWN, 0)
+        _sendKeyCombo.value = current.copy(modifiers = current.modifiers xor mask)
     }
 
     /**

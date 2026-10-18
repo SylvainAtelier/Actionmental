@@ -128,6 +128,27 @@ class KeyPipeline(
     /** 键盘插拔或配置变化时调用，让下一次按键重新查一遍设备。 */
     fun invalidateDevices() = deviceCache.clear()
 
+    /** 预告过、即将以实体键盘身份注入的键，连同截止时刻（uptime 毫秒）。 */
+    private class Echo(val keyCodes: Set<Int>, val until: Long)
+
+    @Volatile
+    private var echo: Echo? = null
+
+    /**
+     * 预告一串要冒用实体键盘设备号注入的键（发给输入法的组合键，见 KeyChord）。
+     *
+     * 设备号骗过了「虚拟键盘即自己注入」的判断，不预告的话它们会被当成用户按键，
+     * 触发快捷键甚至自己触发自己。注入的事件没有扫描码，实体按键一定有，靠这一点和预告的键码认出来。
+     */
+    fun expectInjected(keyCodes: Collection<Int>, nowUptimeMs: Long, windowMs: Long = ECHO_WINDOW_MS) {
+        echo = Echo(keyCodes.toSet(), nowUptimeMs + windowMs)
+    }
+
+    private fun isEcho(event: KeyEvent): Boolean {
+        val pending = echo ?: return false
+        return event.scanCode == 0 && event.keyCode in pending.keyCodes && event.eventTime <= pending.until
+    }
+
     private val traceIds = AtomicLong(0)
     private val consumedKeyCodes = mutableSetOf<Int>()
 
@@ -345,7 +366,7 @@ class KeyPipeline(
         // 走缓存。[deviceCache] 本来就是为这一行建的，之前却被绕开了：
         // 打字时每一颗字母键都在往 system_server 发一次 binder 调用查同一台键盘。
         device = deviceOf(event.deviceId),
-        virtual = event.deviceId == KeyCharacterMap.VIRTUAL_KEYBOARD,
+        virtual = event.deviceId == KeyCharacterMap.VIRTUAL_KEYBOARD || isEcho(event),
     )
 
     /** 这颗键打出的可见字符。Ctrl / Alt 组合、死键、控制字符都不算。 */
@@ -408,5 +429,10 @@ class KeyPipeline(
         consumedKeyCodes.clear()
         activeRemaps.clear()
         tapCandidate = null
+    }
+
+    private companion object {
+        /** 注入是异步的，一串事件走完 InputDispatcher 再回到无障碍服务，一秒半绰绰有余。 */
+        const val ECHO_WINDOW_MS = 1_500L
     }
 }

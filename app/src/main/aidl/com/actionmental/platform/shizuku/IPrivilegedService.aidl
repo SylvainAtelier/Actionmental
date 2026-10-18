@@ -22,4 +22,9 @@ interface IPrivilegedService {
      */
     String startAdbPairing(String serviceName, String password) = 8;
     void stopAdbPairing() = 9;
+    /**
+     * 依次注入一串按键（三个数组一一对应，down 为 1 表示按下）。组合键发给输入法时要整串发。
+     * deviceId 为触发它的那把实体键盘：有的输入法只认实体键盘来的快捷键。返回空串表示成功。
+     */
+    String injectSequence(int deviceId, in int[] keyCodes, in int[] downs, in int[] metaStates) = 10;
 }

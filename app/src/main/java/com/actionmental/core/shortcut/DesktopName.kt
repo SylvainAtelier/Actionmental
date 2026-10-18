@@ -21,7 +21,7 @@ object DesktopName {
 
     fun isBuiltIn(action: Action): Boolean =
         action !is Action.LaunchApp && action !is Action.OpenUrl && action !is Action.Termux && action !is Action.Shell &&
-            action !is Action.FolderSync
+            action !is Action.FolderSync && action !is Action.SendKey
 
     fun of(action: Action): String = when (action) {
         is Action.LaunchApp -> action.appLabel
@@ -29,6 +29,7 @@ object DesktopName {
         is Action.Termux -> action.displayName
         is Action.Shell -> action.title.ifBlank { action.command }
         is Action.FolderSync -> action.config.displayName
+        is Action.SendKey -> action.title.ifBlank { action.combo.toString() }
         else -> action.label
     }
 
