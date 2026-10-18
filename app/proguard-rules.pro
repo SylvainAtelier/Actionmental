@@ -20,4 +20,6 @@
 # --- ADB 网络调试（libadb-android + spake2）---
 # spake2 走 JNI，原生侧按名字找 Java 方法；libadb 反射调用 Conscrypt 的 exportKeyingMaterial
 -keep class io.github.muntashirakon.** { *; }
+# 自带的 Conscrypt：JNI 原生库按名字回调 Java 类，libadb 又按名字反射 OpenSSLProvider / Conscrypt
+-keep class org.conscrypt.** { *; }
 -dontwarn org.conscrypt.**

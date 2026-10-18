@@ -157,6 +157,9 @@ dependencies {
     // 本机 adb 客户端（配对 + TLS 连接），给「ADB 网络调试」用。它要的 bcprov-jdk15to18
     // 与上面的 jdk18on 是同一套类，两份并存会重复定义；它只用到 Base64，排除后共用这一份。
     implementation(libs.libadb.android) { exclude(group = "org.bouncycastle") }
+    // 自带 Conscrypt：libadb 配对要用 TLS 的 exportKeyingMaterial，系统内置那份是隐藏 API，
+    // targetSdk 36 下反射不到；只要类路径上有 org.conscrypt.OpenSSLProvider 它就改用这份。
+    implementation(libs.conscrypt.android)
     debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation("junit:junit:4.13.2")
 }

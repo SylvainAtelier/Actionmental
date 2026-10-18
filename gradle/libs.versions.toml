@@ -11,6 +11,7 @@ shizuku = "13.1.5"
 smbj = "0.15.0"
 bouncycastle = "1.80.2"
 libadb = "3.1.1"
+conscrypt = "2.5.3"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -32,6 +33,7 @@ shizuku-provider = { group = "dev.rikka.shizuku", name = "provider", version.ref
 smbj = { group = "com.hierynomus", name = "smbj", version.ref = "smbj" }
 bouncycastle = { group = "org.bouncycastle", name = "bcprov-jdk18on", version.ref = "bouncycastle" }
 libadb-android = { group = "com.github.MuntashirAkon", name = "libadb-android", version.ref = "libadb" }
+conscrypt-android = { group = "org.conscrypt", name = "conscrypt-android", version.ref = "conscrypt" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
