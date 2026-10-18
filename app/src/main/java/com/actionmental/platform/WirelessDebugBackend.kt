@@ -41,6 +41,20 @@ class WirelessDebugBackend(private val context: Context) {
     }.getOrNull()
 
     /**
+     * 电脑 `adb connect` 该用的地址：有 Tailscale（100.64.0.0/10 的 CGNAT 段）就优先它，
+     * 任何网络下都连得通；没有再退回 Wi-Fi。无线调试本身只认本机 Wi-Fi，所以 [wifiIpv4] 不变。
+     */
+    fun connectIpv4(): String? = runCatching {
+        NetworkInterface.getNetworkInterfaces().toList()
+            .filter { it.isUp && !it.isLoopback }
+            .flatMap { it.inetAddresses.toList() }
+            .filterIsInstance<Inet4Address>()
+            .map { it.address }
+            .firstOrNull { (it[0].toInt() and 0xFF) == 100 && (it[1].toInt() and 0xC0) == 0x40 }
+            ?.joinToString(".") { (it.toInt() and 0xFF).toString() }
+    }.getOrNull() ?: wifiIpv4()
+
+    /**
      * 不经特权读端口。多数系统的 SELinux 策略不让普通应用读 adbd 的属性，
      * 读到空串就当读不到，不当成「没开」。
      */

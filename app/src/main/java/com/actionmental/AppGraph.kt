@@ -242,6 +242,9 @@ class AppGraph private constructor(context: Context) {
     /** 编辑页预览 `adb connect` 那一串要用。 */
     fun wifiIpv4(): String? = wirelessDebug.wifiIpv4()
 
+    /** 「ADB 网络调试」给电脑的地址：Tailscale 优先，其次 Wi-Fi。 */
+    fun connectIpv4(): String? = wirelessDebug.connectIpv4()
+
     /** ADB 网络调试。配对那一步不经 [logged]：配对码不进 shell 日志。 */
     val adbTcpip = AdbTcpipBackend(
         context,

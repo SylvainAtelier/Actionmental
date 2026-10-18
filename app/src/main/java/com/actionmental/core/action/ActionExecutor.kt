@@ -114,7 +114,7 @@ class ActionExecutor(
     private suspend fun switchAdbTcpip(action: Action.AdbTcpip): ActionResult {
         val result = adbTcpip.apply(action.enable, action.port)
         if (result !is ActionResult.Ok || !action.enable) return result
-        val address = wirelessDebug.wifiIpv4()?.let { it + ":" + action.port } ?: return result
+        val address = wirelessDebug.connectIpv4()?.let { it + ":" + action.port } ?: return result
         return if (action.copyAddress && clipboard.write("adb", address)) {
             ActionResult.Ok(result.detail + " · 已复制 " + address, copied = address)
         } else {

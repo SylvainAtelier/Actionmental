@@ -81,7 +81,7 @@ class ShortcutEditorViewModel(application: Application) : AndroidViewModel(appli
     fun adbWirelessEnabled(): Boolean? = graph.adbTcpip.wirelessEnabled()
     fun adbPaired(): Boolean = graph.adbTcpip.paired()
     suspend fun checkAdb(): Result<String> = graph.adbTcpip.check()
-    fun wifiAddress(): String? = graph.wifiIpv4()
+    fun wifiAddress(): String? = graph.connectIpv4()
     fun openDeveloperOptions() {
         runCatching {
             getApplication<Application>().startActivity(
