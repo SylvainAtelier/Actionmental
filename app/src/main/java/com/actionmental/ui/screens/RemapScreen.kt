@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -35,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -82,16 +84,50 @@ fun RemapScreen(modifier: Modifier = Modifier) {
     val draft by vm.draft.collectAsStateWithLifecycle()
     val injectError by vm.injectError.collectAsStateWithLifecycle()
     val selfTest by vm.selfTest.collectAsStateWithLifecycle()
+    val keyboards by vm.keyboards.collectAsStateWithLifecycle()
+    val filter by vm.filter.collectAsStateWithLifecycle()
     val injectReady = status.shizuku.usable && status.shizuku.serviceBound
 
-    // 被快捷键占用的源键：快捷键优先，映射不会生效，必须让用户看见
+    // 只有一把键盘、又没有专属规则时，这个功能不该出现在眼前
+    val showFilter = keyboards.size >= 2 || remaps.any { !it.deviceScope.isAll }
+    // 选中的键盘掉出了列表（拔了、规则也删光了）就退回「全部」
+    val selected = filter?.takeIf { f -> showFilter && keyboards.any { it.descriptor == f } }
+
+    // 选中某把键盘时，看到的是这把键盘上**实际生效**的规则：全局的和专属的都在，被专属规则盖住的全局规则变灰
+    val visible = remember(remaps, selected) {
+        if (selected == null) remaps else remaps.filter { it.deviceScope.matches(selected) }
+    }
+    val overridden = remember(visible, selected) {
+        if (selected == null) {
+            emptySet()
+        } else {
+            val own = visible.filter { !it.deviceScope.isAll }.map { it.from }.toSet()
+            visible.filter { it.deviceScope.isAll && it.from in own }.map { it.id }.toSet()
+        }
+    }
+
+    // 被快捷键占用的源键：快捷键优先，映射不会生效，必须让用户看见。
+    // 两边的键盘范围要有交集才算占用；「保持原键」本来就什么都不发，不用提示
     val shadowed = remember(remaps, shortcuts) {
-        val bound = shortcuts.filter { it.enabled }.map { it.combo }.toSet()
-        remaps.filter { it.from in bound }.map { it.id }.toSet()
+        val bound = shortcuts.filter { it.enabled }
+        remaps
+            .filter { r -> !r.isPassthrough && bound.any { it.combo == r.from && it.deviceScope.overlaps(r.deviceScope) } }
+            .map { it.id }
+            .toSet()
+    }
+
+    fun scopeNote(remap: KeyRemap): String? {
+        if (remap.deviceScope.isAll) return null
+        val names = remap.deviceScope.descriptors.map { d ->
+            keyboards.firstOrNull { it.descriptor == d }?.name ?: remap.deviceScope.nameOf(d)
+        }
+        val anyConnected = remap.deviceScope.descriptors.any { d -> keyboards.any { it.descriptor == d && it.connected } }
+        return "仅 " + names.joinToString("、") + if (anyConnected) "" else "（未连接）"
     }
 
     BoxWithConstraints(modifier.fillMaxSize()) {
         val compact = maxWidth < 480.dp
+        val rail = maxWidth >= 840.dp
 
         Column(Modifier.fillMaxSize()) {
             Column(Modifier.padding(start = AmSpace.screen, end = AmSpace.screen, top = AmSpace.screen)) {
@@ -100,64 +136,163 @@ fun RemapScreen(modifier: Modifier = Modifier) {
                 }
             }
 
-            LazyColumn(
-                contentPadding = PaddingValues(AmSpace.screen),
-                verticalArrangement = Arrangement.spacedBy(AmSpace.s2),
-            ) {
-                item {
-                    InjectionStatusCard(
-                        usable = status.shizuku.usable,
-                        bound = status.shizuku.serviceBound,
-                        bindStuck = status.shizuku.bindStuck,
-                        conclusion = status.shizuku.conclusion,
-                        accessibilityConnected = status.accessibilityConnected,
-                        injectError = injectError,
-                        selfTest = selfTest,
-                        onSelfTest = vm::runSelfTest,
+            if (showFilter && !rail) {
+                KeyboardFilter(
+                    keyboards = keyboards,
+                    selected = selected,
+                    vertical = false,
+                    onSelect = vm::setFilter,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            Row(Modifier.fillMaxWidth().weight(1f)) {
+                if (showFilter && rail) {
+                    KeyboardFilter(
+                        keyboards = keyboards,
+                        selected = selected,
+                        vertical = true,
+                        onSelect = vm::setFilter,
+                        modifier = Modifier.width(220.dp).padding(start = AmSpace.screen, top = AmSpace.screen),
                     )
                 }
 
-                items(remaps, key = { it.id }) { remap ->
-                    RemapRow(
-                        remap = remap,
-                        compact = compact,
-                        shadowed = remap.id in shadowed,
-                        degradedHint = if (injectReady) null else degradedHint(remap),
-                        onClick = { vm.edit(remap.id) },
-                        onToggle = { vm.setEnabled(remap.id, it) },
-                        onDelete = { vm.delete(remap.id) },
-                    )
-                }
-
-                if (remaps.isEmpty()) {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(AmSpace.screen),
+                    verticalArrangement = Arrangement.spacedBy(AmSpace.s2),
+                ) {
                     item {
-                        AmCard(Modifier.fillMaxWidth()) {
+                        InjectionStatusCard(
+                            usable = status.shizuku.usable,
+                            bound = status.shizuku.serviceBound,
+                            bindStuck = status.shizuku.bindStuck,
+                            conclusion = status.shizuku.conclusion,
+                            accessibilityConnected = status.accessibilityConnected,
+                            injectError = injectError,
+                            selfTest = selfTest,
+                            onSelfTest = vm::runSelfTest,
+                        )
+                    }
+
+                    items(visible, key = { it.id }) { remap ->
+                        val isOverridden = remap.id in overridden
+                        RemapRow(
+                            remap = remap,
+                            compact = compact,
+                            shadowed = remap.id in shadowed,
+                            degradedHint = if (injectReady || remap.isPassthrough) null else degradedHint(remap),
+                            note = when {
+                                isOverridden -> "已被这把键盘的专属规则覆盖，它在这里不生效"
+                                selected == null -> scopeNote(remap)
+                                else -> null
+                            },
+                            dimmed = isOverridden,
+                            onClick = { vm.edit(remap.id) },
+                            onToggle = { vm.setEnabled(remap.id, it) },
+                            onDelete = { vm.delete(remap.id) },
+                        )
+                    }
+
+                    if (selected != null && visible.none { !it.deviceScope.isAll }) {
+                        item {
                             Text(
-                                "还没有映射。挑一条常见的直接建，或者点右上角自己配。",
+                                "这把键盘还没有专属规则，沿用上面「所有键盘」的映射。新建的映射默认只对它生效。",
                                 style = AmType.secondary,
                                 color = c.inkMid,
                             )
-                            Spacer(Modifier.height(AmSpace.s2))
-                            AmLabel("常见改法 · PRESETS")
-                            Spacer(Modifier.height(6.dp))
-                            Row(
-                                Modifier.horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                vm.presets.forEach { preset ->
-                                    AmChip(preset.label, selected = false) { vm.addPreset(preset) }
+                        }
+                    }
+
+                    if (remaps.isEmpty()) {
+                        item {
+                            AmCard(Modifier.fillMaxWidth()) {
+                                Text(
+                                    "还没有映射。挑一条常见的直接建，或者点右上角自己配。",
+                                    style = AmType.secondary,
+                                    color = c.inkMid,
+                                )
+                                Spacer(Modifier.height(AmSpace.s2))
+                                AmLabel("常见改法 · PRESETS")
+                                Spacer(Modifier.height(6.dp))
+                                Row(
+                                    Modifier.horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    vm.presets.forEach { preset ->
+                                        AmChip(preset.label, selected = false) { vm.addPreset(preset) }
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                item { HowItWorksCard() }
+                    item { HowItWorksCard() }
+                }
             }
         }
     }
 
     draft?.let { RemapEditorSheet(vm, it) }
+}
+
+// --- 键盘筛选 ---------------------------------------------------------------
+
+/**
+ * 按键盘看列表。窄屏是列表上方一行可横滑的 chip，宽屏是左侧竖排。
+ * 它只是一个视图过滤，不是新的导航层级；每颗 chip 高 44dp，圆点之外再用文字写明「未连接」，不靠颜色。
+ */
+@Composable
+private fun KeyboardFilter(
+    keyboards: List<RemapViewModel.Keyboard>,
+    selected: String?,
+    vertical: Boolean,
+    onSelect: (String?) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val chips: @Composable (Modifier) -> Unit = { m ->
+        KeyboardChip("全部", connected = null, selected = selected == null, modifier = m) { onSelect(null) }
+        keyboards.forEach { k ->
+            KeyboardChip(
+                label = k.name + if (k.connected) "" else "（未连接）",
+                connected = k.connected,
+                selected = selected == k.descriptor,
+                modifier = m,
+            ) { onSelect(k.descriptor) }
+        }
+    }
+    if (vertical) {
+        Column(
+            modifier.verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) { chips(Modifier.fillMaxWidth()) }
+    } else {
+        Row(
+            modifier
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = AmSpace.screen, vertical = AmSpace.s1),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) { chips(Modifier) }
+    }
+}
+
+/** [connected] 为 null 时不画状态点（「全部」「所有键盘」这类不是某一把键盘的选项）。 */
+@Composable
+private fun KeyboardChip(
+    label: String,
+    connected: Boolean?,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val c = amColors
+    AmChip(
+        text = label,
+        selected = selected,
+        modifier = modifier.heightIn(min = 44.dp),
+        leading = connected?.let { on -> { StatusDot(if (on) c.ok else c.inkFaint) } },
+        onClick = onClick,
+    )
 }
 
 // --- 列表 -------------------------------------------------------------------
@@ -169,6 +304,10 @@ private fun RemapRow(
     shadowed: Boolean,
     /** 没有注入时这一条会怎样；null 表示照常（或 Shizuku 就绪）。 */
     degradedHint: String?,
+    /** 这条规则对哪把键盘生效，或者它为什么被盖住。 */
+    note: String?,
+    /** 被这把键盘上的专属规则盖住的全局规则：留着看得见，但退到背景里。 */
+    dimmed: Boolean,
     onClick: () -> Unit,
     onToggle: (Boolean) -> Unit,
     onDelete: () -> Unit,
@@ -179,6 +318,7 @@ private fun RemapRow(
     AmCard(
         modifier = Modifier
             .fillMaxWidth()
+            .alpha(if (dimmed) 0.55f else 1f)
             .combinedClickableCompat(onClick = onClick, onLongClick = { menuOpen = true }),
         alert = shadowed,
     ) {
@@ -195,7 +335,7 @@ private fun RemapRow(
                             modifier = Modifier.height(14.dp),
                         )
                         Spacer(Modifier.width(6.dp))
-                        KeyComboRow(remap.to)
+                        RemapTarget(remap)
                     }
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -208,7 +348,7 @@ private fun RemapRow(
                             modifier = Modifier.height(14.dp),
                         )
                         Spacer(Modifier.width(AmSpace.s1))
-                        KeyComboRow(remap.to)
+                        RemapTarget(remap)
                     }
                 }
             }
@@ -226,6 +366,11 @@ private fun RemapRow(
                 style = AmType.secondary,
                 color = c.inkMid,
             )
+        }
+
+        if (note != null) {
+            Spacer(Modifier.height(4.dp))
+            Text(note, style = AmType.secondary, color = c.inkMid)
         }
 
         if (degradedHint != null) {
@@ -252,6 +397,16 @@ private fun RemapRow(
                 onClick = { onDelete(); menuOpen = false },
             )
         }
+    }
+}
+
+/** 「保持原键」没有目标键可画，写成文字。 */
+@Composable
+private fun RemapTarget(remap: KeyRemap) {
+    if (remap.isPassthrough) {
+        Text("保持原键", style = AmType.body, color = amColors.inkMid)
+    } else {
+        KeyComboRow(remap.to)
     }
 }
 
@@ -373,6 +528,8 @@ private fun RemapEditorSheet(vm: RemapViewModel, draft: RemapViewModel.Draft) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val recording by vm.recording.collectAsStateWithLifecycle()
     val recordingField by vm.recordingField.collectAsStateWithLifecycle()
+    val keyboards by vm.keyboards.collectAsStateWithLifecycle()
+    val lastDevice by vm.lastDevice.collectAsStateWithLifecycle()
 
     var picking by remember { mutableStateOf<RemapViewModel.Field?>(null) }
     var openGroup by remember { mutableStateOf<String?>(null) }
@@ -460,6 +617,44 @@ private fun RemapEditorSheet(vm: RemapViewModel, draft: RemapViewModel.Draft) {
                     target(Modifier.fillMaxWidth())
                 }
 
+                // 一把键盘都不认识时不占地方；有了就总是可选的，默认「所有键盘」
+                if (keyboards.isNotEmpty()) {
+                    Spacer(Modifier.height(AmSpace.s3))
+                    AmLabel("生效键盘 · DEVICE")
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        KeyboardChip("所有键盘", connected = null, selected = draft.deviceScope.isAll) {
+                            vm.setDevice(null)
+                        }
+                        keyboards.forEach { k ->
+                            val label = k.name + when {
+                                !k.connected -> "（未连接）"
+                                k.descriptor == lastDevice.descriptor -> "（最近输入）"
+                                else -> ""
+                            }
+                            KeyboardChip(
+                                label = label,
+                                connected = k.connected,
+                                selected = k.descriptor in draft.deviceScope.descriptors,
+                            ) { vm.setDevice(k.descriptor) }
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        when {
+                            draft.deviceScope.isAll -> "对所有键盘生效；某把键盘上另有同一颗键的规则时，那把键盘以它为准。"
+                            draft.from != null && draft.from == draft.to ->
+                                "在这把键盘上保持原键，不受「所有键盘」的映射影响。"
+                            else -> "只对这把键盘生效，其余键盘不受影响。想让它保持原键，把两边设成同一颗键。"
+                        },
+                        style = AmType.secondary,
+                        color = c.inkMid,
+                    )
+                }
+
                 if (isModifierRemap(draft.from, draft.to)) {
                     Spacer(Modifier.height(AmSpace.s2))
                     AmCard(Modifier.fillMaxWidth()) {
@@ -499,7 +694,7 @@ private fun RemapEditorSheet(vm: RemapViewModel, draft: RemapViewModel.Draft) {
                         Text(replacing.label, style = AmType.data, color = c.inkMid)
                     }
                 }
-                if (draft.from != null && draft.to != null && draft.from == draft.to) {
+                if (draft.from != null && draft.to != null && draft.from == draft.to && draft.deviceScope.isAll) {
                     Spacer(Modifier.height(AmSpace.s2))
                     Text("两边是同一颗键，映射没有意义。", style = AmType.secondary, color = c.accent)
                 }

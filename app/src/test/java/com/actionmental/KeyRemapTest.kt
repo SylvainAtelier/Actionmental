@@ -10,6 +10,8 @@ import com.actionmental.core.remap.KeyRemapMatcher
 import com.actionmental.core.remap.RemapPresets
 import com.actionmental.core.remap.isModifierRemap
 import com.actionmental.core.remap.rewriteModifiers
+import com.actionmental.core.shortcut.DeviceScope
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -54,8 +56,8 @@ class KeyRemapTest {
             )
         )
 
-        assertEquals("a", matcher.match(caps)?.id)
-        assertNull(matcher.match(KeyCombo(KeyEvent.KEYCODE_INSERT)))
+        assertEquals("a", matcher.match(caps, k380)?.id)
+        assertNull(matcher.match(KeyCombo(KeyEvent.KEYCODE_INSERT), k380))
     }
 
     @Test
@@ -181,7 +183,7 @@ class KeyRemapTest {
         val altL = KeyCombo(KeyEvent.KEYCODE_L, KeyCombo.MOD_ALT)
         val pipeline = KeyPipeline(traceCapacity = 0).apply {
             onTrigger = { combo, _ -> fired += combo; combo == altL }
-            rewriteCombo = { combo, pressed -> rewriteModifiers(combo, pressed, listOf(shiftToAlt)) }
+            rewriteCombo = { combo, pressed, _ -> rewriteModifiers(combo, pressed, listOf(shiftToAlt)) }
         }
 
         pipeline.dispatch(down(KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.META_SHIFT_ON))
@@ -196,7 +198,7 @@ class KeyRemapTest {
         val emitted = mutableListOf<KeyCombo>()
         val pipeline = KeyPipeline(traceCapacity = 0).apply {
             onTrigger = { _, _ -> false }
-            rewriteCombo = { combo, pressed -> rewriteModifiers(combo, pressed, listOf(shiftToAlt)) }
+            rewriteCombo = { combo, pressed, _ -> rewriteModifiers(combo, pressed, listOf(shiftToAlt)) }
             onRemap = { original, effective, _ ->
                 if (effective == original) false else { emitted += effective; true }
             }
@@ -241,6 +243,119 @@ class KeyRemapTest {
         )
         val labels = RemapPresets.common.map { it.label }
         assertEquals(labels.size, labels.distinct().size)
+    }
+
+    // --- 按键盘生效 ------------------------------------------------------------
+
+    private val k380 = KeyboardDevice(1, "K380", "desc-k380")
+    private val hhkb = KeyboardDevice(2, "HHKB", "desc-hhkb")
+
+    private fun only(device: KeyboardDevice) = DeviceScope.only(device)
+
+    @Test
+    fun `专属规则只管那一把键盘，其余键盘沿用全局规则`() {
+        val matcher = KeyRemapMatcher()
+        matcher.update(
+            listOf(
+                KeyRemap("global", caps, esc),
+                KeyRemap("own", caps, KeyCombo(KeyEvent.KEYCODE_DEL), deviceScope = only(k380)),
+            )
+        )
+
+        assertEquals("own", matcher.match(caps, k380)?.id)
+        assertEquals("global", matcher.match(caps, hhkb)?.id)
+    }
+
+    @Test
+    fun `没有全局规则时，专属规则对别的键盘不起作用`() {
+        val matcher = KeyRemapMatcher()
+        matcher.update(listOf(KeyRemap("own", caps, esc, deviceScope = only(k380))))
+
+        assertEquals("own", matcher.match(caps, k380)?.id)
+        assertNull(matcher.match(caps, hhkb))
+    }
+
+    @Test
+    fun `保持原键挡住全局规则，而且什么都不发`() {
+        val matcher = KeyRemapMatcher()
+        val keep = KeyRemap("keep", caps, caps, deviceScope = only(hhkb))
+        matcher.update(listOf(KeyRemap("global", caps, esc), keep))
+
+        assertTrue(keep.isPassthrough)
+        assertNull(matcher.match(caps, hhkb))
+        assertEquals("global", matcher.match(caps, k380)?.id)
+        // 所有键盘上的 from == to 不是「保持原键」，那是没有意义的映射
+        assertFalse(KeyRemap("x", caps, caps).isPassthrough)
+    }
+
+    @Test
+    fun `同一把键盘上有多条专属规则时取最近改的`() {
+        val matcher = KeyRemapMatcher()
+        matcher.update(
+            listOf(
+                KeyRemap("old", caps, esc, deviceScope = only(k380), updatedAt = 1L),
+                KeyRemap("new", caps, KeyCombo(KeyEvent.KEYCODE_DEL), deviceScope = only(k380), updatedAt = 2L),
+            )
+        )
+
+        assertEquals("new", matcher.match(caps, k380)?.id)
+    }
+
+    @Test
+    fun `修饰键改写只看事件所在键盘适用的规则`() {
+        val matcher = KeyRemapMatcher()
+        matcher.update(listOf(KeyRemap("m", shiftLeft, altLeft, deviceScope = only(k380))))
+        val pressed = setOf(KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_L)
+        val combo = KeyCombo(KeyEvent.KEYCODE_L, KeyCombo.MOD_SHIFT)
+
+        assertEquals(KeyCombo(KeyEvent.KEYCODE_L, KeyCombo.MOD_ALT), matcher.rewrite(combo, pressed, k380))
+        assertEquals(combo, matcher.rewrite(combo, pressed, hhkb))
+    }
+
+    @Test
+    fun `保持原键也挡住全局的修饰键映射`() {
+        val matcher = KeyRemapMatcher()
+        matcher.update(
+            listOf(
+                KeyRemap("m", shiftLeft, altLeft),
+                KeyRemap("keep", shiftLeft, shiftLeft, deviceScope = only(hhkb)),
+            )
+        )
+        val pressed = setOf(KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_L)
+        val combo = KeyCombo(KeyEvent.KEYCODE_L, KeyCombo.MOD_SHIFT)
+
+        assertEquals(combo, matcher.rewrite(combo, pressed, hhkb))
+        assertEquals(KeyCombo(KeyEvent.KEYCODE_L, KeyCombo.MOD_ALT), matcher.rewrite(combo, pressed, k380))
+    }
+
+    @Test
+    fun `键盘断开补抬起时，仍然交给当初按下它的那把键盘`() {
+        val released = mutableListOf<Pair<Boolean, KeyboardDevice>>()
+        val pipeline = KeyPipeline(traceCapacity = 0).apply {
+            onTrigger = { _, _ -> false }
+            onReplacedKey = { _, _, down, device -> released += down to device; true }
+        }
+
+        pipeline.dispatch(NormalizedKeyEvent(KeyEvent.KEYCODE_CAPS_LOCK, 0, 0, true, 0, 1L, k380))
+        pipeline.reset()
+
+        // 规则只对 k380 生效：补抬起带着 UNKNOWN 的话匹配不到规则，目标键会一直卡着
+        assertEquals(listOf(true to k380, false to k380), released)
+    }
+
+    @Test
+    fun `范围比较只看键盘，名字快照不参与；旧数据读出来是所有键盘`() {
+        val a = DeviceScope(listOf("d1"), mapOf("d1" to "K380"))
+        val b = DeviceScope(listOf("d1"), mapOf("d1" to "K380 改名了"))
+        assertTrue(a.sameDevices(b))
+        assertFalse(a.sameDevices(DeviceScope.ALL))
+        assertTrue(a.overlaps(DeviceScope.ALL))
+        assertFalse(a.overlaps(DeviceScope(listOf("d2"))))
+
+        // 没有 deviceScope 字段的旧配置（含旧版导出）读出来就是所有键盘
+        val raw = Json.encodeToString(KeyRemap.serializer(), KeyRemap("a", caps, esc))
+        assertFalse(raw.contains("deviceScope"))
+        assertTrue(Json.decodeFromString(KeyRemap.serializer(), raw).deviceScope.isAll)
     }
 
     // --- 脚手架 ---------------------------------------------------------------

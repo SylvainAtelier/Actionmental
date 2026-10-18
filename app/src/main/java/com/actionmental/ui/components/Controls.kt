@@ -8,9 +8,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
@@ -96,6 +98,8 @@ fun AmChip(
     selected: Boolean,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    /** 文字前面的小标记（状态点之类）。 */
+    leading: (@Composable () -> Unit)? = null,
     onClick: () -> Unit,
 ) {
     val c = amColors
@@ -111,16 +115,23 @@ fun AmChip(
             .border(1.dp, if (selected && enabled) c.ink else c.line, shape)
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 6.dp),
+        contentAlignment = Alignment.CenterStart,
     ) {
-        Text(
-            text,
-            style = AmType.secondary,
-            color = when {
-                !enabled -> c.inkFaint
-                selected -> c.bgScreen
-                else -> c.inkMid
-            },
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (leading != null) {
+                leading()
+                Spacer(Modifier.width(6.dp))
+            }
+            Text(
+                text,
+                style = AmType.secondary,
+                color = when {
+                    !enabled -> c.inkFaint
+                    selected -> c.bgScreen
+                    else -> c.inkMid
+                },
+            )
+        }
     }
 }
 

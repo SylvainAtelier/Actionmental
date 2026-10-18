@@ -595,7 +595,7 @@ class ClipHistoryTest {
     fun `修饰键映射在面板里同样生效：Caps 映射成 Ctrl 时 Caps + 1 是直选`() {
         val pipeline = KeyPipeline()
         val caps = KeyEvent.KEYCODE_CAPS_LOCK
-        pipeline.rewriteCombo = { combo, pressed ->
+        pipeline.rewriteCombo = { combo, pressed, _ ->
             if (caps in pressed && combo.keyCode != caps) combo.copy(modifiers = combo.modifiers or KeyCombo.MOD_CTRL)
             else combo
         }

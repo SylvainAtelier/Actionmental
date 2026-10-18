@@ -8,9 +8,13 @@ import com.actionmental.AppGraph
 import com.actionmental.core.key.KeyCombo
 import com.actionmental.core.remap.KeyRemap
 import com.actionmental.core.remap.RemapPresets
+import com.actionmental.core.shortcut.DeviceScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
@@ -26,15 +30,22 @@ class RemapViewModel(application: Application) : AndroidViewModel(application) {
 
     enum class Field { FROM, TO }
 
+    /** 一把键盘：连着的，或者某条规则提到过但此刻没连着的（蓝牙键盘熄屏断开是常态）。 */
+    data class Keyboard(val descriptor: String, val name: String, val connected: Boolean)
+
     data class Draft(
         val id: String,
         val from: KeyCombo? = null,
         val to: KeyCombo? = null,
         val enabled: Boolean = true,
         val isNew: Boolean = true,
+        val deviceScope: DeviceScope = DeviceScope.ALL,
     ) {
         private fun KeyCombo?.usable() = this != null && keyCode != KeyEvent.KEYCODE_UNKNOWN
-        val complete: Boolean get() = from.usable() && to.usable() && from != to
+
+        /** 两边相同只在指定键盘上有意义：那是「保持原键」，用来挡住全局规则。 */
+        val complete: Boolean
+            get() = from.usable() && to.usable() && (from != to || !deviceScope.isAll)
     }
 
     val remaps: StateFlow<List<KeyRemap>> = repository.remaps
@@ -42,11 +53,36 @@ class RemapViewModel(application: Application) : AndroidViewModel(application) {
     val status = graph.status
     val recording = graph.pipeline.recording
 
+    /** 最近一次按键来自哪把键盘：录制源键时，编辑器据此提示「这把刚按过」。 */
+    val lastDevice = graph.pipeline.lastDevice
+
     /** 注入链路最近一次的失败原因。为 null 表示上一次注入是成功的。 */
     val injectError: StateFlow<String?> = graph.keyInjector.lastError
 
     private val _draft = MutableStateFlow<Draft?>(null)
     val draft: StateFlow<Draft?> = _draft.asStateFlow()
+
+    /** 列表按哪把键盘看；null 是全部。 */
+    private val _filter = MutableStateFlow<String?>(null)
+    val filter: StateFlow<String?> = _filter.asStateFlow()
+
+    fun setFilter(descriptor: String?) {
+        _filter.value = descriptor
+    }
+
+    val keyboards: StateFlow<List<Keyboard>> = combine(status, remaps, _draft) { s, rules, d ->
+        val connected = s.keyboards
+            .filter { it.descriptor.isNotBlank() }
+            .distinctBy { it.descriptor }
+            .map { Keyboard(it.descriptor, it.name, connected = true) }
+        val known = connected.map { it.descriptor }.toSet()
+        val mentioned = (rules.map { it.deviceScope } + listOfNotNull(d?.deviceScope))
+            .flatMap { scope -> scope.descriptors.map { it to scope.nameOf(it) } }
+            .filter { (descriptor, _) -> descriptor !in known }
+            .distinctBy { it.first }
+            .map { (descriptor, name) -> Keyboard(descriptor, name, connected = false) }
+        connected + mentioned
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private val _recordingField = MutableStateFlow<Field?>(null)
     val recordingField: StateFlow<Field?> = _recordingField.asStateFlow()
@@ -61,12 +97,27 @@ class RemapViewModel(application: Application) : AndroidViewModel(application) {
     // --- 编辑器 ---------------------------------------------------------------
 
     fun create() {
-        _draft.value = Draft(id = repository.newId())
+        _draft.value = Draft(id = repository.newId(), deviceScope = scopeOf(_filter.value))
     }
 
     fun edit(id: String) {
         val existing = repository.find(id) ?: return
-        _draft.value = Draft(existing.id, existing.from, existing.to, existing.enabled, isNew = false)
+        _draft.value = Draft(
+            existing.id, existing.from, existing.to, existing.enabled,
+            isNew = false, deviceScope = existing.deviceScope,
+        )
+    }
+
+    /** 编辑器里选「生效键盘」。null = 所有键盘。 */
+    fun setDevice(descriptor: String?) {
+        val current = _draft.value ?: return
+        _draft.value = current.copy(deviceScope = scopeOf(descriptor))
+    }
+
+    private fun scopeOf(descriptor: String?): DeviceScope {
+        val keyboard = descriptor?.let { d -> keyboards.value.firstOrNull { it.descriptor == d } }
+            ?: return DeviceScope.ALL
+        return DeviceScope(listOf(keyboard.descriptor), mapOf(keyboard.descriptor to keyboard.name))
     }
 
     fun close() {
@@ -112,14 +163,14 @@ class RemapViewModel(application: Application) : AndroidViewModel(application) {
     fun replacing(): KeyRemap? {
         val d = _draft.value ?: return null
         val from = d.from ?: return null
-        return repository.findBySource(from, d.id)
+        return repository.findBySource(from, d.deviceScope, d.id)
     }
 
     fun save() = viewModelScope.launch {
         val d = _draft.value ?: return@launch
         if (!d.complete) return@launch
         repository.upsert(
-            KeyRemap(id = d.id, from = d.from!!, to = d.to!!, enabled = d.enabled)
+            KeyRemap(id = d.id, from = d.from!!, to = d.to!!, enabled = d.enabled, deviceScope = d.deviceScope)
         )
         close()
     }
@@ -132,7 +183,9 @@ class RemapViewModel(application: Application) : AndroidViewModel(application) {
     fun delete(id: String) = viewModelScope.launch { repository.delete(id) }
 
     fun addPreset(preset: RemapPresets.Preset) = viewModelScope.launch {
-        repository.upsert(KeyRemap(id = repository.newId(), from = preset.from, to = preset.to))
+        repository.upsert(
+            KeyRemap(id = repository.newId(), from = preset.from, to = preset.to, deviceScope = scopeOf(_filter.value))
+        )
     }
 
     /**

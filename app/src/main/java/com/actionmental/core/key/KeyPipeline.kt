@@ -37,9 +37,10 @@ class KeyPipeline(
 
     /**
      * 修饰位改写。由 AppGraph 注入，管线自己不知道「映射」是什么。
-     * 入参是原组合与当前按住的所有键，返回系统应该看到的组合。
+     * 入参是原组合、当前按住的所有键与事件所在的键盘（规则可以只对某把键盘生效），
+     * 返回系统应该看到的组合。
      */
-    var rewriteCombo: ((KeyCombo, Set<Int>) -> KeyCombo)? = null
+    var rewriteCombo: ((KeyCombo, Set<Int>, KeyboardDevice) -> KeyCombo)? = null
 
     /**
      * 整颗替换。
@@ -136,8 +137,11 @@ class KeyPipeline(
     /** 已经被映射拦下、正按着的键。长按重复时要接着补发，否则映射键没有连发。 */
     private val activeRemaps = mutableMapOf<Int, Pair<KeyCombo, KeyCombo>>()
 
-    /** 正被整颗替换、还按着的键。抬起时要把目标键的抬起补上，否则目标键会卡住。 */
-    private val replacedKeys = mutableSetOf<Int>()
+    /**
+     * 正被整颗替换、还按着的键，连同按下它的键盘。抬起时要把目标键的抬起补上，否则目标键会卡住；
+     * 记下键盘是因为规则可能只对这把键盘生效，键盘拔掉之后补抬起时要靠它才找得到那条规则。
+     */
+    private val replacedKeys = mutableMapOf<Int, KeyboardDevice>()
 
     /** 录制中的临时结果。录制期间禁止执行任何已绑定动作（PRD 4.3）。 */
     data class Recording(val combo: KeyCombo? = null, val device: KeyboardDevice? = null)
@@ -214,7 +218,7 @@ class KeyPipeline(
 
         // 整颗被替换掉的键：按下、连发、抬起统统换成目标键的同一半事件
         if (normalized.keyCode in replacedKeys) {
-            if (!normalized.down) replacedKeys -= normalized.keyCode
+            if (!normalized.down) replacedKeys.remove(normalized.keyCode)
             onReplacedKey?.invoke(
                 normalized.keyCode,
                 normalized.otherModifiers,
@@ -231,7 +235,7 @@ class KeyPipeline(
                 normalized.device,
             ) ?: false
             if (replaced) {
-                replacedKeys += normalized.keyCode
+                replacedKeys[normalized.keyCode] = normalized.device
                 tapCandidate = null
                 return true
             }
@@ -284,7 +288,7 @@ class KeyPipeline(
 
         // 修饰键映射先生效：快捷键按改写后的组合匹配，
         // 于是「左 Shift 映射成 Alt」之后，Alt + X 的快捷键真的能被 左Shift + X 按出来
-        val effective = rewriteCombo?.invoke(combo, _snapshot.value.pressedKeyCodes) ?: combo
+        val effective = rewriteCombo?.invoke(combo, _snapshot.value.pressedKeyCodes, e.device) ?: combo
 
         val matched = onTrigger?.invoke(effective, e.device) ?: false
         val remapped = !matched && (onRemap?.invoke(combo, effective, e.device) ?: false)
@@ -310,7 +314,7 @@ class KeyPipeline(
     private fun modalModifiers(e: NormalizedKeyEvent): Int {
         if (e.isModifier) return e.modifiers
         val rewrite = rewriteCombo ?: return e.modifiers
-        return rewrite(KeyCombo(e.keyCode, e.modifiers), _snapshot.value.pressedKeyCodes).modifiers
+        return rewrite(KeyCombo(e.keyCode, e.modifiers), _snapshot.value.pressedKeyCodes, e.device).modifiers
     }
 
     fun clearTraces() {
@@ -395,8 +399,8 @@ class KeyPipeline(
      * 系统会一直以为它按着，整台设备的输入都会变样。
      */
     fun reset() {
-        replacedKeys.forEach { keyCode ->
-            onReplacedKey?.invoke(keyCode, 0, false, KeyboardDevice.UNKNOWN)
+        replacedKeys.forEach { (keyCode, device) ->
+            onReplacedKey?.invoke(keyCode, 0, false, device)
         }
         replacedKeys.clear()
         _snapshot.value = KeyPressSnapshot()

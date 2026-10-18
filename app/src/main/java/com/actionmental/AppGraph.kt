@@ -372,7 +372,7 @@ class AppGraph private constructor(context: Context) {
         pickKeys = { settingsRepository.settings.value.clipPickKeys },
         isToggle = { e ->
             e.asTrigger()?.let { combo ->
-                val effective = remapMatcher.rewrite(combo, pipeline.snapshot.value.pressedKeyCodes)
+                val effective = remapMatcher.rewrite(combo, pipeline.snapshot.value.pressedKeyCodes, e.device)
                 matcher.match(effective, e.device, accessibility.foregroundPackage.value)?.action ==
                     Action.ClipboardHistory
             } ?: false
@@ -1274,13 +1274,13 @@ class AppGraph private constructor(context: Context) {
         // 修饰键映射：按住的修饰键被映射时，先把组合改写成映射之后的样子。
         // 快捷键匹配用的就是改写后的组合 —— 于是「左 Shift 映射成 Alt」以后，
         // 绑在 Alt + X 上的快捷键真的能被 左 Shift + X 按出来。
-        pipeline.rewriteCombo = { combo, pressed -> remapMatcher.rewrite(combo, pressed) }
+        pipeline.rewriteCombo = { combo, pressed, device -> remapMatcher.rewrite(combo, pressed, device) }
 
         // 整颗替换：源键的按下 / 连发 / 抬起被拦下，换成目标键的同一半事件。
         // 输入法看不到原键，所以「短按左 Shift 切中英文」这类由原键触发的行为也一并消失。
         pipeline.onReplacedKey = { keyCode, modifiers, down, device ->
             val source = KeyCombo(keyCode, modifiers)
-            val remap = remapMatcher.match(source)
+            val remap = remapMatcher.match(source, device)
             when {
                 remap == null -> false
 
@@ -1319,8 +1319,8 @@ class AppGraph private constructor(context: Context) {
         }
 
         // 没有快捷键命中时才轮到映射：把该发出去的键交给系统重新分发
-        pipeline.onRemap = { original, effective, _ ->
-            val remap = remapMatcher.match(effective)
+        pipeline.onRemap = { original, effective, device ->
+            val remap = remapMatcher.match(effective, device)
 
             // 映射成修饰键：源键被拦下，但什么都不发 ——
             // 它现在只是一颗修饰键，作用体现在按住期间的**别的**键上
