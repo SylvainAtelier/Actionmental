@@ -123,6 +123,33 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
         describe(t)
     }
 
+    // --- 无线调试配对 ------------------------------------------------------
+    //
+    // 只开、关配对这两步：密钥、配对协议、连接都在主进程里做，这里不碰任何密钥材料。
+    // IAdbManager 是隐藏接口，但方法名从 Android 11 起没变过；shell 持有 MANAGE_DEBUGGING。
+
+    private val adbManager: Any by lazy {
+        val binder = Class.forName("android.os.ServiceManager")
+            .getMethod("getService", String::class.java)
+            .invoke(null, "adb") as android.os.IBinder
+        Class.forName("android.debug.IAdbManager\$Stub")
+            .getMethod("asInterface", android.os.IBinder::class.java)
+            .invoke(null, binder)!!
+    }
+
+    override fun startAdbPairing(serviceName: String, password: String): String = try {
+        adbManager.javaClass
+            .getMethod("enablePairingByQrCode", String::class.java, String::class.java)
+            .invoke(adbManager, serviceName, password)
+        ""
+    } catch (t: Throwable) {
+        describe(t)
+    }
+
+    override fun stopAdbPairing() {
+        runCatching { adbManager.javaClass.getMethod("disablePairing").invoke(adbManager) }
+    }
+
     /** 反射调用的异常包在 InvocationTargetException 里，取出真正的原因。 */
     private fun describe(t: Throwable): String {
         val cause = (t as? java.lang.reflect.InvocationTargetException)?.targetException ?: t

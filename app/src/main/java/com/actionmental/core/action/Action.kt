@@ -196,6 +196,41 @@ sealed interface Action {
     }
 
     /**
+     * 让 adbd 在一个固定的 TCP 端口上监听，等同电脑上的 `adb tcpip <端口>`；
+     * [enable] 为假时等同 `adb usb`，把这个端口收回去。
+     *
+     * 无线调试的端口每次开关都会变，远程脚本没法写死；这个端口不变，`adb connect IP:端口` 一直有效，
+     * 直到重启手机。shell 身份改不了 adbd 的端口属性，所以平时是本应用自己当一次 adb 客户端，
+     * 经无线调试向 adbd 发同一条请求 —— 首次要配对一次，由 Shizuku 代为完成；Shizuku 以 root 运行时直接改属性。
+     * 不标必需特权：配对过之后，没有 Shizuku 也能执行。
+     */
+    @Serializable
+    @SerialName("adb_tcpip")
+    data class AdbTcpip(
+        val port: Int = DEFAULT_PORT,
+        val enable: Boolean = true,
+        /** 成功后把 `IP:端口` 写进剪贴板，好直接贴到电脑上的 adb connect 后面。 */
+        val copyAddress: Boolean = true,
+    ) : Action {
+        override val category get() = ActionCategory.DEBUG
+        // 端口跟着「端口」二字：界面在中文下会丢掉 ` · ` 后面不含汉字的那一段
+        override val label get() = if (enable) "开启 ADB 网络调试 · 端口 " + port else "关闭 ADB 网络调试"
+        override val technical get() = if (enable) "ADB_TCPIP · " + port else "ADB_USB"
+        override val detail
+            get() = if (enable) "adb connect <IP>:" + port else "收回 TCP 端口 · 等同 adb usb"
+
+        companion object {
+            const val DEFAULT_PORT = 6677
+
+            /** 1024 以下是特权端口，adbd 以 shell 身份绑不上。 */
+            val PORT_RANGE = 1024..65535
+
+            /** 输入框里的原文 → 端口；不是数字或越界就是 null。 */
+            fun parsePort(raw: String): Int? = raw.trim().toIntOrNull()?.takeIf { it in PORT_RANGE }
+        }
+    }
+
+    /**
      * 打开 / 关闭剪贴板历史面板。
      *
      * 面板浮在当前应用上面但不抢焦点，选中的条目经无障碍输入通道直接写进原来的输入框。
@@ -300,6 +335,7 @@ object ActionCatalog {
     const val GROUP_SHELL = "shell"
     const val GROUP_TERMUX = "termux"
     const val GROUP_SYNC = "sync"
+    const val GROUP_ADB_TCPIP = "adb_tcpip"
 
     val groups: List<Group> = listOf(
         Group("rotation", "屏幕方向", "ROTATION", "角度、切换与循环", rotation),
@@ -320,6 +356,7 @@ object ActionCatalog {
             "adb_wifi", "无线调试", "WIRELESS DEBUG", "复制 IP、端口到剪贴板",
             Action.WirelessDebug.Target.entries.map { Action.WirelessDebug(it) },
         ),
+        Group(GROUP_ADB_TCPIP, "ADB 网络调试", "ADB TCPIP", "固定端口，电脑上 adb connect 直连", direct = true),
         Group("clipboard", "剪贴板", "CLIPBOARD", "历史记录面板", listOf(Action.ClipboardHistory)),
         Group(GROUP_APP, "启动应用", "LAUNCH APP", "先选应用，再选入口", direct = true),
         Group(GROUP_URL, "打开链接", "OPEN URL", "用默认浏览器打开网址", direct = true),

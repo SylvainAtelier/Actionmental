@@ -154,6 +154,9 @@ dependencies {
     // 只用到 BC 的轻量 API（HMAC / MD4 / AES-CMAC / GCM），旧一点的版本完全够用。
     implementation(libs.smbj) { exclude(group = "org.bouncycastle") }
     implementation(libs.bouncycastle)
+    // 本机 adb 客户端（配对 + TLS 连接），给「ADB 网络调试」用。它要的 bcprov-jdk15to18
+    // 与上面的 jdk18on 是同一套类，两份并存会重复定义；它只用到 Base64，排除后共用这一份。
+    implementation(libs.libadb.android) { exclude(group = "org.bouncycastle") }
     debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation("junit:junit:4.13.2")
 }

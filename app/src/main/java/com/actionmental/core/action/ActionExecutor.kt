@@ -11,6 +11,7 @@ import com.actionmental.platform.PrivilegedBackend
 import com.actionmental.platform.TermuxBackend
 import com.actionmental.platform.sync.SyncBackend
 import com.actionmental.platform.WirelessDebugBackend
+import com.actionmental.platform.adb.AdbTcpipBackend
 
 /**
  * 唯一的动作执行层（PRD 3.3 / 35.5）。
@@ -28,6 +29,7 @@ class ActionExecutor(
     private val wirelessDebug: WirelessDebugBackend,
     private val termux: TermuxBackend,
     private val sync: SyncBackend,
+    private val adbTcpip: AdbTcpipBackend,
     private val clipboard: ClipboardWriter,
     /** 剪贴板面板挂在无障碍服务的窗口上，开关它由平台层做；这里只转一手。 */
     private val toggleClipboardHistory: () -> ActionResult,
@@ -56,6 +58,7 @@ class ActionExecutor(
             Action.Awake.Op.TOGGLE -> awake.toggle()
         }
         is Action.WirelessDebug -> copyWirelessDebug(action.target)
+        is Action.AdbTcpip -> switchAdbTcpip(action)
         is Action.ClipboardHistory -> toggleClipboardHistory()
         is Action.Termux -> termux.run(action, privileged())
         is Action.FolderSync -> sync.start(action.config)
@@ -101,6 +104,22 @@ class ActionExecutor(
         }
         return if (clipboard.write("adb", text)) ActionResult.Ok("已复制 " + text, copied = text)
         else ActionResult.Failed(ActionResult.Reason.EXECUTION_FAILED, "剪贴板写入失败")
+    }
+
+    /**
+     * 切 adbd 的 TCP 端口。开成功之后把 `IP:端口` 带回去：提示里要逐字核对，
+     * 选了「复制」就顺手写进剪贴板 —— 电脑那边要的正是这一串。
+     * 没连 Wi-Fi 时端口照样开着（USB 网络共享、热点下也能连），只是给不出地址。
+     */
+    private suspend fun switchAdbTcpip(action: Action.AdbTcpip): ActionResult {
+        val result = adbTcpip.apply(action.enable, action.port)
+        if (result !is ActionResult.Ok || !action.enable) return result
+        val address = wirelessDebug.wifiIpv4()?.let { it + ":" + action.port } ?: return result
+        return if (action.copyAddress && clipboard.write("adb", address)) {
+            ActionResult.Ok(result.detail + " · 已复制 " + address, copied = address)
+        } else {
+            ActionResult.Ok(result.detail + " · 地址 " + address)
+        }
     }
 
     /**

@@ -108,6 +108,15 @@ data class TriggerFeedback(
             else -> "%dm%02ds".format(java.util.Locale.ROOT, ms / 60_000, ms / 1000 % 60)
         }
 
+        /**
+         * 按下那一刻就要先挂出来的一枚：执行要好几秒（adbd 重启、首次配对），
+         * 不先转起来，用户会以为没按上又按一次。结果回来由 [of] 原地替换。
+         */
+        fun starting(action: Action, translate: (String) -> String): TriggerFeedback? = when (action) {
+            is Action.AdbTcpip -> TriggerFeedback(translate(action.label), pending = true)
+            else -> null
+        }
+
         /** 其余动作返回 null，不提示。[translate] 把文案换成界面语言。 */
         fun of(action: Action, result: ActionResult, translate: (String) -> String): TriggerFeedback? =
             when (action) {
@@ -161,6 +170,22 @@ data class TriggerFeedback(
                         action.config.displayName,
                         value = translate(result.reason.message),
                         failed = true,
+                    )
+                }
+                // 地址是要照着敲到电脑上的，等宽单独排；复制了就在右边说一声
+                is Action.AdbTcpip -> when (result) {
+                    is ActionResult.Ok -> TriggerFeedback(
+                        translate(action.label),
+                        value = result.copied ?: translate(result.detail),
+                        succeeded = true,
+                        meta = result.copied?.let { translate("已复制") },
+                    )
+                    // 原因与细节分开排：细节多是系统或 adbd 的原话，放进输出区等宽显示
+                    is ActionResult.Failed -> TriggerFeedback(
+                        translate(action.label),
+                        value = translate(result.reason.message),
+                        failed = true,
+                        output = result.detail.ifBlank { null }?.let(translate),
                     )
                 }
                 // 面板本身就是反馈；只有没开出来时要说清为什么

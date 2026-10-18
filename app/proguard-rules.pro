@@ -16,3 +16,8 @@
 -dontwarn javax.el.**
 -dontwarn javax.annotation.**
 -dontwarn org.bouncycastle.**
+
+# --- ADB 网络调试（libadb-android + spake2）---
+# spake2 走 JNI，原生侧按名字找 Java 方法；libadb 反射调用 Conscrypt 的 exportKeyingMaterial
+-keep class io.github.muntashirakon.** { *; }
+-dontwarn org.conscrypt.**

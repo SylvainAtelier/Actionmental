@@ -82,6 +82,7 @@ import com.actionmental.platform.TriggerHud
 import com.actionmental.platform.sync.SyncBackend
 import com.actionmental.platform.sync.SyncCredentials
 import com.actionmental.platform.WirelessDebugBackend
+import com.actionmental.platform.adb.AdbTcpipBackend
 import com.actionmental.platform.shizuku.ShizukuManager
 import com.actionmental.service.KeepAliveService
 import com.actionmental.service.KeyboardAccessibilityService
@@ -237,6 +238,20 @@ class AppGraph private constructor(context: Context) {
     private val logged = LoggingBackend(shizuku, shellLog, onCall = { counters.shell.incrementAndGet() })
     private val rotationBackend = logged.tagged("rotation")
     private val actionBackend = logged.tagged("action")
+
+    /** 编辑页预览 `adb connect` 那一串要用。 */
+    fun wifiIpv4(): String? = wirelessDebug.wifiIpv4()
+
+    /** ADB 网络调试。配对那一步不经 [logged]：配对码不进 shell 日志。 */
+    val adbTcpip = AdbTcpipBackend(
+        context,
+        shizuku,
+        wirelessDebug,
+        privileged = { actionBackend },
+        onEvent = { warn, message, detail ->
+            if (warn) eventLog.warn("adb", message, detail) else eventLog.debug("adb", message, detail)
+        },
+    )
 
     /**
      * 自愈只读写 secure 表：授过 WRITE_SECURE_SETTINGS 就不必等 Shizuku。
@@ -448,6 +463,9 @@ class AppGraph private constructor(context: Context) {
      */
     private fun runShortcut(shortcut: Shortcut, fromDesktop: Boolean): Job = scope.launch {
         counters.action.incrementAndGet()
+        if (settingsRepository.settings.value.triggerHud) {
+            TriggerFeedback.starting(shortcut.action, ::translate)?.let(triggerHud::show)
+        }
         val result = executor.execute(shortcut.action)
         lastActionResult.value = shortcut.displayLabel to result
         // 应用自己复制的内容（IP、端口）直接入历史：没有 Shizuku 时监听收不到它
@@ -569,6 +587,7 @@ class AppGraph private constructor(context: Context) {
         wirelessDebug = wirelessDebug,
         termux = termux,
         sync = syncBackend,
+        adbTcpip = adbTcpip,
         clipboard = clipboardWriter,
         toggleClipboardHistory = clipPanel::toggle,
         privileged = { actionBackend },

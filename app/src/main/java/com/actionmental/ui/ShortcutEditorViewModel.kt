@@ -75,6 +75,22 @@ class ShortcutEditorViewModel(application: Application) : AndroidViewModel(appli
     suspend fun testSync(config: com.actionmental.core.sync.SyncConfig, password: String): Result<String> =
         graph.syncBackend.test(config, password)
 
+    /** ADB 网络调试的前提。编辑页每次回到前台都重读一遍：用户可能刚去开发者选项里开了无线调试。 */
+    fun adbRootAvailable(): Boolean = graph.adbTcpip.rootAvailable()
+    fun adbShizukuUsable(): Boolean = graph.adbTcpip.shizukuUsable()
+    fun adbWirelessEnabled(): Boolean? = graph.adbTcpip.wirelessEnabled()
+    fun adbPaired(): Boolean = graph.adbTcpip.paired()
+    suspend fun checkAdb(): Result<String> = graph.adbTcpip.check()
+    fun wifiAddress(): String? = graph.wifiIpv4()
+    fun openDeveloperOptions() {
+        runCatching {
+            getApplication<Application>().startActivity(
+                android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
+    }
+
     /** 应用清单：选择器打开时才去要（[ensureApps]），之前没有人为它付钱。 */
     val apps: StateFlow<List<PackageBackend.InstalledApp>> = graph.appCatalog.apps
     val appsLoading: StateFlow<Boolean> = graph.appCatalog.loading

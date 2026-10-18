@@ -244,3 +244,27 @@ Shizuku 是唯一能「向系统注入任意按键」「执行 `cmd window`」�
 - NAS 密码不进动作配置（会进 DataStore / 导出 / 备份），按动作 key 存在 Keystore 加密的 SharedPreferences 里。
 - 权限：`MANAGE_EXTERNAL_STORAGE`（普通文件接口 + 能设修改时间，SAF 两样都做不到）、`INTERNET`；
   只在添加该动作时才引导授予。
+
+## 七、ADB 网络调试（`platform/adb`）
+
+一个动作 `Action.AdbTcpip(port, enable, copyAddress)`，等同电脑上的 `adb tcpip <端口>` / `adb usb`：
+让 adbd 在固定 TCP 端口上监听，远程脚本可以写死 `adb connect IP:端口`（无线调试的端口每次开关都会变）。
+
+改端口要写 `service.adb.tcp.port` 再重启 adbd，**shell 身份两步都做不了**（SELinux 拒绝 setprop 与 `ctl.restart`），
+所以分两条路：
+
+| 条件 | 做法 |
+|---|---|
+| Shizuku 以 root 运行 | `setprop service.adb.tcp.port N && setprop ctl.restart adbd`，经 shell 日志 |
+| 其余 | 本应用自己当 adb 客户端（libadb-android），TLS 连 `127.0.0.1:<无线调试端口>`，发 `tcpip:N` —— adbd 自己改属性、自己重启 |
+
+- **配对**：首次连接被拒时，经 Shizuku 以 shell 身份（有 `MANAGE_DEBUGGING`）反射调用
+  `IAdbManager.enablePairingByQrCode(名称, 配对码)`，名称与配对码由本应用随机生成，在 mDNS
+  `_adb-tls-pairing._tcp` 里按名称找到配对端口后自己配上，再 `disablePairing`。用户不用抄六位码。
+  配对码只在内存里，配对调用不经 `LoggingBackend`。配对后在「已配对的设备」里显示为 Actionmental，之后不再需要 Shizuku。
+- **身份**：RSA 2048 + 用 BouncyCastle ASN.1 拼的最小自签证书（adbd 只比对公钥）。私钥经 Keystore AES-GCM 加密存在
+  `adb_identity` SharedPreferences，不进备份；解不开就重新生成并重新配对。
+- **无线调试端口**：不经特权读属性 → Shizuku `getprop` / `dumpsys adb` → mDNS `_adb-tls-connect._tcp`（只认本机地址）。
+- **成败**看新端口能不能真的连上（轮询 8s），不凭 adbd 的回话；端口已在监听就不重启 adbd。
+- 同一时刻只做一次切换（`Mutex.tryLock`），按下即挂出转圈提示（`TriggerFeedback.starting`），结果原地替换。
+- adbd 重启会断开当时所有 adb 连接，和电脑上执行 `adb tcpip` 一样；Shizuku 的 starter 会把服务端移出 adbd 的 cgroup，按设计不随 adbd 重启被杀（各 ROM 上待实机确认）。

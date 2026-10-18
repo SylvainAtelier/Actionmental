@@ -16,4 +16,10 @@ interface IPrivilegedService {
     String readClipboard(int userId) = 6;
     /** 以 shell 身份写剪贴板：shell 的 WRITE_CLIPBOARD 不受「仅前台」限制。返回空串表示成功。 */
     String writeClipboard(String text, int userId) = 7;
+    /**
+     * 以 shell 身份让系统开一次二维码式的无线调试配对（IAdbManager.enablePairingByQrCode），
+     * 名称与配对码由调用方定。返回空串表示成功，否则是失败原因。
+     */
+    String startAdbPairing(String serviceName, String password) = 8;
+    void stopAdbPairing() = 9;
 }

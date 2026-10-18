@@ -27,6 +27,11 @@ sealed interface ActionResult {
         SYNC_NETWORK("没有可用网络"),
         SYNC_WIFI_ONLY("当前不是 Wi-Fi · 已设置为仅 Wi-Fi 同步"),
         SYNC_RUNNING("已有同步正在进行"),
+        ADB_NEEDS_WIRELESS("需要先开启无线调试 · 本应用经它向 adbd 发请求"),
+        ADB_NOT_PAIRED("本应用还没与 adbd 配对 · 首次执行需要 Shizuku"),
+        ADB_PAIRING_FAILED("与 adbd 配对失败"),
+        ADB_NOT_LISTENING("adbd 没有在新端口上监听"),
+        ADB_BUSY("上一次 ADB 端口切换还没结束"),
         EXECUTION_FAILED("执行失败"),
     }
 

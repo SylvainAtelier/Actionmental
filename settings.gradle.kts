@@ -35,6 +35,11 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // libadb-android 与它的 spake2 只发布在 JitPack；限定只从这里取这两个作者的包，
+        // 其余依赖即使同名也不会被 JitPack 上的同名构件顶替
+        maven("https://jitpack.io") {
+            content { includeGroupByRegex("com\\.github\\.MuntashirAkon(\\..*)?") }
+        }
     }
 }
 

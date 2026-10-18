@@ -86,7 +86,7 @@ import com.actionmental.ui.theme.AmType
 import com.actionmental.ui.theme.amColors
 
 /** 编辑页里同一时刻最多打开一个弹层。 */
-private enum class EditorSheet { KEY, ACTION, APP, URL, SHELL, TERMUX, SYNC }
+private enum class EditorSheet { KEY, ACTION, APP, URL, SHELL, TERMUX, SYNC, ADB_TCPIP }
 
 /**
  * 编辑 + 录制 + 冲突确认（PRD 15）。
@@ -319,6 +319,7 @@ fun ShortcutEditorScreen(
                     ActionCatalog.GROUP_URL -> EditorSheet.URL
                     ActionCatalog.GROUP_TERMUX -> EditorSheet.TERMUX
                     ActionCatalog.GROUP_SYNC -> EditorSheet.SYNC
+                    ActionCatalog.GROUP_ADB_TCPIP -> EditorSheet.ADB_TCPIP
                     else -> EditorSheet.SHELL
                 }
             },
@@ -365,6 +366,13 @@ fun ShortcutEditorScreen(
 
         EditorSheet.SYNC -> FolderSyncSheet(
             current = draft.action as? Action.FolderSync,
+            vm = vm,
+            onConfirm = { action -> vm.setAction(action); sheet = null },
+            onDismiss = { sheet = null },
+        )
+
+        EditorSheet.ADB_TCPIP -> AdbTcpipSheet(
+            current = draft.action as? Action.AdbTcpip,
             vm = vm,
             onConfirm = { action -> vm.setAction(action); sheet = null },
             onDismiss = { sheet = null },

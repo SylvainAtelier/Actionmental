@@ -453,6 +453,24 @@ class ShizukuManager(
         }
     }
 
+    // --- 无线调试配对 ------------------------------------------------------
+    //
+    // 也不经 LoggingBackend：配对码就是这台设备 adbd 的一把钥匙，不能落进 shell 日志。
+
+    /** 特权服务此刻是不是以 root 运行：是的话 adbd 的端口直接 setprop 就改得了，用不着配对。 */
+    val isRoot: Boolean get() = _status.value.usable && _status.value.uid == 0
+
+    suspend fun startAdbPairing(serviceName: String, password: String): Result<Unit> = withContext(Dispatchers.IO) {
+        withService { it.startAdbPairing(serviceName, password) }.mapCatching { error ->
+            if (error.isNotEmpty()) throw IllegalStateException(error)
+        }
+    }
+
+    suspend fun stopAdbPairing() = withContext(Dispatchers.IO) {
+        service?.let { runCatching { it.stopAdbPairing() } }
+        Unit
+    }
+
     override suspend fun getSetting(namespace: String, key: String): Result<String?> =
         exec("settings get " + namespace + " " + key).mapCatching { result ->
             if (!result.ok) throw IllegalStateException("exit " + result.exitCode + " · " + result.output.trim())
