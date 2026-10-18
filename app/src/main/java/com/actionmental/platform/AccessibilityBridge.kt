@@ -216,6 +216,7 @@ class AccessibilityBridge(private val context: Context) {
      * 面板关上、焦点回到原应用后再重新接上。上屏之前得等它接回来，不然字写进的是一条断掉的连接。
      */
     private val _inputLive = MutableStateFlow(false)
+    val inputLive: StateFlow<Boolean> = _inputLive.asStateFlow()
 
     /** 面板打开那一刻有没有输入框。没有的话关上之后也不会有，不必等。 */
     @Volatile

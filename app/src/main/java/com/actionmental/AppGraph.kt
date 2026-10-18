@@ -81,6 +81,7 @@ import com.actionmental.platform.TermuxBackend
 import com.actionmental.platform.TriggerHud
 import com.actionmental.platform.sync.SyncBackend
 import com.actionmental.platform.sync.SyncCredentials
+import com.actionmental.platform.VoiceInputBackend
 import com.actionmental.platform.WirelessDebugBackend
 import com.actionmental.platform.adb.AdbTcpipBackend
 import com.actionmental.platform.shizuku.ShizukuManager
@@ -255,6 +256,9 @@ class AppGraph private constructor(context: Context) {
             if (warn) eventLog.warn("adb", message, detail) else eventLog.debug("adb", message, detail)
         },
     )
+
+    /** 语音输入：点输入法的语音键，或切到语音输入法。 */
+    private val voiceInput = VoiceInputBackend(context, accessibility, scope, privileged = { actionBackend })
 
     /**
      * 自愈只读写 secure 表：授过 WRITE_SECURE_SETTINGS 就不必等 Shizuku。
@@ -591,6 +595,7 @@ class AppGraph private constructor(context: Context) {
         termux = termux,
         sync = syncBackend,
         adbTcpip = adbTcpip,
+        voiceInput = voiceInput,
         clipboard = clipboardWriter,
         toggleClipboardHistory = clipPanel::toggle,
         privileged = { actionBackend },

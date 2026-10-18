@@ -955,6 +955,25 @@ object AppTranslations {
         "已取消" to "Cancelled",
         "冲突" to "conflicts",
         "为防误删已停止" to "stopped to avoid accidental deletion",
+        // 语音输入
+        "唤起 Gboard、微信等输入法的语音" to "Start voice typing in Gboard, WeChat and other keyboards",
+        "先点输入法的语音键，没有就切到语音输入法" to "Taps the keyboard's mic key, or switches to a voice input method",
+        "Gboard、微信、搜狗、讯飞等键盘上的麦克风" to "The mic key on Gboard, WeChat, Sogou, iFlytek and others",
+        "如 Google 语音输入 · 再按一次切回原输入法" to "e.g. Google voice typing · press again to switch back",
+        "没有启用语音输入法 · 如 Google 语音输入" to "No voice input method enabled · e.g. Google voice typing",
+        "切换输入法需要 Android 11 或 Shizuku" to "switching input methods needs Android 11 or Shizuku",
+        "当前没有获得焦点的输入框" to "No text field has focus",
+        "输入法键盘上没找到语音键" to "No mic key found on the keyboard",
+        "输入法键盘没有弹出来" to "The keyboard did not come up",
+        "语音键没有响应点按" to "the mic key did not respond",
+        "没有可切回的输入法" to "no input method to switch back to",
+        "点按输入法语音键" to "Tap keyboard mic key",
+        "切换语音输入法" to "Switch to voice input method",
+        "已点按语音键" to "Tapped the mic key",
+        "语音输入" to "Voice input",
+        "输入法" to "Keyboard",
+        "已切到 " to "Switched to ",
+        "已切回 " to "Switched back to ",
     )
 
     fun translate(text: String, language: UserSettings.Language): String = when (language) {

@@ -4,7 +4,11 @@
 
     accessibilityFlags 里刻意不含 flagReportViewIds —— 那会让系统为每一个窗口事件
     多带一份视图标识过来，而这个应用只看 event.packageName，一个字段都用不上。
-    canRetrieveWindowContent 同样保持 false：从不读界面内容（PRD 26）。
+
+    canRetrieveWindowContent + flagRetrieveInteractiveWindows 只为「语音输入」动作：
+    按下快捷键的那一刻，在输入法窗口里找语音键，再找一次获得焦点的输入框好把键盘叫出来。
+    只读输入法这一个窗口的按键描述，不读应用界面、不读输入框里的文字，也不订阅内容变化事件。
+    canPerformGestures 用来点那一颗语音键：键盘认的是真实的触摸。
 
     flagInputMethodEditor（Android 13+）让系统在输入框获得焦点时给这个服务一条输入连接，
     与用户自己的输入法并存。它只用来做两件事：Shizuku 不在时，把键位映射的目标键
@@ -19,9 +23,10 @@
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagRequestFilterKeyEvents|flagInputMethodEditor"
+    android:accessibilityFlags="flagRequestFilterKeyEvents|flagInputMethodEditor|flagRetrieveInteractiveWindows"
+    android:canPerformGestures="true"
     android:canRequestFilterKeyEvents="true"
-    android:canRetrieveWindowContent="false"
+    android:canRetrieveWindowContent="true"
     android:description="@string/accessibility_service_description"
     android:notificationTimeout="300"
     android:summary="@string/accessibility_service_description" />

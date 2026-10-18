@@ -32,6 +32,10 @@ sealed interface ActionResult {
         ADB_PAIRING_FAILED("与 adbd 配对失败"),
         ADB_NOT_LISTENING("adbd 没有在新端口上监听"),
         ADB_BUSY("上一次 ADB 端口切换还没结束"),
+        NO_INPUT_FIELD("当前没有获得焦点的输入框"),
+        KEYBOARD_HIDDEN("输入法键盘没有弹出来"),
+        VOICE_KEY_NOT_FOUND("输入法键盘上没找到语音键"),
+        NO_VOICE_IME("没有启用语音输入法 · 如 Google 语音输入"),
         EXECUTION_FAILED("执行失败"),
     }
 

@@ -3,7 +3,7 @@
     <string name="app_name">Actionmental</string>
 
     <string name="accessibility_service_label">Actionmental 键盘服务</string>
-    <string name="accessibility_service_description">接收实体键盘按键并触发你配置的快捷键。仅读取按键码与前台应用包名，不记录文本输入，不联网。</string>
+    <string name="accessibility_service_description">接收实体键盘按键并触发你配置的快捷键。仅读取按键码与前台应用包名；「语音输入」动作触发时读取输入法键盘找语音键。不记录文本输入，不联网。</string>
 
     <string name="notification_channel_hardening">后台加固与自愈</string>
     <string name="notification_channel_hardening_description">监听服务被系统关闭并自动恢复时提醒你。只在后台自动发生时发送，你自己点按钮不会有通知。</string>

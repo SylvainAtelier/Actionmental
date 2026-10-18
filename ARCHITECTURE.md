@@ -268,3 +268,18 @@ Shizuku 是唯一能「向系统注入任意按键」「执行 `cmd window`」�
 - **成败**看新端口能不能真的连上（轮询 8s），不凭 adbd 的回话；端口已在监听就不重启 adbd。
 - 同一时刻只做一次切换（`Mutex.tryLock`），按下即挂出转圈提示（`TriggerFeedback.starting`），结果原地替换。
 - adbd 重启会断开当时所有 adb 连接，和电脑上执行 `adb tcpip` 一样；Shizuku 的 starter 会把服务端移出 adbd 的 cgroup，按设计不随 adbd 重启被杀（各 ROM 上待实机确认）。
+
+## 八、语音输入（`core/voice` + `platform/VoiceInputBackend`）
+
+各家输入法的语音没有统一入口，分两条路：
+
+| 模式 | 做法 | 适用 |
+| --- | --- | --- |
+| 点语音键 | 在 `TYPE_INPUT_METHOD` 窗口里按描述 / 文字 / 视图 id 认出语音键，手势点按（退到 `ACTION_CLICK`、Shizuku `input tap`） | Gboard、微信、搜狗、讯飞 |
+| 切语音输入法 | 挑子类型 mode 为 `voice` 的已启用输入法，`SoftKeyboardController.switchToInputMethod`（Android 11+，否则 `ime set`）；再按一次切回 | Google 语音输入 |
+| 自动 | 先点键，键盘弹不出或找不到键时再切 | 默认 |
+
+为此无障碍服务打开了 `canRetrieveWindowContent` / `flagRetrieveInteractiveWindows` / `canPerformGestures`，
+但只在动作触发时读输入法窗口与焦点输入框，不订阅内容事件。接着实体键盘时软键盘默认不弹，
+这时临时 `SHOW_MODE_IGNORE_HARD_KEYBOARD`，输入结束、前台换应用或 10 分钟后交还 `SHOW_MODE_AUTO`。
+认键规则与输入法挑选是纯函数（`VoiceInputRules`），有单测覆盖。

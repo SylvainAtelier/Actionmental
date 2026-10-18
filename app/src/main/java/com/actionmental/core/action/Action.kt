@@ -21,6 +21,7 @@ enum class ActionCategory(val label: String, val code: String) {
     SHELL("Shell", "SHELL"),
     TERMUX("Termux", "TERMUX"),
     SYNC("同步", "SYNC"),
+    INPUT("输入法", "INPUT"),
 }
 
 /**
@@ -247,6 +248,28 @@ sealed interface Action {
     }
 
     /**
+     * 唤起输入法的语音输入。
+     *
+     * Gboard、微信、搜狗这类把语音做在键盘里的，去输入法窗口里找语音键点下去；
+     * Google 语音输入这类专职输入法，切过去就开始听，再按一次切回原来的输入法。
+     * [Mode.AUTO] 先点键、点不到再切。都不需要 Shizuku（Android 10 上切输入法除外）。
+     */
+    @Serializable
+    @SerialName("voice_input")
+    data class VoiceInput(val mode: Mode = Mode.AUTO) : Action {
+        enum class Mode(val label: String, val code: String, val hint: String) {
+            AUTO("语音输入", "VOICE_INPUT", "先点输入法的语音键，没有就切到语音输入法"),
+            KEYBOARD("点按输入法语音键", "VOICE_INPUT_KEY", "Gboard、微信、搜狗、讯飞等键盘上的麦克风"),
+            VOICE_IME("切换语音输入法", "VOICE_INPUT_IME", "如 Google 语音输入 · 再按一次切回原输入法"),
+        }
+
+        override val category get() = ActionCategory.INPUT
+        override val label get() = mode.label
+        override val technical get() = mode.code
+        override val detail get() = mode.hint
+    }
+
+    /**
      * 在 Termux 里执行一条命令（经 Termux 的 RUN_COMMAND 接口）。
      *
      * 和 [Shell] 是两回事：那条走 Shizuku、以 shell 用户身份跑，进不了 Termux 的私有目录；
@@ -358,6 +381,10 @@ object ActionCatalog {
         ),
         Group(GROUP_ADB_TCPIP, "ADB 网络调试", "ADB TCPIP", "固定端口，电脑上 adb connect 直连", direct = true),
         Group("clipboard", "剪贴板", "CLIPBOARD", "历史记录面板", listOf(Action.ClipboardHistory)),
+        Group(
+            "voice_input", "语音输入", "VOICE INPUT", "唤起 Gboard、微信等输入法的语音",
+            Action.VoiceInput.Mode.entries.map { Action.VoiceInput(it) },
+        ),
         Group(GROUP_APP, "启动应用", "LAUNCH APP", "先选应用，再选入口", direct = true),
         Group(GROUP_URL, "打开链接", "OPEN URL", "用默认浏览器打开网址", direct = true),
         Group(GROUP_SYNC, "文件夹同步", "FOLDER SYNC", "本地文件夹与 NAS（SMB）互相同步", direct = true),
