@@ -1067,15 +1067,28 @@ class ClipPanel(
                     val settings = translationSettings()
                     val page = ClipTranslatePage(host.context, full, settings.languages,
                         settings.languages.firstOrNull { it.id == settings.lastTargetId } ?: settings.languages.firstOrNull(),
-                        ClipTranslatePage.Colors(palette.ink, palette.faint, palette.field, palette.line, palette.error,
-                            accent = palette.emphasis, surface = palette.surface),
-                        translate, { label, primary, click -> actionButton(host.context, label, if (primary) Tone.PRIMARY else Tone.TEXT, click) },
+                        ClipTranslatePage.Colors(
+                            ink = palette.ink, mid = palette.mid, muted = palette.faint, surface = palette.surface,
+                            field = palette.field, line = palette.line, error = palette.error, accent = palette.accent,
+                            accentInk = palette.emphasis, ripple = palette.ripple, dark = palette.dark,
+                        ),
+                        translate, { label, style, click ->
+                            actionButton(host.context, label, when (style) {
+                                ClipTranslatePage.ButtonStyle.TEXT -> Tone.TEXT
+                                ClipTranslatePage.ButtonStyle.OUTLINE -> Tone.OUTLINE
+                                ClipTranslatePage.ButtonStyle.PRIMARY -> Tone.PRIMARY
+                            }, click)
+                        },
+                        translate("原文可编辑 · Enter 换行 · Ctrl+Enter 翻译或输入 · Ctrl+R 重新翻译 · Ctrl+T 返回列表 · Esc 先收键盘再返回").replace(PickKeys.TEMPLATE, pick.hint),
                         ::leaveTranslation, { translationPage?.let(::confirmTranslation) }, {
                             translationPage?.let { current ->
                                 if (current.loading) cancelTranslationRequest(current)
                                 else requestTranslation(current, true)
                             }
-                        }, { translationPage?.let { current -> returnTranslationInput(current); loadTranslationHistory(current) } })
+                        }, { translationPage?.let { current -> returnTranslationInput(current); loadTranslationHistory(current) } }, {
+                            close()
+                            onOpenTranslationSettings()
+                        })
                     translationPage = page
                     translationDraft = Triple(entry?.id ?: Long.MIN_VALUE, full, page)
                     page.onSourceChanged = { value ->
@@ -1102,16 +1115,7 @@ class ClipPanel(
                             }
                         }, false)
                     }
-                    page.draft.addView(actionButton(host.context, translate("翻译设置 · 将离开当前输入目标"), Tone.TEXT) {
-                        close()
-                        onOpenTranslationSettings()
-                    })
-                    page.draft.addView(TextView(host.context).apply {
-                        text = translate("原文可编辑 · Enter 换行 · Ctrl+Enter 翻译或输入 · Ctrl+R 重新翻译 · Ctrl+T 返回列表 · Esc 先收键盘再返回").replace(PickKeys.TEMPLATE, pick.hint)
-                        setTextColor(palette.faint)
-                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                        setPadding(0, dp(host.context, 8f).toInt(), 0, 0)
-                    })
+                    page.onLanguage = { language -> selectTranslationTarget(page, language) }
                     showDetail(page.view)
                     page.confirm.requestFocus()
                     if (!translationConfigured()) {
@@ -2399,7 +2403,7 @@ class ClipPanel(
      * 左侧 3dp 的强调条、实心强调色的序号角标。三者任一种在色弱或强光下失效，另外两种仍然看得出。
      * 「淡」一档用 inkMuted 而不是 inkFaint：浅色下 inkFaint 落在白底上几乎看不见。
      */
-    private class Palette(c: AmColors, dark: Boolean) {
+    private class Palette(c: AmColors, val dark: Boolean) {
         val surface = c.surface.toArgb()
         val field = c.surfaceSunken.toArgb()
         val line = c.line.toArgb()
