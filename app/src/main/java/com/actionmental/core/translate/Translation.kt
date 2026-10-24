@@ -66,6 +66,7 @@ data class TranslationHistoryEntry(
 
 enum class TranslationFailure {
     MISSING_TOKEN, INVALID_REQUEST, NETWORK, TIMEOUT, HTTP, AUTH, RATE_LIMIT, PROVIDER, INCOMPLETE, EMPTY_RESPONSE,
+    MODELS_UNSUPPORTED,
 }
 
 /** No raw transport exception, server body or credentials may cross this boundary. */

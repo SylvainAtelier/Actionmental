@@ -20,12 +20,19 @@ import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberUpdatedState
+import com.actionmental.platform.MiniMaxTranslator
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -41,6 +48,7 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -70,6 +78,11 @@ data class TranslationSettingsUiState(
     val connectionFailed: Boolean = false,
     val tokenMessage: String? = null,
     val tokenFailed: Boolean = false,
+    val models: List<String> = emptyList(),
+    val modelsLoading: Boolean = false,
+    val modelsMessage: String? = null,
+    val modelsFailed: Boolean = false,
+    val modelsUnsupported: Boolean = false,
 )
 
 data class TranslationSettingsActions(
@@ -78,6 +91,7 @@ data class TranslationSettingsActions(
     val onModelChange: (String) -> Unit,
     val onLanguagesChange: (List<TranslationLanguage>) -> Unit,
     val onTestConnection: () -> Unit,
+    val onLoadModels: (String?) -> Unit,
 )
 
 /** Stateless persistence boundary: the caller owns encrypted storage, networking and errors. */
@@ -92,6 +106,17 @@ fun TranslationSettings(
     // Intentionally not saveable: never persist a token draft in saved instance state.
     var token by remember { mutableStateOf("") }
     var tokenVisible by remember { mutableStateOf(false) }
+    var modelsMenuOpen by remember { mutableStateOf(false) }
+    val loadModels by rememberUpdatedState(actions.onLoadModels)
+    LaunchedEffect(token) {
+        if (token.isNotBlank()) {
+            delay(700)
+            loadModels(token)
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { loadModels("") }
+    }
     var clearTokenConfirmation by remember { mutableStateOf(false) }
     var model by rememberSaveable(state.settings.model) { mutableStateOf(state.settings.model) }
     var editorOpen by remember { mutableStateOf(false) }
@@ -105,7 +130,7 @@ fun TranslationSettings(
         Column(verticalArrangement = Arrangement.spacedBy(AmSpace.s2)) {
             AmLabel("翻译 · TRANSLATION", modifier = Modifier.semantics { heading() })
             Text(
-                "仅在你主动翻译时，将选定文本与目标语言提示发送至 MiniMax 中国站。连接测试也会访问服务，不会发送剪贴板内容。",
+                "仅在你主动翻译时，将选定文本与目标语言提示发送至 MiniMax 中国站。输入 Token 后会获取模型目录；连接测试也会访问服务，均不发送剪贴板内容。",
                 style = AmType.secondary,
                 color = c.inkMid,
             )
@@ -118,9 +143,13 @@ fun TranslationSettings(
             )
             OutlinedTextField(
                 value = token,
-                onValueChange = { token = it },
+                onValueChange = {
+                    token = it
+                    modelsMenuOpen = false
+                    loadModels("")
+                },
                 label = { Text(if (state.tokenConfigured) "替换 Token" else "API Token") },
-                supportingText = { Text("不会回显已保存的 Token；留空不会修改。") },
+                supportingText = { Text("不会回显已保存的 Token；输入停顿后自动获取模型，不保存草稿；留空不会修改。") },
                 singleLine = true,
                 enabled = !busy,
                 visualTransformation = if (tokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
@@ -154,11 +183,55 @@ fun TranslationSettings(
 
             HorizontalDivider(color = c.line)
             Text("翻译模型", style = AmType.body, color = c.ink)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("MiniMax-M2.7", "MiniMax-M2.5").forEach { preset ->
-                    AmChip(preset, selected = model == preset, enabled = !busy) {
-                        model = preset
-                        actions.onModelChange(preset)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                AmSecondaryButton(
+                    if (state.modelsLoading) "正在获取模型…" else "获取服务器模型列表",
+                    onClick = { loadModels(token.takeIf { it.isNotBlank() }) },
+                    enabled = !busy && !state.modelsLoading && (token.isNotBlank() || state.tokenConfigured),
+                )
+                if (state.models.isNotEmpty()) {
+                    AmSecondaryButton("选择服务器返回的模型", onClick = { modelsMenuOpen = true }, enabled = !busy && !state.modelsLoading)
+                    DropdownMenu(
+                        expanded = modelsMenuOpen,
+                        onDismissRequest = { modelsMenuOpen = false },
+                        modifier = Modifier.heightIn(max = 320.dp),
+                    ) {
+                        state.models.forEach { serverModel ->
+                            DropdownMenuItem(
+                                text = { RawText(serverModel, style = AmType.body) },
+                                modifier = Modifier.semantics { selected = model == serverModel },
+                                onClick = {
+                                    modelsMenuOpen = false
+                                    model = serverModel
+                                    actions.onModelChange(serverModel)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+            if (state.modelsLoading) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = c.ink)
+                    TranslationFeedback("正在获取服务器模型列表…", false)
+                }
+            } else {
+                state.modelsMessage?.let { TranslationFeedback(it, state.modelsFailed) }
+                if (state.modelsMessage == null && token.isBlank() && !state.tokenConfigured) {
+                    Text("请先填写或保存 Token 再获取模型。", style = AmType.secondary, color = c.inkMid)
+                }
+            }
+            if (state.models.isNotEmpty() && token.isNotBlank()) {
+                Text("使用当前填写的 Token 获取，翻译前需保存 Token。", style = AmType.secondary, color = c.inkMid)
+            }
+            if (state.models.isEmpty() && !state.modelsLoading) {
+                Text("官方参考模型 · 未验证当前 Token 权限", style = AmType.secondary, color = c.inkMid)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    MiniMaxTranslator.REFERENCE_MODELS.forEach { preset ->
+                        AmChip(preset, selected = model == preset, enabled = !busy) {
+                            model = preset
+                            actions.onModelChange(preset)
+                        }
                     }
                 }
             }

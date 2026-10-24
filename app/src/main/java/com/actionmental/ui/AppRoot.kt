@@ -194,6 +194,7 @@ fun AppRoot(vm: AppViewModel, settingsRequest: Int = 0) {
                         onModelChange = vm::updateTranslationModel,
                         onLanguagesChange = vm::updateTranslationLanguages,
                         onTestConnection = vm::testTranslationConnection,
+                        onLoadModels = vm::loadTranslationModels,
                     ))
                 }
             }

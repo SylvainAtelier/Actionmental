@@ -202,6 +202,7 @@ class ClipPanel(
     private lateinit var lists: View
     private lateinit var queryView: TextView
     private lateinit var countView: TextView
+    private lateinit var translationSwitch: Button
     private lateinit var emptyView: TextView
 
     /** 长按菜单那一层：开着时盖满整个面板，点它外面只收菜单、不关面板。 */
@@ -218,6 +219,9 @@ class ClipPanel(
     private var editor: Editor? = null
     private var editorRequest = 0L
     private var translationPage: ClipTranslatePage? = null
+    private var translationInputBorrowed = false
+    /** Keep one local draft while switching modes; closing the panel releases it. */
+    private var translationDraft: Triple<Long, String, ClipTranslatePage>? = null
     private var translationJob: Job? = null
     private var translationRequest = 0L
     private var historyRequest = 0L
@@ -309,6 +313,7 @@ class ClipPanel(
     }
 
     private fun close() {
+        translationPage?.let(::returnTranslationInput)
         pipeline.modal = null
         open = false
         generation++
@@ -318,6 +323,7 @@ class ClipPanel(
         translationJob?.cancel()
         translationJob = null
         translationPage = null
+        translationDraft = null
         menuLayer = null
         // 编辑页随窗口一起撤掉，输入法跟着收起；它占过的输入连接要交还
         if (editor != null) {
@@ -358,6 +364,16 @@ class ClipPanel(
         translationPage?.let { page ->
             if (e.repeatCount == 0 && isToggle(e)) { close(); return true }
             val key = TranslationPanelKeys.map(e.keyCode, modifiers, pick)
+            if (page.sourceField.hasFocus() && !page.inserting) {
+                when (key) {
+                    TranslationPanelKey.Escape -> if (e.repeatCount == 0) escapeTranslation()
+                    TranslationPanelKey.BackToList -> if (e.repeatCount == 0) leaveTranslation()
+                    TranslationPanelKey.Confirm -> if (e.repeatCount == 0) confirmTranslation(page)
+                    TranslationPanelKey.Retry -> if (e.repeatCount == 0) requestTranslation(page, true)
+                    else -> return false // The modal bypasses global shortcuts; native editing owns all other keys.
+                }
+                return true
+            }
             if (page.inserting && key != TranslationPanelKey.Escape && key != TranslationPanelKey.BackToList) return true
             when (key) {
                 TranslationPanelKey.Escape -> if (e.repeatCount == 0) escapeTranslation()
@@ -366,11 +382,7 @@ class ClipPanel(
                 TranslationPanelKey.NextTarget -> moveTranslationTarget(page, 1)
                 is TranslationPanelKey.PickTarget -> page.languages.getOrNull(key.index)?.let { selectTranslationTarget(page, it) }
                 TranslationPanelKey.Retry -> if (e.repeatCount == 0) requestTranslation(page, true)
-                TranslationPanelKey.Confirm -> {
-                    val focused = root?.findFocus()
-                    if (focused?.isClickable == true && focused !== page.confirm) return false
-                    if (e.repeatCount == 0) confirmTranslation(page)
-                }
+                TranslationPanelKey.Confirm -> if (e.repeatCount == 0) confirmTranslation(page)
                 null -> return false
             }
             return true
@@ -380,6 +392,10 @@ class ClipPanel(
             return true
         }
         val key = PanelKeys.map(e.keyCode, modifiers, typed, pick) ?: return true
+        if (key == PanelKey.Translate && state.current == null) {
+            if (e.repeatCount == 0) openTranslation(null)
+            return true
+        }
         // 直选键选的是角标上那个数：从第一条完整可见的开始数
         val absolute = if (key is PanelKey.Pick) {
             if (key.index >= badgeCount) return true
@@ -572,6 +588,9 @@ class ClipPanel(
     private fun updateCount() {
         val size = state.entries.size
         countView.text = if (size == 0) "" else (state.selected + 1).toString() + " / " + size + if (hasMore) "+" else ""
+        translationSwitch.isEnabled = true
+        translationSwitch.alpha = 1f
+        translationSwitch.contentDescription = translate(if (state.current != null) "翻译当前选中的记录" else "新建空白翻译")
     }
 
     /** 第 [index] 条在哪个列表的第几行。 */
@@ -1021,13 +1040,13 @@ class ClipPanel(
 
     // --- Translation ----------------------------------------------------------
 
-    private fun openTranslation(entry: ClipEntry) {
+    private fun openTranslation(entry: ClipEntry?) {
         if (editor != null || translationPage != null) return
         dismissMenu()
         val host = root ?: return
         val request = ++editorRequest
         scope.launch {
-            val full = try { store.text(entry.id) } catch (cancelled: CancellationException) { throw cancelled }
+            val full = try { if (entry == null) "" else store.text(entry.id) } catch (cancelled: CancellationException) { throw cancelled }
                 catch (error: Exception) { onError("Read translation source", error); null }
             main.post {
                 if (root !== host || request != editorRequest || editor != null || translationPage != null) return@post
@@ -1036,18 +1055,46 @@ class ClipPanel(
                     return@post
                 }
                 guarded("Open translation detail") {
+                    val cached = translationDraft?.takeIf { it.first == (entry?.id ?: Long.MIN_VALUE) && it.second == full }?.third
+                    if (cached != null) {
+                        translationPage = cached
+                        cached.refresh()
+                        showDetail(cached.view)
+                        cached.confirm.requestFocus()
+                        if (cached.historyExpanded) loadTranslationHistory(cached)
+                        return@guarded
+                    }
                     val settings = translationSettings()
                     val page = ClipTranslatePage(host.context, full, settings.languages,
                         settings.languages.firstOrNull { it.id == settings.lastTargetId } ?: settings.languages.firstOrNull(),
-                        ClipTranslatePage.Colors(palette.ink, palette.faint, palette.field, palette.line, palette.error),
+                        ClipTranslatePage.Colors(palette.ink, palette.faint, palette.field, palette.line, palette.error,
+                            accent = palette.emphasis, surface = palette.surface),
                         translate, { label, primary, click -> actionButton(host.context, label, if (primary) Tone.PRIMARY else Tone.TEXT, click) },
                         ::leaveTranslation, { translationPage?.let(::confirmTranslation) }, {
                             translationPage?.let { current ->
                                 if (current.loading) cancelTranslationRequest(current)
                                 else requestTranslation(current, true)
                             }
-                        }, { translationPage?.let(::loadTranslationHistory) })
+                        }, { translationPage?.let { current -> returnTranslationInput(current); loadTranslationHistory(current) } })
                     translationPage = page
+                    translationDraft = Triple(entry?.id ?: Long.MIN_VALUE, full, page)
+                    page.onSourceChanged = { value ->
+                        if (translationPage === page && !page.inserting && value != page.source) {
+                            cancelTranslation()
+                            page.state.setSource(value)
+                            page.error = null
+                            page.refresh()
+                        }
+                    }
+                    page.onSourceFocus = { focused ->
+                        if (translationPage === page) {
+                            if (focused && !page.inserting) {
+                                translationInputBorrowed = true
+                                setWindowIme(true)
+                                showKeyboard(page.sourceField)
+                            } else returnTranslationInput(page)
+                        }
+                    }
                     page.languagePicker = { anchor ->
                         showPopup(anchor, page.languages.map { language ->
                             MenuEntry(language.name, checked = page.target?.id == language.id) {
@@ -1060,7 +1107,7 @@ class ClipPanel(
                         onOpenTranslationSettings()
                     })
                     page.draft.addView(TextView(host.context).apply {
-                        text = translate("←→ 切换语言 · Ctrl+1…9 选择语言 · Ctrl+R 重新翻译 · Ctrl+T 返回列表 · Esc 返回").replace(PickKeys.TEMPLATE, pick.hint)
+                        text = translate("原文可编辑 · Enter 换行 · Ctrl+Enter 翻译或输入 · Ctrl+R 重新翻译 · Ctrl+T 返回列表 · Esc 先收键盘再返回").replace(PickKeys.TEMPLATE, pick.hint)
                         setTextColor(palette.faint)
                         setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
                         setPadding(0, dp(host.context, 8f).toInt(), 0, 0)
@@ -1106,8 +1153,23 @@ class ClipPanel(
         selectTranslationTarget(page, page.languages[next])
     }
 
+    private fun returnTranslationInput(page: ClipTranslatePage) {
+        if (!translationInputBorrowed) return
+        translationInputBorrowed = false
+        hideKeyboard(page.sourceField)
+        if (page.sourceField.hasFocus()) page.view.requestFocus()
+        page.sourceField.clearFocus()
+        setWindowIme(false)
+        onInputReturned()
+    }
+
     private fun escapeTranslation() {
         val page = translationPage ?: return
+        if (translationInputBorrowed && imeVisible()) {
+            hideKeyboard(page.sourceField)
+            return
+        }
+        returnTranslationInput(page)
         when {
             page.returnFromHistory() -> page.confirm.requestFocus()
             page.loading -> cancelTranslationRequest(page)
@@ -1117,6 +1179,7 @@ class ClipPanel(
 
     private fun leaveTranslation() {
         val page = translationPage ?: return
+        returnTranslationInput(page)
         cancelTranslation()
         historyRequest++
         dismissMenu()
@@ -1131,7 +1194,8 @@ class ClipPanel(
     }
 
     private fun requestTranslation(page: ClipTranslatePage, force: Boolean) {
-        if (translationPage !== page || page.loading || page.inserting) return
+        if (translationPage !== page || page.loading || page.inserting || page.source.isBlank()) return
+        returnTranslationInput(page)
         if (page.source.length > TranslationRequest.MAX_SOURCE) {
             page.error = translate("原文超过 8000 字符，请先编辑缩短后再翻译")
             page.refresh()
@@ -1174,6 +1238,7 @@ class ClipPanel(
         val host = root ?: return
         val lp = params ?: return
         if (page.inserting || page.loading) return
+        returnTranslationInput(page)
         page.inserting = true
         page.error = null
         page.refresh()
@@ -1544,7 +1609,7 @@ class ClipPanel(
     /** 窗口刚改成可接输入法，输入连接下一帧才起来：晚一点再叫键盘。接着实体键盘时系统自己不弹，不用管。 */
     private fun showKeyboard(field: EditText) {
         field.postDelayed({
-            if (editor?.field !== field) return@postDelayed
+            if (editor?.field !== field && (translationPage?.sourceField !== field || !translationInputBorrowed || !field.hasFocus())) return@postDelayed
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) field.windowInsetsController?.show(WindowInsets.Type.ime())
             field.context.getSystemService(InputMethodManager::class.java)?.showSoftInput(field, InputMethodManager.SHOW_IMPLICIT)
         }, KEYBOARD_DELAY_MS)
@@ -2014,12 +2079,25 @@ class ClipPanel(
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             typeface = Typeface.MONOSPACE
         }
+        translationSwitch = actionButton(context, translate("翻译"), Tone.OUTLINE) {
+            openTranslation(state.current)
+        }.apply {
+            tooltipText = "Ctrl+T"
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { marginStart = dp(context, 12f).toInt() }
+        }
+        val titles = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(title.apply { layoutParams = LinearLayout.LayoutParams(-1, -2) })
+            addView(countView)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
         val header = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(context, 4f).toInt(), 0, dp(context, 4f).toInt(), 0)
-            addView(title)
-            addView(countView)
+            addView(titles)
+            addView(translationSwitch)
         }
         queryView = TextView(context).apply {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
@@ -2212,7 +2290,7 @@ class ClipPanel(
             val maxCard = if (split || translationPage != null) MAX_SPLIT_CARD_WIDTH_DP else MAX_CARD_WIDTH_DP
             val side = maxOf(gutter, (availWidth - dp(context, maxCard).toInt()) / 2)
             // 键盘弹出来时高度很金贵（横屏手机上只剩一百多 dp）：上下的留白收到最小，让给编辑框
-            val vertical = if (editor != null && insets[4] > 0) {
+            val vertical = if ((editor != null || translationInputBorrowed) && insets[4] > 0) {
                 dp(context, 12f).toInt()
             } else {
                 maxOf(gutter, (availHeight * 0.08f).toInt())
@@ -2260,7 +2338,7 @@ class ClipPanel(
                     insets.systemWindowInsetRight,
                     bottom,
                     // 旧系统的底边衬里已经含着输入法；比导航栏高出一截就当它弹出来了
-                    if (editor != null && bottom > dp(context, 80f)) bottom else 0,
+                    if ((editor != null || translationInputBorrowed) && bottom > dp(context, 80f)) bottom else 0,
                 )
             }
         }

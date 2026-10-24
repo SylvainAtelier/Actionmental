@@ -259,7 +259,7 @@ object TranslationPanelKeys {
             ctrl && keyCode == KeyEvent.KEYCODE_R -> TranslationPanelKey.Retry
             !ctrl && !alt && keyCode == KeyEvent.KEYCODE_DPAD_LEFT -> TranslationPanelKey.PreviousTarget
             !ctrl && !alt && keyCode == KeyEvent.KEYCODE_DPAD_RIGHT -> TranslationPanelKey.NextTarget
-            keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER -> TranslationPanelKey.Confirm
+            ctrl && !alt && (keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) -> TranslationPanelKey.Confirm
             else -> null
         }
     }
@@ -295,6 +295,15 @@ class ClipTranslationState(source: String, target: TranslationLanguage?) {
         generation++
         loading = false
         inserting = false
+    }
+
+    /** Editing is draft-only and invalidates every result/request for the previous source. */
+    fun setSource(value: String): Boolean {
+        if (source == value) return false
+        cancel()
+        source = value
+        result = null
+        return true
     }
 
     fun selectTarget(language: TranslationLanguage) {

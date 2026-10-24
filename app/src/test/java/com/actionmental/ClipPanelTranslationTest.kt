@@ -36,8 +36,11 @@ class ClipPanelTranslationTest {
         fun key(code: Int, modifiers: Int = 0) = TranslationPanelKeys.map(code, modifiers, PickKeys.CTRL_DIGITS)
         assertEquals(TranslationPanelKey.PreviousTarget, key(KeyEvent.KEYCODE_DPAD_LEFT))
         assertEquals(TranslationPanelKey.NextTarget, key(KeyEvent.KEYCODE_DPAD_RIGHT))
-        assertEquals(TranslationPanelKey.Confirm, key(KeyEvent.KEYCODE_ENTER))
-        assertEquals(TranslationPanelKey.Confirm, key(KeyEvent.KEYCODE_NUMPAD_ENTER))
+        assertNull(key(KeyEvent.KEYCODE_ENTER))
+        assertNull(key(KeyEvent.KEYCODE_NUMPAD_ENTER))
+        assertEquals(TranslationPanelKey.Confirm, key(KeyEvent.KEYCODE_ENTER, KeyCombo.MOD_CTRL))
+        assertEquals(TranslationPanelKey.Confirm, key(KeyEvent.KEYCODE_NUMPAD_ENTER, KeyCombo.MOD_CTRL))
+        assertNull(key(KeyEvent.KEYCODE_ENTER, KeyCombo.MOD_CTRL or KeyCombo.MOD_ALT))
         assertEquals(TranslationPanelKey.Escape, key(KeyEvent.KEYCODE_ESCAPE))
         assertEquals(TranslationPanelKey.Escape, key(KeyEvent.KEYCODE_BACK))
         assertEquals(TranslationPanelKey.BackToList, key(KeyEvent.KEYCODE_T, KeyCombo.MOD_CTRL))
@@ -110,6 +113,59 @@ class ClipPanelTranslationTest {
         assertEquals("Historical translation", state.result)
         assertTrue(state.finishRequest(state.beginRequest(), Result.success("  ")))
         assertEquals("Historical translation", state.result)
+    }
+
+    @Test fun switchingBackToClipboardCancelsRequestButKeepsTheDraft() {
+        val state = ClipTranslationState("Source", chinese)
+        state.restore(history(), english)
+        val token = state.beginRequest()
+        state.cancel()
+        assertFalse(state.loading)
+        assertEquals(history().source, state.source)
+        assertEquals(english, state.target)
+        assertEquals(history().result, state.result)
+        assertFalse(state.finishRequest(token, Result.success("Late response")))
+    }
+
+    @Test fun sourceEditClearsOldTranslationAndRejectsLateRequestWithoutChangingHistory() {
+        val original = history()
+        val state = ClipTranslationState("Source", chinese)
+        state.restore(original, english)
+        val old = state.beginRequest()
+        assertTrue(state.setSource("Edited draft\nSecond line"))
+        assertEquals("Edited draft\nSecond line", state.source)
+        assertEquals(english, state.target)
+        assertNull(state.result)
+        assertFalse(state.loading)
+        assertFalse(state.finishRequest(old, Result.success("Stale result")))
+        assertEquals("Full historical source", original.source)
+        val fresh = state.beginRequest()
+        assertTrue(state.finishRequest(fresh, Result.success("Fresh result")))
+        assertEquals("Fresh result", state.result)
+    }
+
+    @Test fun unchangedSourceDoesNotCancelRequestOrClearMatchingTranslation() {
+        val state = ClipTranslationState("Source", chinese)
+        val token = state.beginRequest()
+        assertFalse(state.setSource("Source"))
+        assertTrue(state.loading)
+        assertTrue(state.finishRequest(token, Result.success("Translation")))
+        assertFalse(state.setSource("Source"))
+        assertEquals("Translation", state.result)
+    }
+
+    @Test fun blankDraftAndEditedDraftSurviveCancellationWithoutStartingRequest() {
+        val state = ClipTranslationState("", chinese)
+        assertEquals("", state.source)
+        assertFalse(state.loading)
+        state.setSource("Draft")
+        state.cancel()
+        assertEquals("Draft", state.source)
+        assertFalse(state.loading)
+        assertNull(state.result)
+        state.setSource("  \n")
+        assertTrue(state.source.isBlank())
+        assertNull(state.result)
     }
 
     @Test fun closedOrReplacedDetailRejectsLateCompletionAndDuplicateCompletion() {

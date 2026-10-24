@@ -857,13 +857,21 @@ internal fun InputSheet(
         shape = RoundedCornerShape(topStart = AmShape.sheet, topEnd = AmShape.sheet),
     ) {
         Column(Modifier.fillMaxWidth().padding(horizontal = AmSpace.screen)) {
-            Text(title, style = AmType.cardTitle, color = c.ink)
-            Text(subtitle, style = AmType.secondary, color = c.inkMid)
-            Spacer(Modifier.height(AmSpace.s3))
-            content()
-            Spacer(Modifier.height(AmSpace.s2))
-            Text(footnote, style = AmType.data, color = c.inkFaint)
-            Spacer(Modifier.height(AmSpace.s3))
+            // Bound the form to the remaining sheet height; keep actions outside scrolling.
+            Column(
+                Modifier
+                    .weight(1f, fill = false)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                Text(title, style = AmType.cardTitle, color = c.ink)
+                Text(subtitle, style = AmType.secondary, color = c.inkMid)
+                Spacer(Modifier.height(AmSpace.s3))
+                content()
+                Spacer(Modifier.height(AmSpace.s2))
+                Text(footnote, style = AmType.data, color = c.inkFaint)
+                Spacer(Modifier.height(AmSpace.s3))
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(AmSpace.s1)) {
                 AmPrimaryButton(
                     confirmText,

@@ -21,6 +21,9 @@ import com.actionmental.core.clip.ClipEntry
 import com.actionmental.core.translate.TranslationLanguage
 import com.actionmental.ui.screens.TranslationSettingsUiState
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import com.actionmental.core.translate.TranslationException
+import com.actionmental.core.translate.TranslationFailure
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Dispatchers
@@ -53,11 +56,43 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         operation.copy(settings = saved.translation)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TranslationSettingsUiState())
 
+    private var translationModelsJob: Job? = null
+    private var translationModelsGeneration = 0L
+
+    /** An empty draft cancels and clears; null uses the encrypted token already saved on this device. */
+    fun loadTranslationModels(tokenDraft: String?) {
+        val generation = ++translationModelsGeneration
+        translationModelsJob?.cancel()
+        translationModelsJob = null
+        translationOperations.update { it.copy(models = emptyList(), modelsLoading = false,
+            modelsMessage = null, modelsFailed = false, modelsUnsupported = false) }
+        if (tokenDraft != null && tokenDraft.isBlank()) return
+        translationOperations.update { it.copy(modelsLoading = true) }
+        translationModelsJob = viewModelScope.launch {
+            try {
+                val models = graph.miniMaxTranslator.listModels(tokenDraft)
+                if (generation != translationModelsGeneration) return@launch
+                translationOperations.update { it.copy(models = models, modelsLoading = false, modelsFailed = false,
+                    modelsMessage = if (models.isEmpty()) "服务器未返回模型，可选择参考模型或手动填写"
+                        else "已获取服务器模型列表；实际权限以连接测试为准") }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (generation != translationModelsGeneration) return@launch
+                val unsupported = (error as? TranslationException)?.kind == TranslationFailure.MODELS_UNSUPPORTED
+                translationOperations.update { it.copy(modelsLoading = false, modelsFailed = !unsupported,
+                    modelsUnsupported = unsupported, modelsMessage = if (unsupported)
+                        "当前接口不支持模型列表，可选择参考模型或手动填写" else translationFailureMessage(error)) }
+            }
+        }
+    }
+
     fun saveTranslationToken(token: String) = changeTranslationToken(token)
     fun clearTranslationToken() = changeTranslationToken(null)
 
     private fun changeTranslationToken(token: String?) {
         if (translationOperations.value.tokenSaving || translationOperations.value.connectionTesting) return
+        loadTranslationModels("")
         translationOperations.update { it.copy(tokenSaving = true, tokenMessage = null, connectionMessage = null) }
         viewModelScope.launch {
             try {
@@ -67,6 +102,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 translationOperations.update { it.copy(tokenConfigured = present, tokenSaving = false,
                     tokenFailed = false, tokenMessage = if (token == null) "Token 已移除" else "Token 已保存") }
+                if (token != null && present) loadTranslationModels(null)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {

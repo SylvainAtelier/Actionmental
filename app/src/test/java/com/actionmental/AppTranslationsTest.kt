@@ -32,7 +32,8 @@ class AppTranslationsTest {
             val message = com.actionmental.ui.translationFailureMessage(com.actionmental.core.translate.TranslationException(kind))
             assertFalse(AppTranslations.translate(message, UserSettings.Language.ENGLISH).contains(Regex("[\\p{IsHan}]")))
         }
-        listOf("翻译", "译文已生成，但历史保存失败", "连接成功", "Token 已保存").forEach {
+        listOf("翻译", "译文已生成，但历史保存失败", "连接成功", "Token 已保存", "剪贴记录", "语言配置", "操作",
+            "翻译历史", "仅保存在本机", "提示", "翻译当前选中的记录", "请先选择一条剪贴记录").forEach {
             assertFalse(AppTranslations.translate(it, UserSettings.Language.ENGLISH).contains(Regex("[\\p{IsHan}]")))
         }
     }
