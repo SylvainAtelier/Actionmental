@@ -26,6 +26,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Space
 import android.widget.TextView
 import androidx.core.graphics.ColorUtils
 import androidx.core.view.ViewCompat
@@ -104,11 +105,30 @@ internal class ClipTranslatePage(
         orientation = LinearLayout.VERTICAL
         setPadding(0, 0, 0, dp(context, 8))
     }
-    val view = ScrollView(context).apply {
+    private val scroll = ScrollView(context).apply {
         isFillViewport = true
         isFocusableInTouchMode = true
         isVerticalScrollBarEnabled = false
         addView(content)
+    }
+
+    /** Pinned bar under the scroll area; holds the actions on narrow windows, where the thumb rests. */
+    private val bottomBar = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        visibility = View.GONE
+        addView(View(context).apply { setBackgroundColor(colors.line) },
+            LinearLayout.LayoutParams(-1, dp(context, 1).coerceAtLeast(1)).apply { bottomMargin = dp(context, 12) })
+    }
+
+    /**
+     * Header and actions stay pinned; only the draft scrolls. A tall source on a short, wide window
+     * (an unfolded foldable in landscape) used to push the only "translate" button out of view.
+     */
+    val view = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        // Taking focus back from the source must land here, not bounce into the first focusable child.
+        isFocusableInTouchMode = true
+        descendantFocusability = ViewGroup.FOCUS_BEFORE_DESCENDANTS
         layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
     }
 
@@ -165,6 +185,12 @@ internal class ClipTranslatePage(
         addView(historyButton, LinearLayout.LayoutParams(-2, -2))
         // Compact text buttons carry 8dp of padding: pulling them out by as much puts the glyphs on the grid edge.
         addView(settingsButton, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = -dp(context, 8) })
+    }
+    /** Wide windows: the actions close the header row, top right, after the quieter text buttons. */
+    private val headerActions = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        visibility = View.GONE
     }
 
     // --- Language bar ----------------------------------------------------------
@@ -308,9 +334,12 @@ internal class ClipTranslatePage(
     private val retryOrCancel = button(tr("重新翻译"), ButtonStyle.OUTLINE, onRetryOrCancel)
     private val actions = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
-        addView(retryOrCancel, LinearLayout.LayoutParams(0, -2, 1f))
-        addView(confirm, LinearLayout.LayoutParams(0, -2, 2f).apply { marginStart = dp(context, 8) })
+        gravity = Gravity.CENTER_VERTICAL
+        addView(retryOrCancel)
+        addView(confirm)
     }
+    /** Where the actions sit right now; null before the first fit. */
+    private var actionsInHeader: Boolean? = null
     private val keys = TextView(context).apply {
         text = keyHint
         setTextColor(colors.muted)
@@ -367,8 +396,11 @@ internal class ClipTranslatePage(
     init {
         panes.addView(sourcePane)
         panes.addView(resultPane)
-        content.addView(header, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+        header.addView(headerActions, LinearLayout.LayoutParams(-2, -2))
         content.addView(workspace, LinearLayout.LayoutParams(-1, -2))
+        view.addView(header, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+        view.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        view.addView(bottomBar, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
         if (useChips) languages.forEach { chips.addView(chip(context, it)) }
         ViewCompat.setAccessibilityPaneTitle(view, tr("翻译"))
         fitWorkspace()
@@ -425,23 +457,47 @@ internal class ClipTranslatePage(
             val lines = if (stacked) 6 else 12
             if (sourceField.maxLines != lines) sourceField.maxLines = lines
 
-            // Side by side the footer mirrors the panes: hints under the source, actions under the result.
+            // Key hints scroll with the draft; side by side they sit under the source column only.
             footer.removeAllViews()
-            if (stacked) {
-                footer.orientation = LinearLayout.VERTICAL
-                footer.addView(actions, LinearLayout.LayoutParams(-1, -2))
-                footer.addView(footerLead, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
-            } else {
-                footer.orientation = LinearLayout.HORIZONTAL
-                footer.gravity = Gravity.CENTER_VERTICAL
-                footer.addView(footerLead, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = gap })
-                footer.addView(actions, LinearLayout.LayoutParams(0, -2, 1f))
-            }
+            footer.orientation = LinearLayout.HORIZONTAL
+            footer.addView(footerLead, LinearLayout.LayoutParams(0, -2, 1f))
+            if (!stacked) footer.addView(Space(view.context), LinearLayout.LayoutParams(0, 0, 1f).apply { marginStart = gap })
+            placeActions(inHeader = !narrow)
             fitHeader()
         }
         val hardware = hasHardwareKeyboard()
         val keysVisibility = if (hardware && keyHint.isNotBlank()) View.VISIBLE else View.GONE
         if (keys.visibility != keysVisibility) keys.visibility = keysVisibility
+    }
+
+    /**
+     * Wide windows put the actions top right, in the pinned header: in reach of the eye that just
+     * read the result, and never below the fold. Narrow windows pin them to the bottom bar, in the
+     * thumb zone, with the primary button taking two thirds of the width.
+     */
+    private fun placeActions(inHeader: Boolean) {
+        if (actionsInHeader != inHeader) {
+            actionsInHeader = inHeader
+            (actions.parent as? ViewGroup)?.removeView(actions)
+            if (inHeader) {
+                retryOrCancel.layoutParams = LinearLayout.LayoutParams(-2, -2)
+                confirm.layoutParams = LinearLayout.LayoutParams(-2, -2)
+                confirm.minWidth = dp(112)
+                confirm.minimumWidth = confirm.minWidth
+                headerActions.addView(actions, LinearLayout.LayoutParams(-2, -2))
+            } else {
+                retryOrCancel.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                confirm.layoutParams = LinearLayout.LayoutParams(0, -2, 2f)
+                bottomBar.addView(actions, LinearLayout.LayoutParams(-1, -2))
+            }
+            // The settings glyph meets the grid edge only when nothing follows it.
+            (settingsButton.layoutParams as LinearLayout.LayoutParams).marginEnd = if (inHeader) dp(4) else -dp(8)
+            settingsButton.requestLayout()
+            refresh()
+        }
+        headerActions.visibility = if (inHeader) View.VISIBLE else View.GONE
+        // On a phone the history list replaces the draft; there is nothing to act on.
+        bottomBar.visibility = if (!inHeader && !historyExpanded) View.VISIBLE else View.GONE
     }
 
     private fun fitHeader() {
