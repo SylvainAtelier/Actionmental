@@ -79,7 +79,18 @@ fun KeyMonitorScreen(
     // 正文够宽（横屏手机、平板）时左右分栏：左边组合键与原始数据，右边事件流。
     // 竖着叠在横屏手机上，事件流会被挤到只剩一两行。
     BoxWithConstraints(modifier.fillMaxSize()) {
-        val split = maxWidth >= 720.dp
+        val split = maxWidth.value >= 720f * LocalDensity.current.fontScale.coerceAtLeast(1f)
+        val compactListState = rememberLazyListState()
+        LaunchedEffect(traces.lastOrNull()?.id, split) {
+            if (!split && traces.isNotEmpty() && !compactListState.isScrollInProgress) {
+                val layout = compactListState.layoutInfo
+                val lastVisible = layout.visibleItemsInfo.lastOrNull()?.index ?: -1
+                // Follow only readers already near the event tail; never jump past raw data.
+                if (lastVisible >= 2 && lastVisible >= layout.totalItemsCount - 2) {
+                    compactListState.animateScrollToItem(traces.size + 2)
+                }
+            }
+        }
         Column(
             Modifier
                 .fillMaxSize()
@@ -148,7 +159,7 @@ fun KeyMonitorScreen(
                     }
                     Spacer(Modifier.height(4.dp))
                     val listState = rememberLazyListState()
-                    LaunchedEffect(traces.size) {
+                    LaunchedEffect(traces.lastOrNull()?.id) {
                         if (traces.isNotEmpty()) listState.animateScrollToItem(traces.lastIndex)
                     }
                     LazyColumn(
@@ -176,8 +187,21 @@ fun KeyMonitorScreen(
                     eventStream(Modifier.weight(1f).fillMaxHeight())
                 }
             } else {
-                comboAndRaw()
-                eventStream(Modifier.fillMaxWidth().weight(1f))
+                // Keep raw data and events on one scroll path, even in short windows.
+                LazyColumn(
+                    state = compactListState,
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(AmSpace.s2),
+                ) {
+                    item(key = "snapshot") {
+                        Column(verticalArrangement = Arrangement.spacedBy(AmSpace.s2)) { comboAndRaw() }
+                    }
+                    item(key = "events-heading") { AmLabel("事件流 · EVENT STREAM") }
+                    items(traces, key = { it.id }) { trace -> TraceRow(trace) }
+                    item(key = "privacy") {
+                        Text("缓冲 200 条 · 仅内存 · 不记录文本输入", style = AmType.data, color = c.inkFaint)
+                    }
+                }
             }
         }
     }
@@ -196,26 +220,23 @@ private fun TraceRow(trace: KeyTrace) {
         KeyTrace.Kind.UNBOUND -> c.inkFaint
         KeyTrace.Kind.ERROR -> c.accent
     }
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 1.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            traceFormatter.format(trace.timestampMs),
-            style = AmType.data,
-            color = c.inkFaint,
-        )
-        Spacer(Modifier.width(8.dp))
-        Box(
-            Modifier
-                .background(tone.copy(alpha = 0.14f), RoundedCornerShape(AmShape.key - 2.dp))
-                .padding(horizontal = 5.dp, vertical = 1.dp)
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        androidx.compose.foundation.layout.FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Text(trace.kind.name, style = AmType.label, color = tone)
+            Text(traceFormatter.format(trace.timestampMs), style = AmType.data, color = c.inkFaint)
+            Box(
+                Modifier
+                    .background(tone.copy(alpha = 0.14f), RoundedCornerShape(AmShape.key - 2.dp))
+                    .padding(horizontal = 5.dp, vertical = 1.dp)
+            ) {
+                Text(trace.kind.name, style = AmType.label, color = tone)
+            }
         }
-        Spacer(Modifier.width(8.dp))
         Text(trace.text, style = AmType.data, color = c.ink)
-        Spacer(Modifier.weight(1f))
-        Text(trace.detail, style = AmType.data, color = c.inkFaint)
+        if (trace.detail.isNotBlank()) {
+            Text(trace.detail, style = AmType.data, color = c.inkFaint)
+        }
     }
 }

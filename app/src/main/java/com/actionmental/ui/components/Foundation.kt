@@ -28,7 +28,6 @@ import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.actionmental.ui.theme.AmShape
@@ -80,6 +79,7 @@ fun AmCard(
             .clip(shape)
             .background(if (alert) c.accentBg else c.surface)
             .border(if (selected) 2.dp else 1.dp, borderColor, shape)
+            .then(if (onClick != null) Modifier.amFocusRing(shape) else Modifier)
             .then(click)
             .padding(padding),
         content = content,

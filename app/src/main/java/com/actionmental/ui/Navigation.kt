@@ -41,6 +41,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.actionmental.R
 import com.actionmental.core.status.SystemStatus
 import com.actionmental.ui.components.StatusDot
+import com.actionmental.ui.components.amFocusRing
 import com.actionmental.ui.theme.AmShape
 import com.actionmental.ui.theme.AmSpace
 import com.actionmental.ui.theme.AmType
@@ -144,6 +145,7 @@ private fun SidebarItem(destination: Destination, selected: Boolean, badge: Stri
             .defaultMinSize(minHeight = AmSpace.rowMin)
             .clip(shape)
             .background(face)
+            .amFocusRing(RoundedCornerShape(AmShape.card))
             .selectable(selected = selected, role = Role.Tab, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -159,8 +161,6 @@ private fun SidebarItem(destination: Destination, selected: Boolean, badge: Stri
             destination.title,
             style = AmType.body,
             color = if (selected) c.ink else c.inkMid,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
         if (badge != null) {
@@ -176,6 +176,7 @@ private fun RailItem(destination: Destination, selected: Boolean, onClick: () ->
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(AmShape.card))
+            .amFocusRing(RoundedCornerShape(AmShape.card))
             .selectable(selected = selected, role = Role.Tab, onClick = onClick)
             .padding(vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -256,6 +257,7 @@ fun NavigationBottomBar(current: Destination, onSelect: (Destination) -> Unit) {
                         .weight(1f)
                         .defaultMinSize(minHeight = 56.dp)
                         .clip(RoundedCornerShape(AmShape.card))
+                        .amFocusRing(RoundedCornerShape(AmShape.card))
                         .selectable(selected = selected, role = Role.Tab, onClick = { onSelect(destination) })
                         .padding(vertical = 4.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -267,7 +269,8 @@ fun NavigationBottomBar(current: Destination, onSelect: (Destination) -> Unit) {
                         destination.title,
                         style = AmType.label,
                         color = if (selected) c.ink else c.inkMuted,
-                        maxLines = 1,
+                        maxLines = 2,
+                        textAlign = TextAlign.Center,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }

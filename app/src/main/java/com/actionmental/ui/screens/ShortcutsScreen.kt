@@ -24,7 +24,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.IconButton
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.material.icons.outlined.AddToHomeScreen
+import androidx.compose.material.icons.automirrored.outlined.AddToHomeScreen
 import androidx.compose.foundation.layout.size
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -137,64 +137,62 @@ fun ShortcutListScreen(
         matchesFilter && matchesQuery
     }
 
-    Column(modifier.fillMaxSize()) {
-        Column(Modifier.padding(horizontal = AmSpace.screen, vertical = AmSpace.s3)) {
-            ScreenTitle("快捷键", "SHORTCUTS · " + all.size) {
-                AmPrimaryButton("录制", { onOpenEditor(null) }, icon = Icons.Filled.Add)
-            }
-            Spacer(Modifier.height(AmSpace.s2))
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                singleLine = true,
-                label = { Text("搜索组合键或动作…") },
-                placeholder = { Text("搜索组合键或动作…", style = AmType.secondary, color = c.inkFaint) },
-                leadingIcon = { Icon(Icons.Filled.Search, null, tint = c.inkFaint) },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(AmShape.key + 2.dp),
-            )
-            Spacer(Modifier.height(AmSpace.s2))
-            Row(
-                Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                AmChip("全部 " + all.size, filter == null) { filter = null }
-                ActionCategory.entries.forEach { category ->
-                    val count = all.count { it.action.category == category }
-                    if (count > 0) {
-                        AmChip(category.label + " " + count, filter == category) { filter = category }
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(AmSpace.screen),
+        verticalArrangement = Arrangement.spacedBy(AmSpace.s1),
+    ) {
+        item(key = "controls") {
+            Column {
+                ScreenTitle("快捷键", "SHORTCUTS · " + all.size) {
+                    AmPrimaryButton("录制", { onOpenEditor(null) }, icon = Icons.Filled.Add)
+                }
+                Spacer(Modifier.height(AmSpace.s2))
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    label = { Text("搜索组合键或动作…") },
+                    leadingIcon = { Icon(Icons.Filled.Search, null, tint = c.inkFaint) },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(AmShape.key + 2.dp),
+                )
+                Spacer(Modifier.height(AmSpace.s2))
+                FlowRow(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    AmChip("全部 " + all.size, filter == null) { filter = null }
+                    ActionCategory.entries.forEach { category ->
+                        val count = all.count { it.action.category == category }
+                        if (count > 0) {
+                            AmChip(category.label + " " + count, filter == category) { filter = category }
+                        }
                     }
                 }
             }
         }
-
-        LazyColumn(
-            contentPadding = PaddingValues(
-                start = AmSpace.screen, end = AmSpace.screen, bottom = AmSpace.screen,
-            ),
-            verticalArrangement = Arrangement.spacedBy(AmSpace.s1),
-        ) {
-            items(visible, key = { it.id }) { shortcut ->
-                ShortcutRow(
-                    shortcut = shortcut,
-                    selected = shortcut.id == selectedId,
-                    onDesktop = shortcut.id in pinned,
-                    onClick = { onOpenEditor(shortcut.id) },
-                    onToggle = { vm.setShortcutEnabled(shortcut.id, it) },
-                    onDuplicate = { vm.duplicateShortcut(shortcut.id) },
-                    onPinDesktop = if (vm.desktopSupported) ({ vm.pinToDesktop(shortcut.id) }) else null,
-                    onDelete = { vm.deleteShortcut(shortcut.id) },
+        items(visible, key = { it.id }) { shortcut ->
+            ShortcutRow(
+                shortcut = shortcut,
+                selected = shortcut.id == selectedId,
+                onDesktop = shortcut.id in pinned,
+                onClick = { onOpenEditor(shortcut.id) },
+                onToggle = { vm.setShortcutEnabled(shortcut.id, it) },
+                onDuplicate = { vm.duplicateShortcut(shortcut.id) },
+                onPinDesktop = if (vm.desktopSupported) ({ vm.pinToDesktop(shortcut.id) }) else null,
+                onDelete = { vm.deleteShortcut(shortcut.id) },
+            )
+        }
+        if (visible.isEmpty()) {
+            item {
+                Text(
+                    if (all.isEmpty()) "还没有快捷键。点右上角开始录制。" else "没有匹配的快捷键。",
+                    style = AmType.secondary,
+                    color = c.inkFaint,
+                    modifier = Modifier.padding(vertical = AmSpace.s4),
                 )
-            }
-            if (visible.isEmpty()) {
-                item {
-                    Text(
-                        if (all.isEmpty()) "还没有快捷键。点右上角开始录制。" else "没有匹配的快捷键。",
-                        style = AmType.secondary,
-                        color = c.inkFaint,
-                        modifier = Modifier.padding(vertical = AmSpace.s4),
-                    )
-                }
             }
         }
     }
@@ -262,7 +260,7 @@ private fun ShortcutRow(
                     ) {
                         if (onDesktop) {
                             Icon(
-                                Icons.Outlined.AddToHomeScreen,
+                                Icons.AutoMirrored.Outlined.AddToHomeScreen,
                                 contentDescription = localize("已在桌面"),
                                 tint = c.inkMuted,
                                 modifier = Modifier.size(16.dp),

@@ -14,7 +14,7 @@ object AdaptiveLayout {
 
     fun useTwoPanes(windowWidth: Float, fontScale: Float): Boolean {
         val available = windowWidth - navigationWidth(windowWidth) - 1f
-        return available >= MIN_PANE_WIDTH * 2 * fontScale.coerceAtLeast(1f)
+        return windowWidth >= 840f && available >= MIN_PANE_WIDTH * 2 * fontScale.coerceAtLeast(1f)
     }
 
     fun statusColumns(contentWidth: Float, fontScale: Float): Int {

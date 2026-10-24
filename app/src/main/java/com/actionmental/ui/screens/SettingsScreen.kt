@@ -51,6 +51,7 @@ import com.actionmental.ui.theme.AmSpace
 import com.actionmental.ui.theme.AmType
 import com.actionmental.ui.theme.DarkAmColors
 import com.actionmental.ui.theme.amColors
+import com.actionmental.ui.components.amFocusRing
 import com.actionmental.ui.theme.amColorsFor
 import com.actionmental.ui.i18n.localize
 
@@ -173,7 +174,7 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
         AmCard(Modifier.fillMaxWidth()) {
             AmLabel("语言 · LANGUAGE")
             Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 AmChip("中文", settings.language == UserSettings.Language.CHINESE) {
                     vm.updateSettings { it.copy(language = UserSettings.Language.CHINESE) }
                 }
@@ -186,7 +187,7 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
         AmCard(Modifier.fillMaxWidth()) {
             AmLabel("外观 · APPEARANCE")
             Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 UserSettings.Theme.entries.forEach { theme ->
                     AmChip(theme.label, settings.theme == theme) {
                         vm.updateSettings { it.copy(theme = theme) }
@@ -381,12 +382,13 @@ private fun AccentPicker(selected: UserSettings.Accent, onSelect: (UserSettings.
             Box(
                 modifier = Modifier
                     .size(48.dp)
+                    .clip(CircleShape)
+                    .amFocusRing(CircleShape)
+                    .selectable(selected = on, role = Role.RadioButton) { onSelect(accent) }
+                    .semantics { contentDescription = label }
                     .border(2.dp, if (on) c.ink else Color.Transparent, CircleShape)
                     .padding(6.dp)
-                    .background(amColorsFor(dark, accent).accent, CircleShape)
-                    .clip(CircleShape)
-                    .selectable(selected = on, role = Role.RadioButton) { onSelect(accent) }
-                    .semantics { contentDescription = label },
+                    .background(amColorsFor(dark, accent).accent, CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
                 if (on) Box(Modifier.size(10.dp).background(Color.White, CircleShape))

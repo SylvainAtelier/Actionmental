@@ -357,13 +357,21 @@ private fun PausedBanner(reason: AppGraph.PauseReason, onOpenSettings: () -> Uni
 @Composable
 fun ScreenTitle(title: String, technical: String, trailing: (@Composable () -> Unit)? = null) {
     val c = amColors
-    Row(
-        Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f).padding(end = AmSpace.s1)) {
-            Text(title, style = AmType.pageTitle, color = c.ink, modifier = Modifier.semantics { heading() })
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val stacked = trailing != null && maxWidth.value < 320f * LocalDensity.current.fontScale.coerceAtLeast(1f)
+        if (stacked) {
+            Column(verticalArrangement = Arrangement.spacedBy(AmSpace.s1)) {
+                Text(title, style = AmType.pageTitle, color = c.ink, modifier = Modifier.semantics { heading() })
+                trailing.invoke()
+            }
+        } else {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    title, style = AmType.pageTitle, color = c.ink,
+                    modifier = Modifier.weight(1f).padding(end = AmSpace.s1).semantics { heading() },
+                )
+                trailing?.invoke()
+            }
         }
-        trailing?.invoke()
     }
 }

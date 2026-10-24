@@ -41,7 +41,6 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import com.actionmental.ui.i18n.localize
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.actionmental.ui.theme.AmShape
@@ -99,6 +98,7 @@ fun AmPrimaryButton(
             )
             .clip(shape)
             .background(face)
+            .amFocusRing(shape, ink)
             .clickable(
                 interactionSource = source,
                 indication = LocalIndication.current,
@@ -131,6 +131,7 @@ fun AmSecondaryButton(
             .clip(shape)
             .background(c.surface)
             .border(BorderStroke(1.dp, if (accent && enabled) c.accentLine else c.line), shape)
+            .amFocusRing(shape)
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .padding(horizontal = AmSpace.s3, vertical = 12.dp),
         contentAlignment = Alignment.Center,
@@ -175,6 +176,7 @@ fun AmChip(
             .clip(shape)
             .background(face)
             .border(1.dp, if (selected && enabled) c.ink else c.line, shape)
+            .amFocusRing(shape, if (selected) c.bgScreen else c.ink)
             .selectable(selected = selected, enabled = enabled, role = Role.Tab, onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 8.dp),
         contentAlignment = Alignment.CenterStart,
@@ -260,6 +262,7 @@ fun AmSegmented(
                     .clip(shape)
                     .background(if (selected) c.surface else Color.Transparent)
                     .border(1.dp, if (selected) c.line else Color.Transparent, shape)
+                    .amFocusRing(shape)
                     .selectable(selected = selected, role = Role.Tab) { onSelect(index) }
                     .padding(horizontal = 6.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center,
