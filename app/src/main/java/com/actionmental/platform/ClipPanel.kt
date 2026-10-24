@@ -137,6 +137,8 @@ class ClipPanel(
     private val onClearTranslations: suspend () -> Unit = {},
     private val onTranslationTarget: (String) -> Unit = {},
     private val onInsertTranslation: suspend (String) -> Boolean = { false },
+    /** Writes the result to the clipboard; true only when it landed. */
+    private val onCopyTranslation: suspend (String) -> Boolean = { false },
     private val translationConfigured: () -> Boolean = { true },
     private val onOpenTranslationSettings: () -> Unit = {},
 ) {
@@ -221,7 +223,7 @@ class ClipPanel(
     private var translationPage: ClipTranslatePage? = null
     private var translationInputBorrowed = false
     /** Keep one local draft while switching modes; closing the panel releases it. */
-    private var translationDraft: Triple<Long, String, ClipTranslatePage>? = null
+    private var translationDraft: ClipTranslatePage? = null
     private var translationJob: Job? = null
     private var translationRequest = 0L
     private var historyRequest = 0L
@@ -393,7 +395,7 @@ class ClipPanel(
         }
         val key = PanelKeys.map(e.keyCode, modifiers, typed, pick) ?: return true
         if (key == PanelKey.Translate && state.current == null) {
-            if (e.repeatCount == 0) openTranslation(null)
+            if (e.repeatCount == 0) openTranslation()
             return true
         }
         // 直选键选的是角标上那个数：从第一条完整可见的开始数
@@ -448,7 +450,7 @@ class ClipPanel(
             is PanelEffect.TogglePin -> edit { store.setPinned(effect.entry.id, !effect.entry.pinned) }
             is PanelEffect.Delete -> edit { store.delete(effect.entry.id) }
             is PanelEffect.Edit -> openEditor(effect.entry)
-            is PanelEffect.Translate -> openTranslation(effect.entry)
+            is PanelEffect.Translate -> openTranslation()
         }
     }
 
@@ -1040,89 +1042,78 @@ class ClipPanel(
 
     // --- Translation ----------------------------------------------------------
 
-    private fun openTranslation(entry: ClipEntry?) {
+    /** The source always starts empty: the user types or pastes what to translate, never a clip picked for them. */
+    private fun openTranslation() {
         if (editor != null || translationPage != null) return
         dismissMenu()
         val host = root ?: return
-        val request = ++editorRequest
-        scope.launch {
-            val full = try { if (entry == null) "" else store.text(entry.id) } catch (cancelled: CancellationException) { throw cancelled }
-                catch (error: Exception) { onError("Read translation source", error); null }
-            main.post {
-                if (root !== host || request != editorRequest || editor != null || translationPage != null) return@post
-                if (full == null) {
-                    Toast.makeText(host.context, translate("无法读取完整内容，请重新打开后重试"), Toast.LENGTH_LONG).show()
-                    return@post
+        guarded("Open translation detail") {
+            val cached = translationDraft
+            if (cached != null) {
+                translationPage = cached
+                cached.refresh()
+                showDetail(cached.view)
+                cached.confirm.requestFocus()
+                if (cached.historyExpanded) loadTranslationHistory(cached)
+                return@guarded
+            }
+            val settings = translationSettings()
+            val page = ClipTranslatePage(host.context, "", settings.languages,
+                settings.languages.firstOrNull { it.id == settings.lastTargetId } ?: settings.languages.firstOrNull(),
+                ClipTranslatePage.Colors(
+                    ink = palette.ink, mid = palette.mid, muted = palette.faint, surface = palette.surface,
+                    field = palette.field, line = palette.line, error = palette.error, accent = palette.accent,
+                    accentInk = palette.emphasis, ripple = palette.ripple, dark = palette.dark,
+                ),
+                translate, { label, style, click ->
+                    actionButton(host.context, label, when (style) {
+                        ClipTranslatePage.ButtonStyle.TEXT -> Tone.TEXT
+                        ClipTranslatePage.ButtonStyle.OUTLINE -> Tone.OUTLINE
+                        ClipTranslatePage.ButtonStyle.PRIMARY -> Tone.PRIMARY
+                    }, click)
+                },
+                translate("原文可编辑 · Enter 换行 · Ctrl+Enter 翻译或输入 · Ctrl+R 重新翻译 · Ctrl+T 返回列表 · Esc 先收键盘再返回").replace(PickKeys.TEMPLATE, pick.hint),
+                ::leaveTranslation, { translationPage?.let(::confirmTranslation) }, {
+                    translationPage?.let { current ->
+                        if (current.loading) cancelTranslationRequest(current)
+                        else requestTranslation(current, true)
+                    }
+                }, { translationPage?.let(::copyTranslation) }, { translationPage?.let { current -> returnTranslationInput(current); loadTranslationHistory(current) } }, {
+                    close()
+                    onOpenTranslationSettings()
+                })
+            translationPage = page
+            translationDraft = page
+            page.onSourceChanged = { value ->
+                if (translationPage === page && !page.inserting && value != page.source) {
+                    cancelTranslation()
+                    page.state.setSource(value)
+                    page.error = null
+                    page.refresh()
                 }
-                guarded("Open translation detail") {
-                    val cached = translationDraft?.takeIf { it.first == (entry?.id ?: Long.MIN_VALUE) && it.second == full }?.third
-                    if (cached != null) {
-                        translationPage = cached
-                        cached.refresh()
-                        showDetail(cached.view)
-                        cached.confirm.requestFocus()
-                        if (cached.historyExpanded) loadTranslationHistory(cached)
-                        return@guarded
-                    }
-                    val settings = translationSettings()
-                    val page = ClipTranslatePage(host.context, full, settings.languages,
-                        settings.languages.firstOrNull { it.id == settings.lastTargetId } ?: settings.languages.firstOrNull(),
-                        ClipTranslatePage.Colors(
-                            ink = palette.ink, mid = palette.mid, muted = palette.faint, surface = palette.surface,
-                            field = palette.field, line = palette.line, error = palette.error, accent = palette.accent,
-                            accentInk = palette.emphasis, ripple = palette.ripple, dark = palette.dark,
-                        ),
-                        translate, { label, style, click ->
-                            actionButton(host.context, label, when (style) {
-                                ClipTranslatePage.ButtonStyle.TEXT -> Tone.TEXT
-                                ClipTranslatePage.ButtonStyle.OUTLINE -> Tone.OUTLINE
-                                ClipTranslatePage.ButtonStyle.PRIMARY -> Tone.PRIMARY
-                            }, click)
-                        },
-                        translate("原文可编辑 · Enter 换行 · Ctrl+Enter 翻译或输入 · Ctrl+R 重新翻译 · Ctrl+T 返回列表 · Esc 先收键盘再返回").replace(PickKeys.TEMPLATE, pick.hint),
-                        ::leaveTranslation, { translationPage?.let(::confirmTranslation) }, {
-                            translationPage?.let { current ->
-                                if (current.loading) cancelTranslationRequest(current)
-                                else requestTranslation(current, true)
-                            }
-                        }, { translationPage?.let { current -> returnTranslationInput(current); loadTranslationHistory(current) } }, {
-                            close()
-                            onOpenTranslationSettings()
-                        })
-                    translationPage = page
-                    translationDraft = Triple(entry?.id ?: Long.MIN_VALUE, full, page)
-                    page.onSourceChanged = { value ->
-                        if (translationPage === page && !page.inserting && value != page.source) {
-                            cancelTranslation()
-                            page.state.setSource(value)
-                            page.error = null
-                            page.refresh()
-                        }
-                    }
-                    page.onSourceFocus = { focused ->
-                        if (translationPage === page) {
-                            if (focused && !page.inserting) {
-                                translationInputBorrowed = true
-                                setWindowIme(true)
-                                showKeyboard(page.sourceField)
-                            } else returnTranslationInput(page)
-                        }
-                    }
-                    page.languagePicker = { anchor ->
-                        showPopup(anchor, page.languages.map { language ->
-                            MenuEntry(language.name, checked = page.target?.id == language.id) {
-                                selectTranslationTarget(page, language)
-                            }
-                        }, false)
-                    }
-                    page.onLanguage = { language -> selectTranslationTarget(page, language) }
-                    showDetail(page.view)
-                    page.confirm.requestFocus()
-                    if (!translationConfigured()) {
-                        page.error = translate("尚未配置翻译密钥，请前往翻译设置；打开设置将离开当前输入目标")
-                        page.refresh()
-                    }
+            }
+            page.onSourceFocus = { focused ->
+                if (translationPage === page) {
+                    if (focused && !page.inserting) {
+                        translationInputBorrowed = true
+                        setWindowIme(true)
+                        showKeyboard(page.sourceField)
+                    } else returnTranslationInput(page)
                 }
+            }
+            page.languagePicker = { anchor ->
+                showPopup(anchor, page.languages.map { language ->
+                    MenuEntry(language.name, checked = page.target?.id == language.id) {
+                        selectTranslationTarget(page, language)
+                    }
+                }, false)
+            }
+            page.onLanguage = { language -> selectTranslationTarget(page, language) }
+            showDetail(page.view)
+            page.confirm.requestFocus()
+            if (!translationConfigured()) {
+                page.error = translate("尚未配置翻译密钥，请前往翻译设置；打开设置将离开当前输入目标")
+                page.refresh()
             }
         }
     }
@@ -1233,6 +1224,21 @@ class ClipPanel(
                 })
                 page.refresh()
                 if (page.historyExpanded) loadTranslationHistory(page)
+            }
+        }
+    }
+
+    private fun copyTranslation(page: ClipTranslatePage) {
+        val text = page.result ?: return
+        if (page.inserting || page.loading) return
+        val host = root ?: return
+        scope.launch {
+            val copied = try { onCopyTranslation(text) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (error: Exception) { onError("Copy translation", error); false }
+            main.post {
+                if (root !== host) return@post
+                Toast.makeText(host.context, translate(if (copied) "已复制到剪贴板" else "复制失败"), Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -2090,7 +2096,7 @@ class ClipPanel(
             typeface = Typeface.MONOSPACE
         }
         translationSwitch = actionButton(context, translate("翻译"), Tone.OUTLINE) {
-            openTranslation(state.current)
+            openTranslation()
         }.apply {
             tooltipText = "Ctrl+T"
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)

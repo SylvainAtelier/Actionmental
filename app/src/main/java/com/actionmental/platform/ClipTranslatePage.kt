@@ -60,6 +60,7 @@ internal class ClipTranslatePage(
     private val onBack: () -> Unit,
     onConfirm: () -> Unit,
     onRetryOrCancel: () -> Unit,
+    onCopy: () -> Unit,
     onHistory: () -> Unit,
     onSettings: () -> Unit,
 ) {
@@ -332,10 +333,12 @@ internal class ClipTranslatePage(
 
     val confirm = button(tr("翻译"), ButtonStyle.PRIMARY, onConfirm)
     private val retryOrCancel = button(tr("重新翻译"), ButtonStyle.OUTLINE, onRetryOrCancel)
+    private val copy = button(tr("复制"), ButtonStyle.OUTLINE, onCopy)
     private val actions = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         addView(retryOrCancel)
+        addView(copy)
         addView(confirm)
     }
     /** Where the actions sit right now; null before the first fit. */
@@ -481,12 +484,14 @@ internal class ClipTranslatePage(
             (actions.parent as? ViewGroup)?.removeView(actions)
             if (inHeader) {
                 retryOrCancel.layoutParams = LinearLayout.LayoutParams(-2, -2)
+                copy.layoutParams = LinearLayout.LayoutParams(-2, -2)
                 confirm.layoutParams = LinearLayout.LayoutParams(-2, -2)
                 confirm.minWidth = dp(112)
                 confirm.minimumWidth = confirm.minWidth
                 headerActions.addView(actions, LinearLayout.LayoutParams(-2, -2))
             } else {
                 retryOrCancel.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                copy.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
                 confirm.layoutParams = LinearLayout.LayoutParams(0, -2, 2f)
                 bottomBar.addView(actions, LinearLayout.LayoutParams(-1, -2))
             }
@@ -503,7 +508,7 @@ internal class ClipTranslatePage(
     private fun fitHeader() {
         val inHistory = narrow && historyExpanded
         title.text = tr(if (inHistory) "翻译历史" else "翻译")
-        subtitle.text = tr(if (inHistory) "仅保存在本机" else "点击翻译时才联网 · 不写入剪贴板")
+        subtitle.text = tr(if (inHistory) "仅保存在本机" else "点击翻译时才联网 · 点复制时才写入剪贴板")
         back.contentDescription = tr(if (inHistory) "返回翻译详情" else "返回列表")
         historyButton.visibility = if (inHistory) View.GONE else View.VISIBLE
         historyButton.text = tr(if (historyExpanded) "收起历史记录" else "历史记录")
@@ -583,15 +588,22 @@ internal class ClipTranslatePage(
         enable(confirm, !loading && !inserting && target != null && source.isNotBlank(), disabledAlpha = 0.38f)
         // Before the first result a second "translate" button would only repeat the primary one.
         retryOrCancel.visibility = if (result != null || loading) View.VISIBLE else View.GONE
-        (confirm.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
-            val start = if (retryOrCancel.visibility == View.VISIBLE) dp(8) else 0
-            if (lp.marginStart != start) { lp.marginStart = start; confirm.layoutParams = lp }
-        }
+        // Copying a stale result while a retry is in flight would hand out the old text as if new.
+        copy.visibility = if (result != null && !loading) View.VISIBLE else View.GONE
+        gapBefore(copy, retryOrCancel.visibility == View.VISIBLE)
+        gapBefore(confirm, retryOrCancel.visibility == View.VISIBLE || copy.visibility == View.VISIBLE)
         retryOrCancel.text = tr(if (loading) "取消请求" else "重新翻译")
         enable(retryOrCancel, !inserting && target != null && source.isNotBlank())
+        enable(copy, !inserting)
         enable(historyButton, !inserting)
         enable(settingsButton, !inserting)
         enable(back, !inserting)
+    }
+
+    private fun gapBefore(view: View, gap: Boolean) {
+        val lp = view.layoutParams as? LinearLayout.LayoutParams ?: return
+        val start = if (gap) dp(8) else 0
+        if (lp.marginStart != start) { lp.marginStart = start; view.layoutParams = lp }
     }
 
     private fun enable(view: View, enabled: Boolean, disabledAlpha: Float = 0.5f) {

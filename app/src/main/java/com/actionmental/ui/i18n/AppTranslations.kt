@@ -60,7 +60,7 @@ object AppTranslations {
         "目标语言 · 仅确认后联网" to "Target language · connects only after confirmation",
         "原文" to "Source",
         "译文" to "Translation",
-        "点击翻译时才联网 · 不写入剪贴板" to "Connects only when you select Translate · never writes to the clipboard",
+        "点击翻译时才联网 · 点复制时才写入剪贴板" to "Connects only when you select Translate · writes to the clipboard only when you copy",
         "点击「翻译」获取译文" to "Select Translate to get the translation",
         "收起历史记录" to "Hide history",
         "历史记录" to "History",

@@ -463,6 +463,7 @@ class AppGraph private constructor(context: Context) {
             accessibility.awaitInputBack()
             withContext(Dispatchers.Main) { accessibility.commitTextToOverlayTarget(text) }
         },
+        onCopyTranslation = { text -> clipboardWriter.write("translation", text) },
         onOpenTranslationSettings = {
             appContext.startActivity(Intent(appContext, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
