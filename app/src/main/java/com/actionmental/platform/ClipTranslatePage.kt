@@ -37,12 +37,14 @@ import com.actionmental.core.translate.TranslationRequest
 /**
  * Editable draft detail. Opening, editing or changing language never makes a request.
  *
- * Layout, top to bottom, sized for a thumb first and a keyboard second:
- * - header: back arrow, title with the privacy promise, then compact History / Settings;
- * - source: a sunken field that scrolls inside itself, so no expand toggle is needed;
- * - result card: target-language chips (one tap, no popup) above the translation;
- * - one action row, primary on the trailing edge where the thumb lands last.
- * Status text appears only when there is something to say; key hints only with a hardware keyboard.
+ * Everything sits on one grid so the page stays orderly from a phone to an unfolded foldable:
+ * - header (48dp): back arrow, title with the privacy promise, then compact History / Settings;
+ * - language bar: "译成" plus one-tap chips, full width, above both panes;
+ * - two panes with the same anatomy: a 48dp label row, then a box with the same radius and padding.
+ *   Side by side the boxes share one height, so tops, first lines and bottoms all line up;
+ *   the request status lives at the foot of the result box instead of floating between rows;
+ * - footer: side by side its cells mirror the panes (key hints under the source, actions exactly
+ *   under the result); stacked, actions fill the width and hints follow.
  * Every colour comes from [Colors], which the panel derives from the app theme and accent.
  */
 internal class ClipTranslatePage(
@@ -124,13 +126,13 @@ internal class ClipTranslatePage(
         background = RippleDrawable(ColorStateList.valueOf(colors.ripple), null,
             GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) })
         val size = dp(context, 48)
-        // Pull left so the arrow stroke lines up with the field edge; the target stays 48dp.
-        layoutParams = LinearLayout.LayoutParams(size, size).apply { marginStart = -dp(context, 10) }
+        // Pull left so the arrow stroke lines up with the grid edge; the target stays 48dp.
+        layoutParams = LinearLayout.LayoutParams(size, size).apply { marginStart = -dp(context, 12) }
         setOnClickListener { if (!returnFromHistory()) onBack() }
     }
     private val title = TextView(context).apply {
         setTextColor(colors.ink)
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
         typeface = Typeface.DEFAULT_BOLD
         isSingleLine = true
         ellipsize = TextUtils.TruncateAt.END
@@ -138,29 +140,54 @@ internal class ClipTranslatePage(
     }
     private val subtitle = TextView(context).apply {
         setTextColor(colors.muted)
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
         maxLines = 2
         ellipsize = TextUtils.TruncateAt.END
     }
-    private val historyButton = button(tr("历史记录"), ButtonStyle.TEXT) {
+    private val historyButton = compact(button(tr("历史记录"), ButtonStyle.TEXT) {
         historyExpanded = !historyExpanded
         fitWorkspace()
         onHistory()
-    }
-    private val settingsButton = button(tr("设置"), ButtonStyle.TEXT, onSettings)
+    })
+    private val settingsButton = compact(button(tr("设置"), ButtonStyle.TEXT, onSettings))
         .apply { contentDescription = tr("翻译设置 · 将离开当前输入目标") }
     private val header = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
+        minimumHeight = dp(context, 48)
         addView(back)
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(context, 2), 0, dp(context, 8), 0)
+            setPadding(0, 0, dp(context, 8), 0)
             addView(title)
             addView(subtitle)
         }, LinearLayout.LayoutParams(0, -2, 1f))
         addView(historyButton, LinearLayout.LayoutParams(-2, -2))
+        // Compact text buttons carry 8dp of padding: pulling them out by as much puts the glyphs on the grid edge.
         addView(settingsButton, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = -dp(context, 8) })
+    }
+
+    // --- Language bar ----------------------------------------------------------
+
+    private val chips = FlowRow(context, dp(context, 8))
+    private val languageButton = button("", ButtonStyle.OUTLINE) {}.apply {
+        gravity = Gravity.START or Gravity.CENTER_VERTICAL
+        minWidth = dp(context, 160)
+        minimumWidth = minWidth
+        setOnClickListener { languagePicker?.invoke(this) }
+    }
+    private val languageBar = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        // Top, not centre: when chips wrap the label stays level with the first row.
+        gravity = Gravity.TOP
+        addView(label(context, tr("译成")).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            minHeight = dp(context, 48)
+            minimumHeight = minHeight
+            setPadding(0, 0, dp(context, 12), 0)
+        })
+        if (useChips) addView(chips, LinearLayout.LayoutParams(0, -2, 1f))
+        else addView(languageButton, LinearLayout.LayoutParams(-2, -2))
     }
 
     // --- Source ---------------------------------------------------------------
@@ -168,20 +195,20 @@ internal class ClipTranslatePage(
     private val sourceId = View.generateViewId()
     private val sourceLabel = label(context, tr("原文")).apply { labelFor = sourceId }
     private val sourceCount = TextView(context).apply {
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
         typeface = Typeface.MONOSPACE
         setPadding(dp(context, 8), 0, dp(context, 4), 0)
     }
-    private val clear = button(tr("清空"), ButtonStyle.TEXT) {
+    private val clear = compact(button(tr("清空"), ButtonStyle.TEXT) {
         sourceField.setText("")
         sourceField.requestFocus()
-    }.apply { contentDescription = tr("清空原文") }
+    }).apply { contentDescription = tr("清空原文") }
 
     @SuppressLint("ClickableViewAccessibility")
     val sourceField = EditText(context).apply {
         id = sourceId
         setText(source)
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, BODY_SP)
         setTextColor(colors.ink)
         setHintTextColor(colors.muted)
         hint = tr("输入或粘贴要翻译的原文")
@@ -193,7 +220,7 @@ internal class ClipTranslatePage(
         setSaveEnabled(false)
         gravity = Gravity.TOP or Gravity.START
         minLines = 3
-        setLineSpacing(0f, 1.35f)
+        setLineSpacing(0f, BODY_SPACING)
         setHorizontallyScrolling(false)
         isVerticalScrollBarEnabled = true
         overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
@@ -204,7 +231,8 @@ internal class ClipTranslatePage(
                 setSize(dp(context, 2), dp(context, 20))
             }
         }
-        setPadding(dp(context, 14), dp(context, 12), dp(context, 14), dp(context, 12))
+        // Same insets as the result box, so both first lines start at the same point.
+        setPadding(dp(context, BOX_PAD_H), dp(context, BOX_PAD_V), dp(context, BOX_PAD_H), dp(context, BOX_PAD_V))
         background = fieldBackground()
         // Long sources scroll inside the field; keep the page from stealing that drag.
         setOnTouchListener { v, e ->
@@ -226,56 +254,56 @@ internal class ClipTranslatePage(
     }
     private val sourcePane = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
-        addView(LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+        addView(headRow(context).apply {
             addView(sourceLabel, LinearLayout.LayoutParams(0, -2, 1f))
             addView(sourceCount)
             addView(clear, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = -dp(context, 8) })
-        })
-        addView(sourceField, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(context, 2) })
+        }, LinearLayout.LayoutParams(-1, -2))
+        addView(sourceField)
     }
 
     // --- Result ---------------------------------------------------------------
 
-    private val chips = FlowRow(context, dp(context, 8))
-    private val languageButton = button("", ButtonStyle.OUTLINE) {}.apply {
-        gravity = Gravity.START or Gravity.CENTER_VERTICAL
-        setOnClickListener { languagePicker?.invoke(this) }
+    private val resultLabel = label(context, tr("译文")).apply {
+        isSingleLine = true
+        ellipsize = TextUtils.TruncateAt.END
     }
-    private val resultLabel = label(context, tr("译文")).apply { setTextColor(colors.accentInk) }
     private val resultText = TextView(context).apply {
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
-        setLineSpacing(0f, 1.4f)
-        setPadding(0, dp(context, 4), 0, dp(context, 4))
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, BODY_SP)
+        setLineSpacing(0f, BODY_SPACING)
         accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
     }
-    private val resultPane = LinearLayout(context).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(dp(context, 14), dp(context, 6), dp(context, 14), dp(context, 12))
-        addView(LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(context, 40)
-            addView(label(context, tr("译成")).apply { setPadding(0, 0, dp(context, 10), 0) })
-            if (useChips) addView(chips, LinearLayout.LayoutParams(0, -2, 1f))
-            else addView(languageButton, LinearLayout.LayoutParams(0, -2, 1f))
-        })
-        addView(divider(context), LinearLayout.LayoutParams(-1, dp(context, 1).coerceAtLeast(1)).apply {
-            topMargin = dp(context, 6); bottomMargin = dp(context, 8)
-        })
-        addView(resultLabel)
-        addView(resultText, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(context, 2) })
-    }
-
-    // --- Status, actions, hints ----------------------------------------------
-
-    private val feedback = TextView(context).apply {
+    /** Pushes the status to the foot of the box when the panes share one height. */
+    private val resultSpacer = View(context)
+    private val statusMark = View(context)
+    private val statusText = TextView(context).apply {
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
         setLineSpacing(0f, 1.3f)
         accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
-        setPadding(dp(context, 12), dp(context, 8), dp(context, 12), dp(context, 8))
     }
+    private val status = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        visibility = View.GONE
+        // A short bar in the tone colour; the words carry the meaning, the bar only groups them.
+        addView(statusMark, LinearLayout.LayoutParams(dp(context, 3), -1).apply { marginEnd = dp(context, 10) })
+        addView(statusText, LinearLayout.LayoutParams(0, -2, 1f))
+    }
+    private val resultBox = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(context, BOX_PAD_H), dp(context, BOX_PAD_V), dp(context, BOX_PAD_H), dp(context, BOX_PAD_V))
+        addView(resultText, LinearLayout.LayoutParams(-1, -2))
+        addView(resultSpacer)
+        addView(status, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(context, 12) })
+    }
+    private val resultPane = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(headRow(context).apply { addView(resultLabel, LinearLayout.LayoutParams(0, -2, 1f)) },
+            LinearLayout.LayoutParams(-1, -2))
+        addView(resultBox)
+    }
+
+    // --- Footer ---------------------------------------------------------------
+
     val confirm = button(tr("翻译"), ButtonStyle.PRIMARY, onConfirm)
     private val retryOrCancel = button(tr("重新翻译"), ButtonStyle.OUTLINE, onRetryOrCancel)
     private val actions = LinearLayout(context).apply {
@@ -289,38 +317,50 @@ internal class ClipTranslatePage(
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
         setLineSpacing(0f, 1.3f)
     }
+    /** Holds the hints; side by side it keeps its column even when the hints are hidden. */
+    private val footerLead = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_VERTICAL
+        addView(keys, LinearLayout.LayoutParams(-1, -2))
+    }
+    private val footer = LinearLayout(context)
 
     private val panes = LinearLayout(context)
     val draft = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
-        addView(panes, LinearLayout.LayoutParams(-1, -2))
-        addView(feedback, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(context, 12) })
-        addView(actions, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(context, 12) })
-        addView(keys, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(context, 10) })
+        addView(languageBar, LinearLayout.LayoutParams(-1, -2))
+        addView(panes, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(context, 4) })
+        addView(footer, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(context, 16) })
     }
 
     // --- History --------------------------------------------------------------
 
     // ClipPanel replaces only this list; the side-column heading lives outside it.
     val history = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-    private val historyHeading = LinearLayout(context).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(0, 0, 0, dp(context, 8))
-        addView(label(context, tr("翻译历史")).apply { ViewCompat.setAccessibilityHeading(this, true) })
+    /** Same 48dp row as the language bar, so the two columns start on one line. */
+    private val historyHeading = headRow(context).apply {
+        addView(label(context, tr("翻译历史")).apply { ViewCompat.setAccessibilityHeading(this, true) },
+            LinearLayout.LayoutParams(0, -2, 1f))
         addView(TextView(context).apply {
             text = tr("仅保存在本机")
             setTextColor(colors.muted)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
         })
     }
     private val historySection = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         visibility = View.GONE
-        addView(historyHeading)
+        addView(historyHeading, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(context, 4) })
         addView(history, LinearLayout.LayoutParams(-1, -2))
+    }
+    /** Hairline between the draft and the history column. */
+    private val columnRule = View(context).apply {
+        setBackgroundColor(colors.line)
+        visibility = View.GONE
     }
     private val workspace = LinearLayout(context).apply {
         addView(draft)
+        addView(columnRule)
         addView(historySection)
     }
 
@@ -345,28 +385,58 @@ internal class ClipTranslatePage(
 
     private fun fitWorkspace() {
         val scaledWidth = widthDp / view.resources.configuration.fontScale
-        val available = if (!narrow && historyExpanded) scaledWidth * 2f / 3f else scaledWidth
+        val sideHistory = !narrow && historyExpanded
+        val available = if (sideHistory) scaledWidth * 2f / 3f else scaledWidth
         val stacked = available < 560f
         val nextKey = Triple(narrow, historyExpanded, stacked)
         // fit() is called during measurement: never reassign unchanged layout params.
         if (layoutKey != nextKey) {
             layoutKey = nextKey
+            val gap = dp(GAP)
             workspace.orientation = if (narrow) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
             draft.visibility = if (narrow && historyExpanded) View.GONE else View.VISIBLE
             historySection.visibility = if (historyExpanded) View.VISIBLE else View.GONE
             // On a phone the history replaces the draft and the header already names it.
             historyHeading.visibility = if (narrow) View.GONE else View.VISIBLE
-            draft.layoutParams = LinearLayout.LayoutParams(if (narrow || !historyExpanded) -1 else 0, -2,
-                if (!narrow && historyExpanded) 2f else 0f)
+            columnRule.visibility = if (sideHistory) View.VISIBLE else View.GONE
+            draft.layoutParams = LinearLayout.LayoutParams(if (sideHistory) 0 else -1, -2, if (sideHistory) 2f else 0f)
+            columnRule.layoutParams = LinearLayout.LayoutParams(dp(1).coerceAtLeast(1), -1)
+                .apply { marginStart = gap; marginEnd = gap }
             historySection.layoutParams = LinearLayout.LayoutParams(if (narrow) -1 else 0, -2, if (narrow) 0f else 1f)
-                .apply { if (!narrow) marginStart = dp(16) }
+
+            // Side by side both panes take the taller one's height (match_parent inside a
+            // wrap_content row), and each box fills what its 48dp label row leaves over.
             panes.orientation = if (stacked) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
-            sourcePane.layoutParams = LinearLayout.LayoutParams(if (stacked) -1 else 0, -2, if (stacked) 0f else 1f)
-            resultPane.layoutParams = LinearLayout.LayoutParams(if (stacked) -1 else 0, -2, if (stacked) 0f else 1f)
-                .apply { if (stacked) topMargin = dp(12) else marginStart = dp(12) }
+            sourcePane.layoutParams = LinearLayout.LayoutParams(if (stacked) -1 else 0, if (stacked) -2 else -1,
+                if (stacked) 0f else 1f)
+            resultPane.layoutParams = LinearLayout.LayoutParams(if (stacked) -1 else 0, if (stacked) -2 else -1,
+                if (stacked) 0f else 1f).apply { if (stacked) topMargin = dp(8) else marginStart = gap }
+            sourceField.layoutParams = LinearLayout.LayoutParams(-1, if (stacked) -2 else 0, if (stacked) 0f else 1f)
+            resultBox.layoutParams = LinearLayout.LayoutParams(-1, if (stacked) -2 else 0, if (stacked) 0f else 1f)
+            resultSpacer.layoutParams = LinearLayout.LayoutParams(-1, 0, if (stacked) 0f else 1f)
+            if (stacked) {
+                sourceField.minLines = 3
+                resultBox.minimumHeight = dp(STACKED_BOX_DP)
+            } else {
+                sourceField.minHeight = dp(SIDE_BOX_DP)
+                resultBox.minimumHeight = dp(SIDE_BOX_DP)
+            }
             // Side by side the field may grow; stacked it stays short so the result is in view.
             val lines = if (stacked) 6 else 12
             if (sourceField.maxLines != lines) sourceField.maxLines = lines
+
+            // Side by side the footer mirrors the panes: hints under the source, actions under the result.
+            footer.removeAllViews()
+            if (stacked) {
+                footer.orientation = LinearLayout.VERTICAL
+                footer.addView(actions, LinearLayout.LayoutParams(-1, -2))
+                footer.addView(footerLead, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+            } else {
+                footer.orientation = LinearLayout.HORIZONTAL
+                footer.gravity = Gravity.CENTER_VERTICAL
+                footer.addView(footerLead, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = gap })
+                footer.addView(actions, LinearLayout.LayoutParams(0, -2, 1f))
+            }
             fitHeader()
         }
         val hardware = hasHardwareKeyboard()
@@ -435,25 +505,22 @@ internal class ClipTranslatePage(
         })
         resultText.setTextColor(if (result != null) colors.ink else colors.muted)
         val tint = if (result != null) (if (colors.dark) 0.16f else 0.08f) else (if (colors.dark) 0.08f else 0.04f)
-        resultPane.background = card(
+        resultBox.background = card(
             ColorUtils.blendARGB(colors.surface, colors.accent, tint),
             ColorUtils.blendARGB(colors.line, colors.accent, if (result != null || loading) 0.7f else 0.35f),
         )
 
-        val status = error ?: when {
+        val message = error ?: when {
             inserting -> tr("正在输入…")
             loading -> tr("正在请求 · 切换语言将取消，不会自动重发")
             else -> null
         }
-        feedback.visibility = if (status == null) View.GONE else View.VISIBLE
-        if (status != null) {
-            feedback.text = status
+        status.visibility = if (message == null) View.GONE else View.VISIBLE
+        if (message != null) {
             val tone = if (error != null) colors.error else colors.accentInk
-            feedback.setTextColor(tone)
-            feedback.background = card(
-                ColorUtils.blendARGB(colors.surface, tone, if (colors.dark) 0.14f else 0.08f),
-                ColorUtils.blendARGB(colors.line, tone, 0.4f),
-            )
+            statusText.text = message
+            statusText.setTextColor(tone)
+            statusMark.background = GradientDrawable().apply { cornerRadius = dp(2).toFloat(); setColor(tone) }
         }
 
         confirm.text = tr(when { inserting -> "正在输入…"; loading -> "正在翻译…"; result != null -> "输入译文"; else -> "翻译" })
@@ -474,6 +541,21 @@ internal class ClipTranslatePage(
     private fun enable(view: View, enabled: Boolean, disabledAlpha: Float = 0.5f) {
         view.isEnabled = enabled
         view.alpha = if (enabled) 1f else disabledAlpha
+    }
+
+    /** Text buttons in label rows: 8dp side padding so a -8dp margin lands their glyphs on the grid edge. */
+    private fun <T : Button> compact(button: T): T = button.apply {
+        val side = dp(8)
+        setPadding(side, paddingTop, side, paddingBottom)
+        minWidth = dp(48)
+        minimumWidth = minWidth
+    }
+
+    /** A 48dp label row; every section starts with one so labels share a baseline across columns. */
+    private fun headRow(context: Context) = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        minimumHeight = dp(context, 48)
     }
 
     /** A 48dp-tall target whose visible pill is 36dp: compact to look at, easy to hit. */
@@ -517,7 +599,7 @@ internal class ClipTranslatePage(
     }
 
     private fun fieldBackground(): Drawable {
-        val radius = dp(view.context, 14).toFloat()
+        val radius = dp(view.context, BOX_RADIUS).toFloat()
         fun face(stroke: Int, width: Int) = GradientDrawable().apply {
             cornerRadius = radius
             setColor(this@ClipTranslatePage.colors.field)
@@ -537,12 +619,8 @@ internal class ClipTranslatePage(
         typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
     }
 
-    private fun divider(context: Context) = View(context).apply {
-        setBackgroundColor(ColorUtils.blendARGB(colors.line, colors.accent, 0.25f))
-    }
-
     private fun card(fill: Int, stroke: Int) = GradientDrawable().apply {
-        cornerRadius = dp(14).toFloat()
+        cornerRadius = dp(BOX_RADIUS).toFloat()
         setColor(fill)
         setStroke(dp(1).coerceAtLeast(1), stroke)
     }
@@ -553,6 +631,20 @@ internal class ClipTranslatePage(
     private companion object {
         /** Up to this many languages show as chips; more open a popup instead of wrapping into a wall. */
         const val MAX_CHIPS = 6
+
+        /** Grid tokens: column gutter, box corner and inner padding are shared by every box on the page. */
+        const val GAP = 16
+        const val BOX_RADIUS = 14
+        const val BOX_PAD_H = 14
+        const val BOX_PAD_V = 12
+
+        /** Source and result use one type size, so their lines run level side by side. */
+        const val BODY_SP = 16f
+        const val BODY_SPACING = 1.4f
+
+        /** Box floor: side by side tall enough to read as a pair; stacked short so the result stays in view. */
+        const val SIDE_BOX_DP = 176
+        const val STACKED_BOX_DP = 96
     }
 }
 

@@ -1313,10 +1313,11 @@ class ClipPanel(
         val body = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             minimumHeight = dp(context, 72f).toInt()
-            setPadding(dp(context, 12f).toInt(), dp(context, 8f).toInt(), dp(context, 8f).toInt(), dp(context, 8f).toInt())
+            // Same inner padding and corner as the translation page's boxes, so the history reads as part of its grid
+            setPadding(dp(context, 14f).toInt(), dp(context, 10f).toInt(), dp(context, 8f).toInt(), dp(context, 10f).toInt())
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             background = RippleDrawable(ColorStateList.valueOf(palette.ripple), null,
-                GradientDrawable().apply { cornerRadius = dp(context, 12f); setColor(Color.WHITE) })
+                GradientDrawable().apply { cornerRadius = dp(context, 14f); setColor(Color.WHITE) })
             isFocusable = true
             contentDescription = entry.targetName + " · " + time + "\n" + ClipPolicy.preview(entry.result) + "\n" + ClipPolicy.preview(entry.source)
             fun line(value: String, size: Float, color: Int, lines: Int) = TextView(context).apply {
@@ -1344,6 +1345,11 @@ class ClipPanel(
             addView(actionButton(context, translate("删除"), Tone.TEXT) {
                 if (!page.inserting) mutateTranslationHistory(page) { onDeleteTranslation(entry.id) }
             }.apply { contentDescription = translate("删除") + " · " + entry.targetName })
+            background = GradientDrawable().apply {
+                cornerRadius = dp(context, 14f)
+                setColor(palette.field)
+                setStroke(dp(context, 1f).toInt().coerceAtLeast(1), palette.line)
+            }
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 .apply { bottomMargin = dp(context, 8f).toInt() }
         }
