@@ -200,7 +200,7 @@ internal class ClipTranslatePage(
         highlightColor = ColorUtils.setAlphaComponent(colors.accent, 0x55)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             textCursorDrawable = GradientDrawable().apply {
-                setColor(colors.accent)
+                setColor(this@ClipTranslatePage.colors.accent)
                 setSize(dp(context, 2), dp(context, 20))
             }
         }
@@ -520,7 +520,7 @@ internal class ClipTranslatePage(
         val radius = dp(view.context, 14).toFloat()
         fun face(stroke: Int, width: Int) = GradientDrawable().apply {
             cornerRadius = radius
-            setColor(colors.field)
+            setColor(this@ClipTranslatePage.colors.field)
             setStroke(width, stroke)
         }
         val hair = dp(view.context, 1).coerceAtLeast(1)
