@@ -1053,7 +1053,7 @@ class ClipPanel(
                 translationPage = cached
                 cached.refresh()
                 showDetail(cached.view)
-                cached.confirm.requestFocus()
+                focusTranslationSource(cached)
                 if (cached.historyExpanded) loadTranslationHistory(cached)
                 return@guarded
             }
@@ -1110,12 +1110,18 @@ class ClipPanel(
             }
             page.onLanguage = { language -> selectTranslationTarget(page, language) }
             showDetail(page.view)
-            page.confirm.requestFocus()
+            focusTranslationSource(page)
             if (!translationConfigured()) {
                 page.error = translate("尚未配置翻译密钥，请前往翻译设置；打开设置将离开当前输入目标")
                 page.refresh()
             }
         }
+    }
+
+    /** Opening lands in the source with the keyboard up; [ClipTranslatePage.onSourceFocus] borrows the input. */
+    private fun focusTranslationSource(page: ClipTranslatePage) {
+        // Hidden behind the phone-sized history list the field cannot take focus.
+        if (!page.sourceField.requestFocus()) page.confirm.requestFocus()
     }
 
     private fun cancelTranslation() {
