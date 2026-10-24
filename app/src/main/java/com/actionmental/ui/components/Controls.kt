@@ -281,7 +281,8 @@ fun AmSegmented(
 @Composable
 fun AmSwitch(
     checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
+    /** null：开关只负责显示，点击由外层整行接管。 */
+    onCheckedChange: ((Boolean) -> Unit)?,
     enabled: Boolean = true,
     label: String,
     modifier: Modifier = Modifier,

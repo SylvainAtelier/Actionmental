@@ -166,8 +166,6 @@ class MiniMaxTranslator internal constructor(
     companion object {
         const val ENDPOINT = "https://api.minimaxi.com/anthropic/v1/messages"
         const val MODELS_ENDPOINT = "https://api.minimaxi.com/anthropic/v1/models"
-        // Official reference IDs, not an account-specific or live availability assertion.
-        val REFERENCE_MODELS = listOf("MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5")
 
         private fun validateToken(value: String) {
             if (value.isEmpty() || value.length > 8192 || value.any { it.isISOControl() }) {

@@ -1,28 +1,40 @@
 package com.actionmental.ui.screens
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.NetworkCheck
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -30,38 +42,45 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.rememberUpdatedState
-import com.actionmental.platform.MiniMaxTranslator
-import kotlinx.coroutines.delay
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.LiveRegionMode
-import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.actionmental.core.translate.TranslationLanguage
 import com.actionmental.core.translate.TranslationSettings
-import com.actionmental.ui.components.AmCard
-import com.actionmental.ui.components.AmChip
-import com.actionmental.ui.components.AmLabel
 import com.actionmental.ui.components.AmPrimaryButton
 import com.actionmental.ui.components.AmSecondaryButton
+import com.actionmental.ui.components.SettingBlock
+import com.actionmental.ui.components.SettingDivider
+import com.actionmental.ui.components.SettingItem
+import com.actionmental.ui.components.SettingNote
+import com.actionmental.ui.components.SettingsSection
+import com.actionmental.ui.components.amFocusRing
 import com.actionmental.ui.i18n.Text
 import com.actionmental.ui.i18n.localize
+import com.actionmental.ui.theme.AmShape
 import com.actionmental.ui.theme.AmSpace
 import com.actionmental.ui.theme.AmType
 import com.actionmental.ui.theme.amColors
@@ -83,6 +102,8 @@ data class TranslationSettingsUiState(
     val modelsMessage: String? = null,
     val modelsFailed: Boolean = false,
     val modelsUnsupported: Boolean = false,
+    /** Bumped whenever a model fetch finishes, so the picker can open exactly once per request. */
+    val modelsFetchCount: Int = 0,
 )
 
 data class TranslationSettingsActions(
@@ -107,51 +128,56 @@ fun TranslationSettings(
     var token by remember { mutableStateOf("") }
     var tokenVisible by remember { mutableStateOf(false) }
     var modelsMenuOpen by remember { mutableStateOf(false) }
+    // Fetch count at the moment the user asked for models; the picker opens once a newer result lands.
+    var openAfterFetch by remember { mutableStateOf<Int?>(null) }
+    var modelSaved by remember { mutableStateOf(false) }
     val loadModels by rememberUpdatedState(actions.onLoadModels)
-    LaunchedEffect(token) {
-        if (token.isNotBlank()) {
-            delay(700)
-            loadModels(token)
-        }
-    }
     DisposableEffect(Unit) {
         onDispose { loadModels("") }
     }
+    LaunchedEffect(state.modelsFetchCount) {
+        val requestedAt = openAfterFetch ?: return@LaunchedEffect
+        if (state.modelsFetchCount > requestedAt) {
+            openAfterFetch = null
+            modelsMenuOpen = state.models.isNotEmpty()
+        }
+    }
     var clearTokenConfirmation by remember { mutableStateOf(false) }
-    var model by rememberSaveable(state.settings.model) { mutableStateOf(state.settings.model) }
     var editorOpen by remember { mutableStateOf(false) }
     var editingLanguage by remember { mutableStateOf<TranslationLanguage?>(null) }
     var deletingLanguage by remember { mutableStateOf<TranslationLanguage?>(null) }
     val busy = state.tokenSaving || state.connectionTesting
-    val modelValid = model.trim().isNotEmpty() && model.trim().length <= 128 &&
-        model.none { it.isWhitespace() || it.isISOControl() }
+    val canFetchModels = !busy && !state.modelsLoading && (token.isNotBlank() || state.tokenConfigured)
+    val fetchModels = {
+        modelSaved = false
+        openAfterFetch = state.modelsFetchCount
+        loadModels(token.takeIf { it.isNotBlank() })
+    }
 
-    AmCard(modifier.fillMaxWidth()) {
-        Column(verticalArrangement = Arrangement.spacedBy(AmSpace.s2)) {
-            AmLabel("翻译 · TRANSLATION", modifier = Modifier.semantics { heading() })
-            Text(
-                "仅在你主动翻译时，将选定文本与目标语言提示发送至 MiniMax 中国站。输入 Token 后会获取模型目录；连接测试也会访问服务，均不发送剪贴板内容。",
-                style = AmType.secondary,
-                color = c.inkMid,
-            )
-            Text("MiniMax CN Token", style = AmType.body, color = c.ink)
-            Text(
-                if (state.tokenConfigured) "已配置 · 本机加密保存，不包含在配置导出或备份中"
-                else "未配置 · 填写 MiniMax 中国站 API Token 后即可翻译",
-                style = AmType.secondary,
-                color = c.inkMid,
-            )
+    SettingsSection("翻译 · TRANSLATION", modifier) {
+        SettingNote("仅在你主动翻译或测试连接时访问 MiniMax 中国站，不会发送剪贴板内容。")
+        SettingDivider()
+
+        SettingBlock(
+            "MiniMax Token",
+            description = if (state.tokenConfigured) "已配置 · 本机加密保存，不包含在配置导出或备份中"
+            else "未配置 · 填写 MiniMax 中国站 API Token 后即可翻译",
+        ) {
             OutlinedTextField(
                 value = token,
                 onValueChange = {
                     token = it
+                    // Models fetched with another token no longer describe this one.
+                    if (state.models.isNotEmpty() || state.modelsLoading) loadModels("")
                     modelsMenuOpen = false
-                    loadModels("")
+                    openAfterFetch = null
                 },
-                label = { Text(if (state.tokenConfigured) "替换 Token" else "API Token") },
-                supportingText = { Text("不会回显已保存的 Token；输入停顿后自动获取模型，不保存草稿；留空不会修改。") },
+                placeholder = {
+                    Text(if (state.tokenConfigured) "输入新 Token 以替换" else "粘贴 API Token")
+                },
                 singleLine = true,
                 enabled = !busy,
+                textStyle = AmType.body,
                 visualTransformation = if (tokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
                 trailingIcon = {
@@ -164,9 +190,11 @@ fun TranslationSettings(
                 },
                 modifier = Modifier.fillMaxWidth(),
             )
+            // 保存与测试紧贴输入框：填完、存好、马上验证，手指不用离开这一块
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                AmSecondaryButton(
-                    if (state.tokenSaving) "正在保存…" else "保存 Token",
+                AmPrimaryButton(
+                    if (state.tokenSaving) "正在保存…" else "保存",
+                    icon = Icons.Outlined.Check,
                     onClick = {
                         val pending = token.trim()
                         token = ""
@@ -175,142 +203,130 @@ fun TranslationSettings(
                     },
                     enabled = token.isNotBlank() && !busy,
                 )
-                if (state.tokenConfigured) {
-                    AmSecondaryButton("移除 Token", onClick = { clearTokenConfirmation = true }, enabled = !busy)
-                }
-            }
-            state.tokenMessage?.let { TranslationFeedback(it, state.tokenFailed) }
-
-            HorizontalDivider(color = c.line)
-            Text("翻译模型", style = AmType.body, color = c.ink)
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                AmSecondaryButton(
-                    if (state.modelsLoading) "正在获取模型…" else "获取服务器模型列表",
-                    onClick = { loadModels(token.takeIf { it.isNotBlank() }) },
-                    enabled = !busy && !state.modelsLoading && (token.isNotBlank() || state.tokenConfigured),
-                )
-                if (state.models.isNotEmpty()) {
-                    AmSecondaryButton("选择服务器返回的模型", onClick = { modelsMenuOpen = true }, enabled = !busy && !state.modelsLoading)
-                    DropdownMenu(
-                        expanded = modelsMenuOpen,
-                        onDismissRequest = { modelsMenuOpen = false },
-                        modifier = Modifier.heightIn(max = 320.dp),
-                    ) {
-                        state.models.forEach { serverModel ->
-                            DropdownMenuItem(
-                                text = { RawText(serverModel, style = AmType.body) },
-                                modifier = Modifier.semantics { selected = model == serverModel },
-                                onClick = {
-                                    modelsMenuOpen = false
-                                    model = serverModel
-                                    actions.onModelChange(serverModel)
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-            if (state.modelsLoading) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = c.ink)
-                    TranslationFeedback("正在获取服务器模型列表…", false)
-                }
-            } else {
-                state.modelsMessage?.let { TranslationFeedback(it, state.modelsFailed) }
-                if (state.modelsMessage == null && token.isBlank() && !state.tokenConfigured) {
-                    Text("请先填写或保存 Token 再获取模型。", style = AmType.secondary, color = c.inkMid)
-                }
-            }
-            if (state.models.isNotEmpty() && token.isNotBlank()) {
-                Text("使用当前填写的 Token 获取，翻译前需保存 Token。", style = AmType.secondary, color = c.inkMid)
-            }
-            if (state.models.isEmpty() && !state.modelsLoading) {
-                Text("官方参考模型 · 未验证当前 Token 权限", style = AmType.secondary, color = c.inkMid)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    MiniMaxTranslator.REFERENCE_MODELS.forEach { preset ->
-                        AmChip(preset, selected = model == preset, enabled = !busy) {
-                            model = preset
-                            actions.onModelChange(preset)
-                        }
-                    }
-                }
-            }
-            OutlinedTextField(
-                value = model,
-                onValueChange = { model = it },
-                label = { Text("模型 ID") },
-                supportingText = { Text("可填写服务支持的模型 ID，最多 128 个字符，不含空格。") },
-                singleLine = true,
-                enabled = !busy,
-                isError = !modelValid,
-                keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                AmSecondaryButton("保存模型", onClick = { actions.onModelChange(model.trim()) },
-                    enabled = !busy && modelValid && model.trim() != state.settings.model)
                 AmSecondaryButton(
                     if (state.connectionTesting) "正在测试…" else "测试连接",
+                    icon = Icons.Outlined.NetworkCheck,
                     onClick = actions.onTestConnection,
-                    enabled = state.tokenConfigured && !busy && model == state.settings.model && token.isBlank(),
+                    enabled = state.tokenConfigured && token.isBlank() && !busy,
                 )
-            }
-            if (!state.tokenConfigured) {
-                Text("请先保存 Token，再测试连接。", style = AmType.secondary, color = c.inkMid)
-            } else if (model != state.settings.model || token.isNotBlank()) {
-                Text("测试使用已保存的配置，请先保存修改。", style = AmType.secondary, color = c.inkMid)
-            }
-            if (state.connectionTesting) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = c.ink)
-                    TranslationFeedback("正在连接 MiniMax 中国站…", false)
+                if (state.tokenConfigured) {
+                    AmSecondaryButton(
+                        "移除",
+                        icon = Icons.Outlined.DeleteOutline,
+                        onClick = { clearTokenConfirmation = true },
+                        enabled = !busy,
+                        accent = true,
+                    )
                 }
-            } else {
-                state.connectionMessage?.let { TranslationFeedback(it, state.connectionFailed) }
             }
+            when {
+                state.tokenSaving -> Progress("正在保存 Token…")
+                state.connectionTesting -> Progress("正在连接 MiniMax 中国站…")
+                state.connectionMessage != null -> Feedback(state.connectionMessage, state.connectionFailed)
+                state.tokenMessage != null -> Feedback(state.tokenMessage, state.tokenFailed)
+                state.tokenConfigured && token.isNotBlank() -> SettingNote("先保存新 Token，再测试连接。")
+            }
+        }
+        SettingDivider()
 
-            HorizontalDivider(color = c.line)
-            Text("目标语言", style = AmType.body, color = c.ink, modifier = Modifier.semantics { heading() })
-            Text("按这里的顺序显示在翻译面板；语言名称与翻译提示可分别编辑。", style = AmType.secondary, color = c.inkMid)
-            state.settings.languages.forEachIndexed { index, language ->
-                key(language.id) {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        RawText(language.name, style = AmType.body, color = c.ink)
-                        RawText(language.prompt, style = AmType.secondary, color = c.inkMid, maxLines = 3,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            IconButton(onClick = { editingLanguage = language; editorOpen = true }, modifier = Modifier.size(48.dp)) {
-                                Icon(Icons.Outlined.Edit, localize("编辑目标语言") + ": " + language.name, tint = c.ink)
-                            }
-                            IconButton(onClick = {
-                                val ordered = state.settings.languages.toMutableList()
-                                ordered[index] = ordered[index - 1].also { ordered[index - 1] = language }
-                                actions.onLanguagesChange(ordered)
-                            }, enabled = index > 0, modifier = Modifier.size(48.dp)) {
-                                Icon(Icons.Outlined.ArrowUpward, localize("上移目标语言") + ": " + language.name)
-                            }
-                            IconButton(onClick = {
-                                val ordered = state.settings.languages.toMutableList()
-                                ordered[index] = ordered[index + 1].also { ordered[index + 1] = language }
-                                actions.onLanguagesChange(ordered)
-                            }, enabled = index < state.settings.languages.lastIndex, modifier = Modifier.size(48.dp)) {
-                                Icon(Icons.Outlined.ArrowDownward, localize("下移目标语言") + ": " + language.name)
-                            }
-                            IconButton(onClick = { deletingLanguage = language }, enabled = state.settings.languages.size > 1,
-                                modifier = Modifier.size(48.dp)) {
-                                Icon(Icons.Outlined.DeleteOutline, localize("删除目标语言") + ": " + language.name)
-                            }
-                        }
+        SettingBlock("翻译模型", description = "获取模型后从列表中选择，选定即保存") {
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val picker: @Composable (Modifier) -> Unit = { pickerModifier ->
+                    ModelPicker(
+                        current = state.settings.model,
+                        models = state.models,
+                        expanded = modelsMenuOpen,
+                        enabled = state.models.isNotEmpty() || canFetchModels,
+                        onOpen = { if (state.models.isNotEmpty()) modelsMenuOpen = true else fetchModels() },
+                        onDismiss = { modelsMenuOpen = false },
+                        onSelect = { selectedModel ->
+                            modelsMenuOpen = false
+                            modelSaved = true
+                            if (selectedModel != state.settings.model) actions.onModelChange(selectedModel)
+                        },
+                        modifier = pickerModifier,
+                    )
+                }
+                val fetchButton: @Composable () -> Unit = {
+                    AmSecondaryButton(
+                        if (state.modelsLoading) "正在获取…" else "获取模型",
+                        icon = Icons.Outlined.Refresh,
+                        onClick = fetchModels,
+                        enabled = canFetchModels,
+                    )
+                }
+                if (maxWidth < 320.dp) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        picker(Modifier.fillMaxWidth())
+                        fetchButton()
+                    }
+                } else {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        picker(Modifier.weight(1f))
+                        fetchButton()
                     }
                 }
             }
-            if (state.settings.languages.size <= 1) {
-                Text("至少保留一种目标语言。", style = AmType.secondary, color = c.inkMid)
+            when {
+                state.modelsLoading -> Progress("正在获取模型…")
+                state.modelsMessage != null -> Feedback(state.modelsMessage, state.modelsFailed)
+                modelSaved -> Feedback("模型已保存", false)
+                !state.tokenConfigured && token.isBlank() -> SettingNote("请先填写或保存 Token 再获取模型。")
+                state.models.isNotEmpty() && token.isNotBlank() ->
+                    SettingNote("使用当前填写的 Token 获取，翻译前需保存 Token。")
             }
-            AmSecondaryButton("添加目标语言", onClick = { editingLanguage = null; editorOpen = true },
-                enabled = state.settings.languages.size < 30)
-            if (state.settings.languages.size >= 30) {
-                Text("最多添加 30 种目标语言；删除一项后可继续添加。", style = AmType.secondary, color = c.inkMid)
+        }
+        SettingDivider()
+
+        SettingBlock("目标语言", description = "按这里的顺序显示在翻译面板；语言名称与翻译提示可分别编辑。") {
+            val languages = state.settings.languages
+            languages.forEachIndexed { index, language ->
+                key(language.id) {
+                    if (index > 0) SettingDivider()
+                    SettingItem(
+                        title = language.name,
+                        description = language.prompt,
+                        descriptionMaxLines = 2,
+                        translate = false,
+                        stackBelow = 440.dp,
+                        trailing = {
+                            Row {
+                                IconButton(onClick = { editingLanguage = language; editorOpen = true }) {
+                                    Icon(Icons.Outlined.Edit, localize("编辑目标语言") + ": " + language.name, tint = c.ink)
+                                }
+                                IconButton(onClick = {
+                                    val ordered = languages.toMutableList()
+                                    ordered[index] = ordered[index - 1].also { ordered[index - 1] = language }
+                                    actions.onLanguagesChange(ordered)
+                                }, enabled = index > 0) {
+                                    Icon(Icons.Outlined.ArrowUpward, localize("上移目标语言") + ": " + language.name)
+                                }
+                                IconButton(onClick = {
+                                    val ordered = languages.toMutableList()
+                                    ordered[index] = ordered[index + 1].also { ordered[index + 1] = language }
+                                    actions.onLanguagesChange(ordered)
+                                }, enabled = index < languages.lastIndex) {
+                                    Icon(Icons.Outlined.ArrowDownward, localize("下移目标语言") + ": " + language.name)
+                                }
+                                IconButton(onClick = { deletingLanguage = language }, enabled = languages.size > 1) {
+                                    Icon(Icons.Outlined.DeleteOutline, localize("删除目标语言") + ": " + language.name)
+                                }
+                            }
+                        },
+                    )
+                }
+            }
+            AmSecondaryButton(
+                "添加目标语言",
+                icon = Icons.Outlined.Add,
+                onClick = { editingLanguage = null; editorOpen = true },
+                enabled = languages.size < 30,
+            )
+            if (languages.size <= 1) {
+                SettingNote("至少保留一种目标语言。")
+            }
+            if (languages.size >= 30) {
+                SettingNote("最多添加 30 种目标语言；删除一项后可继续添加。")
             }
         }
     }
@@ -354,8 +370,89 @@ fun TranslationSettings(
     }
 }
 
+/**
+ * 只读下拉框：显示已保存的模型，点开从服务器返回的列表里挑，挑中即保存。
+ * 列表还没取回来时点它，等同于点「获取模型」。
+ */
 @Composable
-private fun TranslationFeedback(message: String, failed: Boolean) {
+private fun ModelPicker(
+    current: String,
+    models: List<String>,
+    expanded: Boolean,
+    enabled: Boolean,
+    onOpen: () -> Unit,
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val c = amColors
+    val shape = RoundedCornerShape(AmShape.key + 2.dp)
+    val angle = if (expanded) 180f else 0f
+    val pickerLabel = localize("翻译模型")
+    BoxWithConstraints(modifier) {
+        val menuWidth = maxWidth
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = AmSpace.rowMin)
+                .clip(shape)
+                .background(c.surfaceSunken)
+                .border(1.dp, if (expanded) c.ink else c.line, shape)
+                .amFocusRing(shape)
+                .clickable(enabled = enabled, role = Role.DropdownList, onClick = onOpen)
+                .semantics {
+                    contentDescription = pickerLabel
+                    stateDescription = current
+                }
+                .padding(start = AmSpace.s3, end = AmSpace.s2, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            RawText(
+                current,
+                style = AmType.body,
+                color = if (enabled) c.ink else c.inkFaint,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(Icons.Outlined.ExpandMore, contentDescription = null, tint = c.inkMid,
+                modifier = Modifier.size(20.dp).rotate(angle))
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = onDismiss,
+            modifier = Modifier.width(menuWidth).heightIn(max = 320.dp),
+        ) {
+            models.forEach { model ->
+                val chosen = model == current
+                DropdownMenuItem(
+                    text = {
+                        RawText(model, style = AmType.body, color = c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    },
+                    trailingIcon = if (chosen) {
+                        { Icon(Icons.Outlined.Check, contentDescription = null, tint = c.ink) }
+                    } else {
+                        null
+                    },
+                    modifier = Modifier.semantics { selected = chosen },
+                    onClick = { onSelect(model) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun Progress(message: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = amColors.inkMid)
+        Feedback(message, false)
+    }
+}
+
+@Composable
+private fun Feedback(message: String, failed: Boolean) {
     Text(message, style = AmType.secondary,
         color = if (failed) MaterialTheme.colorScheme.error else amColors.inkMid,
         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
@@ -381,7 +478,7 @@ private fun TranslationLanguageEditor(
     val dismiss = { if (dirty) discardConfirmation = true else onDismiss() }
     AlertDialog(
         onDismissRequest = dismiss,
-        title = { Text(if (language == null) "添加目标语言" else "编辑目标语言") },
+        title = { Text(if (language == null) "添加目标语言" else "编辑目标语言", style = AmType.cardTitle) },
         text = {
             Column(
                 Modifier.fillMaxWidth().heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.55f).dp)
@@ -391,17 +488,17 @@ private fun TranslationLanguageEditor(
                 OutlinedTextField(
                     value = name, onValueChange = { name = it }, label = { Text("语言名称") },
                     supportingText = { Text(if (submitted && !validName) "请输入 1–80 个字符的语言名称。" else "显示在语言选择器中，例如：日语（敬语）。") },
-                    isError = submitted && !validName, singleLine = true,
+                    isError = submitted && !validName, singleLine = true, textStyle = AmType.body,
                     modifier = Modifier.fillMaxWidth().focusRequester(nameFocus),
                 )
                 OutlinedTextField(
                     value = prompt, onValueChange = { prompt = it }, label = { Text("翻译提示") },
                     supportingText = { Text(if (submitted && !validPrompt) "请输入 1–2000 个字符的翻译提示。" else "描述目标语言、语气或地区，例如：译为自然、礼貌的日语。") },
-                    isError = submitted && !validPrompt, minLines = 3, maxLines = 7,
+                    isError = submitted && !validPrompt, minLines = 3, maxLines = 7, textStyle = AmType.body,
                     modifier = Modifier.fillMaxWidth().focusRequester(promptFocus),
                 )
-                Text("稳定 ID · 编辑名称或排序不会改变", style = AmType.data, color = c.inkMid)
-                RawText(id, style = AmType.data, color = c.inkMid)
+                Text("稳定 ID · 编辑名称或排序不会改变", style = AmType.secondary, color = c.inkMuted)
+                RawText(id, style = AmType.data, color = c.inkMuted)
             }
         },
         confirmButton = {
@@ -419,7 +516,7 @@ private fun TranslationLanguageEditor(
     if (discardConfirmation) {
         AlertDialog(
             onDismissRequest = { discardConfirmation = false },
-            title = { Text("放弃未保存的修改？") },
+            title = { Text("放弃未保存的修改？", style = AmType.cardTitle) },
             text = { Text("返回后，本次输入的语言名称和翻译提示不会保存。") },
             confirmButton = { AmPrimaryButton("放弃修改", onClick = onDismiss, destructive = true) },
             dismissButton = { AmSecondaryButton("继续编辑", onClick = { discardConfirmation = false }) },

@@ -72,9 +72,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val models = graph.miniMaxTranslator.listModels(tokenDraft)
                 if (generation != translationModelsGeneration) return@launch
+                // 取到列表就直接弹出下拉，不再额外提示；只有空列表才需要说明
                 translationOperations.update { it.copy(models = models, modelsLoading = false, modelsFailed = false,
-                    modelsMessage = if (models.isEmpty()) "服务器未返回模型，可选择参考模型或手动填写"
-                        else "已获取服务器模型列表；实际权限以连接测试为准") }
+                    modelsMessage = if (models.isEmpty()) "服务器未返回可用模型" else null,
+                    modelsFetchCount = it.modelsFetchCount + 1) }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
@@ -82,7 +83,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val unsupported = (error as? TranslationException)?.kind == TranslationFailure.MODELS_UNSUPPORTED
                 translationOperations.update { it.copy(modelsLoading = false, modelsFailed = !unsupported,
                     modelsUnsupported = unsupported, modelsMessage = if (unsupported)
-                        "当前接口不支持模型列表，可选择参考模型或手动填写" else translationFailureMessage(error)) }
+                        "当前接口不支持获取模型列表" else translationFailureMessage(error),
+                    modelsFetchCount = it.modelsFetchCount + 1) }
             }
         }
     }
