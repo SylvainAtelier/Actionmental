@@ -103,6 +103,7 @@ service/       系统实例化的组件，尽可能薄
 | 屏幕方向 | Shizuku → 无障碍悬浮层 `screenOrientation` → 系统设置（见下） |
 | 键位映射输出 | Shizuku 注入 → 全局动作 / AudioManager / 无障碍输入通道（见下） |
 | 发送组合键 | Shizuku 整串注入，借触发键盘的设备号（见第八节） |
+| 输入符号 | 无障碍输入连接 `commitText`（Android 13+）→ 剪贴板兜底 |
 | 无障碍自愈 | `WRITE_SECURE_SETTINGS`（adb 授予一次）→ Shizuku |
 | Shell | Shizuku |
 

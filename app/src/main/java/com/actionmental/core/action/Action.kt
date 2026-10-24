@@ -292,6 +292,25 @@ sealed interface Action {
     }
 
     /**
+     * 往当前输入框里输入一个符号（或一小段文字），等同于输入法上屏。
+     *
+     * 走无障碍服务的输入连接（Android 13+），不经剪贴板、不需要 Shizuku，任何 Unicode 字符都打得出来；
+     * 没有输入框获得焦点时退一步放进剪贴板，由提示说清楚要自己粘贴。
+     */
+    @Serializable
+    @SerialName("type_symbol")
+    data class TypeSymbol(val text: String, val title: String = "") : Action {
+        /** 列表里显示的样子：看不见的字符用名字代替。 */
+        val display: String get() = title.ifBlank { SymbolCatalog.nameOf(text) ?: text }
+
+        override val category get() = ActionCategory.INPUT
+        // 不用 ` · ` 隔开：中文界面会丢掉后面不含汉字的那一段，符号就没了
+        override val label get() = "输入符号 " + display
+        override val technical get() = "TYPE_SYMBOL"
+        override val detail get() = SymbolCatalog.codePoints(text) + " 写进当前输入框"
+    }
+
+    /**
      * 在 Termux 里执行一条命令（经 Termux 的 RUN_COMMAND 接口）。
      *
      * 和 [Shell] 是两回事：那条走 Shizuku、以 shell 用户身份跑，进不了 Termux 的私有目录；
@@ -382,6 +401,7 @@ object ActionCatalog {
     const val GROUP_SYNC = "sync"
     const val GROUP_ADB_TCPIP = "adb_tcpip"
     const val GROUP_SEND_KEY = "send_key"
+    const val GROUP_SYMBOL = "symbol"
 
     val groups: List<Group> = listOf(
         Group("rotation", "屏幕方向", "ROTATION", "角度、切换与循环", rotation),
@@ -409,6 +429,7 @@ object ActionCatalog {
             Action.VoiceInput.Mode.entries.map { Action.VoiceInput(it) } + Action.SendKey.GBOARD_VOICE,
         ),
         Group(GROUP_SEND_KEY, "发送组合键", "SEND KEYS", "转发成另一个组合键，如 Gboard 的 Alt + D", direct = true),
+        Group(GROUP_SYMBOL, "输入符号", "TYPE SYMBOL", "标点、数学、箭头、货币、序号、表情…", direct = true),
         Group(GROUP_APP, "启动应用", "LAUNCH APP", "先选应用，再选入口", direct = true),
         Group(GROUP_URL, "打开链接", "OPEN URL", "用默认浏览器打开网址", direct = true),
         Group(GROUP_SYNC, "文件夹同步", "FOLDER SYNC", "本地文件夹与 NAS（SMB）互相同步", direct = true),

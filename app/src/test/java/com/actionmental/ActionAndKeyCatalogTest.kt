@@ -112,7 +112,8 @@ class ActionAndKeyCatalogTest {
         val direct = ActionCatalog.groups.filter { it.direct }.map { it.id }
         assertEquals(
             listOf(
-                ActionCatalog.GROUP_ADB_TCPIP, ActionCatalog.GROUP_SEND_KEY, ActionCatalog.GROUP_APP, ActionCatalog.GROUP_URL,
+                ActionCatalog.GROUP_ADB_TCPIP, ActionCatalog.GROUP_SEND_KEY, ActionCatalog.GROUP_SYMBOL, ActionCatalog.GROUP_APP,
+                ActionCatalog.GROUP_URL,
                 ActionCatalog.GROUP_SYNC,
                 ActionCatalog.GROUP_TERMUX, ActionCatalog.GROUP_SHELL,
             ),

@@ -212,6 +212,15 @@ data class TriggerFeedback(
                         output = it.detail.ifBlank { null },
                     )
                 }
+                // 符号出现在输入框里就是反馈；写不进去时说清原因，并告诉用户已放进剪贴板
+                is Action.TypeSymbol -> (result as? ActionResult.Failed)?.let {
+                    TriggerFeedback(
+                        action.display,
+                        value = translate(it.reason.message),
+                        failed = true,
+                        meta = it.detail.ifBlank { null }?.let(translate),
+                    )
+                }
                 else -> null
             }
     }

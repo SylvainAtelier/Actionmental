@@ -86,7 +86,7 @@ import com.actionmental.ui.theme.AmType
 import com.actionmental.ui.theme.amColors
 
 /** 编辑页里同一时刻最多打开一个弹层。 */
-private enum class EditorSheet { KEY, ACTION, APP, URL, SHELL, TERMUX, SYNC, ADB_TCPIP, SEND_KEY, SEND_KEY_CATALOG }
+private enum class EditorSheet { KEY, ACTION, APP, URL, SHELL, TERMUX, SYNC, ADB_TCPIP, SEND_KEY, SEND_KEY_CATALOG, SYMBOL }
 
 /**
  * 编辑 + 录制 + 冲突确认（PRD 15）。
@@ -322,6 +322,7 @@ fun ShortcutEditorScreen(
                     ActionCatalog.GROUP_TERMUX -> EditorSheet.TERMUX
                     ActionCatalog.GROUP_SYNC -> EditorSheet.SYNC
                     ActionCatalog.GROUP_ADB_TCPIP -> EditorSheet.ADB_TCPIP
+                    ActionCatalog.GROUP_SYMBOL -> EditorSheet.SYMBOL
                     ActionCatalog.GROUP_SEND_KEY -> {
                         vm.editSendKey((draft.action as? Action.SendKey)?.combo)
                         EditorSheet.SEND_KEY
@@ -403,6 +404,12 @@ fun ShortcutEditorScreen(
             onPick = { keyCode -> vm.setSendKeyMain(keyCode); sheet = EditorSheet.SEND_KEY },
             onDismiss = { sheet = EditorSheet.SEND_KEY },
             subtitle = "修饰键在上一层勾选，这里只定主键",
+        )
+
+        EditorSheet.SYMBOL -> SymbolSheet(
+            current = draft.action as? Action.TypeSymbol,
+            onConfirm = { action -> vm.setAction(action); sheet = null },
+            onDismiss = { sheet = null },
         )
 
         null -> Unit

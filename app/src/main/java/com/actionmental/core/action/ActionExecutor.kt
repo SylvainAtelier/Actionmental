@@ -1,6 +1,7 @@
 package com.actionmental.core.action
 
 import android.accessibilityservice.AccessibilityService
+import android.os.Build
 import com.actionmental.core.awake.ScreenAwakeController
 import com.actionmental.core.rotation.RotationController
 import com.actionmental.platform.AccessibilityBridge
@@ -14,6 +15,8 @@ import com.actionmental.platform.VoiceInputBackend
 import com.actionmental.platform.sync.SyncBackend
 import com.actionmental.platform.WirelessDebugBackend
 import com.actionmental.platform.adb.AdbTcpipBackend
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * 唯一的动作执行层（PRD 3.3 / 35.5）。
@@ -66,6 +69,7 @@ class ActionExecutor(
         is Action.ClipboardHistory -> toggleClipboardHistory()
         is Action.VoiceInput -> voiceInput.trigger(action.mode)
         is Action.SendKey -> keyChord.send(action.combo)
+        is Action.TypeSymbol -> typeSymbol(action.text)
         is Action.Termux -> termux.run(action, privileged())
         is Action.FolderSync -> sync.start(action.config)
         is Action.Shell -> shell(action.command)
@@ -190,6 +194,20 @@ class ActionExecutor(
     }
 
     private fun shellArg(value: String): String = "'" + value.replace("'", "'\"'\"'") + "'"
+
+    /**
+     * 经无障碍的输入连接把符号写进焦点输入框。
+     *
+     * 写不进去（Android 13 以下没有这条连接，或者此刻没有输入框）就放进剪贴板，
+     * 失败原因照实说，详情里告诉用户已经复制、自己粘贴即可。
+     */
+    private suspend fun typeSymbol(text: String): ActionResult {
+        if (!accessibility.connected.value) return ActionResult.Failed(ActionResult.Reason.ACCESSIBILITY_OFF)
+        if (withContext(Dispatchers.Main) { accessibility.commitText(text) }) return ActionResult.OK
+        val reason = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) ActionResult.Reason.UNSUPPORTED
+        else ActionResult.Reason.NO_INPUT_FIELD
+        return ActionResult.Failed(reason, if (clipboard.write("symbol", text)) "已复制到剪贴板" else "")
+    }
 
     private fun navigate(target: Action.Navigation.Target): ActionResult {
         if (!accessibility.connected.value) {
