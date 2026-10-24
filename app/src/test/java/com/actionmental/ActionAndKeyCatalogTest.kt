@@ -123,6 +123,33 @@ class ActionAndKeyCatalogTest {
     }
 
     @Test
+    fun `符号目录覆盖主键区全部 ASCII 标点，上档符号是 Shift 组合`() {
+        val chars = KeyCatalog.symbolKeys.map { it.char }.toSet()
+        val ascii = "`-=[]\\;',./~!@#\$%^&*()_+{}|:\"<>?".map { it.toString() }
+        assertTrue(ascii.filterNot { it in chars }.toString(), chars.containsAll(ascii))
+
+        val question = KeyCatalog.symbolKeys.first { it.char == "?" }
+        assertEquals(KeyCombo(KeyEvent.KEYCODE_SLASH, KeyCombo.MOD_SHIFT), question.combo)
+        assertEquals(question, KeyCatalog.symbolOf(KeyCombo(KeyEvent.KEYCODE_SLASH, KeyCombo.MOD_SHIFT or KeyCombo.MOD_CTRL)))
+        assertEquals("/", KeyCatalog.symbolOf(KeyCombo(KeyEvent.KEYCODE_SLASH))?.char)
+        assertEquals("symbol", KeyCatalog.openGroupFor(KeyCombo(KeyEvent.KEYCODE_1, KeyCombo.MOD_SHIFT)))
+        assertEquals("digit", KeyCatalog.openGroupFor(KeyCombo(KeyEvent.KEYCODE_1)))
+        assertTrue(KeyEvent.KEYCODE_AT in KeyCatalog.groups.first { it.id == "symbol" }.keyCodes)
+    }
+
+    @Test
+    fun `选符号时 Shift 跟着符号走，别的修饰键保留`() {
+        val question = KeyCatalog.symbolKeys.first { it.char == "?" }
+        val slash = KeyCatalog.symbolKeys.first { it.char == "/" }
+        val ctrlA = KeyCombo(KeyEvent.KEYCODE_A, KeyCombo.MOD_CTRL)
+
+        val picked = KeyCatalog.applySymbol(ctrlA, question)
+        assertEquals(KeyCombo(KeyEvent.KEYCODE_SLASH, KeyCombo.MOD_CTRL or KeyCombo.MOD_SHIFT), picked)
+        assertEquals(KeyCombo(KeyEvent.KEYCODE_SLASH, KeyCombo.MOD_CTRL), KeyCatalog.applySymbol(picked, slash))
+        assertEquals(KeyCombo(KeyEvent.KEYCODE_SLASH, KeyCombo.MOD_SHIFT), KeyCatalog.applySymbol(null, question))
+    }
+
+    @Test
     fun `按键目录不重复且能反查分组`() {
         val all = KeyCatalog.allKeyCodes
         assertEquals(all.size, all.distinct().size)

@@ -2,6 +2,7 @@ package com.actionmental.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,12 +18,16 @@ import com.actionmental.ui.i18n.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -50,15 +55,32 @@ fun AmCard(
     modifier: Modifier = Modifier,
     alert: Boolean = false,
     padding: Dp = AmSpace.card,
+    /** 整张卡可点时传这里，而不是在外面套 clickable：涟漪才会裁进圆角，读屏也会读成按钮。 */
+    onClick: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
+    /** 列表里「正在编辑的这一条」：墨色粗边，不占用只给冲突 / 破坏性操作的朱红。 */
+    selected: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val c = amColors
     val shape = RoundedCornerShape(AmShape.card)
+    val borderColor = when {
+        alert -> c.accentLine
+        selected -> c.ink
+        else -> c.line
+    }
+    val click = when {
+        onClick != null && onLongClick != null -> Modifier.combinedClickableCompat(onClick = onClick, onLongClick = onLongClick)
+        onClick != null -> Modifier.clickable(role = Role.Button, onClick = onClick)
+        else -> Modifier
+    }
     Column(
         modifier = modifier
             .hardShadow(if (alert) c.accentLine else c.shadowSolid, 2.dp, AmShape.card)
-            .background(if (alert) c.accentBg else c.surface, shape)
-            .border(1.dp, if (alert) c.accentLine else c.line, shape)
+            .clip(shape)
+            .background(if (alert) c.accentBg else c.surface)
+            .border(if (selected) 2.dp else 1.dp, borderColor, shape)
+            .then(click)
             .padding(padding),
         content = content,
     )
@@ -90,8 +112,7 @@ fun SectionHeader(title: String, technical: String? = null, trailing: (@Composab
         modifier = Modifier.fillMaxWidth().padding(bottom = AmSpace.s1),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(title, style = AmType.cardTitle, color = amColors.ink)
-        Box(Modifier.weight(1f))
+        Text(title, style = AmType.cardTitle, color = amColors.ink, modifier = Modifier.weight(1f).padding(end = AmSpace.s1).semantics { heading() })
         trailing?.invoke(this)
     }
 }
@@ -100,10 +121,11 @@ fun SectionHeader(title: String, technical: String? = null, trailing: (@Composab
 @Composable
 fun DataRow(key: String, value: String, valueColor: Color? = null) {
     val c = amColors
+    val line = c.line
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .defaultMinSize(minHeight = 26.dp)
+            .defaultMinSize(minHeight = 28.dp)
             .drawWithContent {
                 drawContent()
                 val y = size.height - 0.5f
@@ -111,7 +133,7 @@ fun DataRow(key: String, value: String, valueColor: Color? = null) {
                 val dash = 3.dp.toPx()
                 while (x < size.width) {
                     drawLine(
-                        color = Color(0x33888888),
+                        color = line,
                         start = Offset(x, y),
                         end = Offset(x + dash, y),
                         strokeWidth = 1f,
@@ -122,14 +144,13 @@ fun DataRow(key: String, value: String, valueColor: Color? = null) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Text(key, style = AmType.data, color = c.inkMuted)
+        Text(key, style = AmType.data, color = c.inkMuted, modifier = Modifier.weight(0.4f))
         Text(
             value,
             style = AmType.data,
             color = valueColor ?: c.ink,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(start = AmSpace.s2),
+            textAlign = androidx.compose.ui.text.style.TextAlign.End,
+            modifier = Modifier.weight(0.6f).padding(start = AmSpace.s2, top = 4.dp, bottom = 4.dp),
         )
     }
 }

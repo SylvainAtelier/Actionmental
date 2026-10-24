@@ -2,9 +2,9 @@
 :root{
   --am-bg:#E8E4DC; --am-bg-screen:#EFEBE2; --am-surface:#FFFDF8; --am-surface-sunken:#F4F0E6;
   --am-line:#DED8CA; --am-line-soft:#EAE4D7; --am-shadow-solid:#E2DCCE;
-  --am-ink:#1B1917; --am-ink-mid:#57514A; --am-ink-muted:#8A837A; --am-ink-faint:#B4ADA2;
+  --am-ink:#1B1917; --am-ink-mid:#4A453F; --am-ink-muted:#635D54; --am-ink-faint:#7A7369;
   --am-accent:#C8452B; --am-accent-ink:#8A2C16; --am-accent-bg:#FFF3EF; --am-accent-line:#E8BCB0;
-  --am-ok:#2F7A4F; --am-warn:#B8791F;
+  --am-ok:#2F7A4F; --am-warn:#96610F;
   --am-keycap-face:#F7F3EA; --am-keycap-line:#D8D2C6; --am-keycap-shadow:#C9C2B4;
   --am-r-card:12px; --am-r-sheet:18px; --am-r-key:6px; --am-r-chip:20px;
   --am-gap-1:8px; --am-gap-2:10px; --am-gap-3:14px; --am-gap-4:18px;
@@ -15,7 +15,7 @@
 [data-theme="dark"]{
   --am-bg:#0F0E0D; --am-bg-screen:#171614; --am-surface:#201F1C; --am-surface-sunken:#221F1B;
   --am-line:#302E29; --am-line-soft:#2A2822; --am-shadow-solid:#100F0E;
-  --am-ink:#F2EEE6; --am-ink-mid:#A29A8E; --am-ink-muted:#8A837A; --am-ink-faint:#6B655C;
+  --am-ink:#F2EEE6; --am-ink-mid:#B3ACA0; --am-ink-muted:#9C9589; --am-ink-faint:#868074;
   --am-accent:#E4653F; --am-accent-ink:#F2A98F; --am-accent-bg:#241A16; --am-accent-line:#4A2C22;
   --am-ok:#5FBF87; --am-warn:#D8A23E;
   --am-keycap-face:#2E2B26; --am-keycap-line:#45403A; --am-keycap-shadow:#100F0E;

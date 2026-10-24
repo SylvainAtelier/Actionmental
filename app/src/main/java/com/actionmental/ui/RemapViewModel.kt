@@ -5,6 +5,7 @@ import android.view.KeyEvent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.actionmental.AppGraph
+import com.actionmental.core.key.KeyCatalog
 import com.actionmental.core.key.KeyCombo
 import com.actionmental.core.remap.KeyRemap
 import com.actionmental.core.remap.RemapPresets
@@ -149,6 +150,11 @@ class RemapViewModel(application: Application) : AndroidViewModel(application) {
             field,
             KeyCombo(keyCode, inherited and KeyCombo.selfModifierMask(keyCode).inv()),
         )
+    }
+
+    /** 从符号目录里选：「?」直接就是 Shift + /，别的修饰键沿用草稿。 */
+    fun setSymbol(field: Field, symbol: KeyCatalog.SymbolKey) {
+        setCombo(field, KeyCatalog.applySymbol(comboOf(field), symbol))
     }
 
     fun toggleModifier(field: Field, mask: Int) {

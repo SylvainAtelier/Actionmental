@@ -159,6 +159,7 @@ private fun RotationControlSection(vm: AppViewModel, modifier: Modifier = Modifi
                 AmSwitch(
                     settings.coverScreenPortrait,
                     onCheckedChange = { on -> vm.updateSettings { it.copy(coverScreenPortrait = on) } },
+                    label = "折叠屏外屏回到 0°",
                 )
             }
             if (settings.coverScreenPortrait) {

@@ -527,6 +527,8 @@ object AppTranslations {
         "已在" to "Verified at",
         "录制" to "Record",
         "当前前台 · FOREGROUND RULE" to "CURRENT FOREGROUND",
+        "更多 · MORE" to "MORE",
+        "已选" to "Selected",
         "监听服务" to "Listener service",
         "未知应用" to "Unknown app",
         "无规则" to "No rule",
@@ -757,6 +759,24 @@ object AppTranslations {
         "内容 · CONTENT" to "CONTENT",
         "正在读取…" to "Loading…",
         "个字符" to "chars",
+        "编辑" to "Edit",
+        "编辑记录" to "Edit clip",
+        "返回列表" to "Back to list",
+        "内容" to "Content",
+        "内容为空" to "Empty content",
+        "已修改" to "Modified",
+        "在这里输入内容" to "Enter content here",
+        "保存并输入" to "Save & insert",
+        "正在保存…" to "Saving…",
+        "修改已保存" to "Changes saved",
+        "放弃修改" to "Discard changes",
+        "继续编辑" to "Keep editing",
+        "放弃这次修改？" to "Discard these changes?",
+        "内容不能为空，请输入后保存" to "Content cannot be empty. Enter text before saving.",
+        "仅更新这条记录，不会修改系统剪贴板" to "Updates only this clip, not the system clipboard.",
+        "保存失败，修改仍保留，请重试" to "Could not save. Your changes are kept here. Please retry.",
+        "无法读取完整内容，请重新打开后重试" to "Could not read the full clip. Reopen it to retry.",
+        "Ctrl+Enter 保存 · Ctrl+Shift+Enter 保存并输入 · Esc 取消" to "Ctrl+Enter save · Ctrl+Shift+Enter save & insert · Esc cancel",
         "来源 · " to "From · ",
         "未开启 · 不读取也不保存任何剪贴板内容" to "Off · nothing is read or saved from the clipboard",
         "记录中 · 经 Shizuku 监听，每次复制都会收下" to "Recording · every copy is caught through Shizuku",
@@ -988,6 +1008,46 @@ object AppTranslations {
         "发送组合键" to "Send key combo",
         "已发送 " to "Sent ",
         "发送 " to "Send ",
+        // 按键目录 · 符号
+        "搜索键名、符号或 keyCode…" to "Search key name, symbol or keyCode…",
+        "反引号" to "Backtick",
+        "减号" to "Minus",
+        "等号" to "Equals",
+        "左方括号" to "Left bracket",
+        "右方括号" to "Right bracket",
+        "反斜杠" to "Backslash",
+        "分号" to "Semicolon",
+        "单引号" to "Apostrophe",
+        "逗号" to "Comma",
+        "句点" to "Period",
+        "斜杠" to "Slash",
+        "At 键" to "At key",
+        "井号键" to "Pound key",
+        "星号键" to "Star key",
+        "加号键" to "Plus key",
+        "日元键（日文键盘）" to "Yen key (JIS)",
+        "Ro 键（日文键盘）" to "Ro key (JIS)",
+        "波浪号" to "Tilde",
+        "感叹号" to "Exclamation mark",
+        "At 符号" to "At sign",
+        "井号" to "Number sign",
+        "美元符号" to "Dollar sign",
+        "百分号" to "Percent",
+        "脱字符" to "Caret",
+        "和号" to "Ampersand",
+        "星号" to "Asterisk",
+        "左圆括号" to "Left parenthesis",
+        "右圆括号" to "Right parenthesis",
+        "下划线" to "Underscore",
+        "加号" to "Plus",
+        "左花括号" to "Left brace",
+        "右花括号" to "Right brace",
+        "竖线" to "Vertical bar",
+        "冒号" to "Colon",
+        "双引号" to "Double quote",
+        "小于号" to "Less-than",
+        "大于号" to "Greater-than",
+        "问号" to "Question mark",
         // 输入符号
         "标点、数学、箭头、货币、序号、表情…" to "Punctuation, math, arrows, currency, numbers, emoji…",
         "按下快捷键时，把选中的符号直接写进当前输入框，和输入法上屏一样。不需要 Shizuku。" to
@@ -1043,11 +1103,13 @@ object AppTranslations {
 
     fun translate(text: String, language: UserSettings.Language): String = when (language) {
         UserSettings.Language.CHINESE -> chineseOnly(text)
-        UserSettings.Language.ENGLISH -> english.entries
-            .sortedByDescending { it.key.length }
+        UserSettings.Language.ENGLISH -> englishByLength
             .fold(text) { value, (chinese, translation) -> value.replace(chinese, translation) }
             .let(::englishOnly)
     }
+
+    // 每个 Text 重组都会走一遍 translate，排序只做一次
+    private val englishByLength by lazy { english.entries.sortedByDescending { it.key.length }.map { it.key to it.value } }
 
     private fun chineseOnly(text: String): String {
         val translated = text

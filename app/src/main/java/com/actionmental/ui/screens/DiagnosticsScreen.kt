@@ -1,5 +1,6 @@
 package com.actionmental.ui.screens
 
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -209,7 +210,8 @@ private fun ShellEntryRow(entry: ShellEntry) {
         Modifier
             .fillMaxWidth()
             .padding(bottom = 6.dp)
-            .background(c.surfaceSunken, shape)
+            .clip(shape)
+            .background(c.surfaceSunken)
             .clickable { expanded = !expanded }
             .padding(horizontal = 10.dp, vertical = 8.dp),
     ) {

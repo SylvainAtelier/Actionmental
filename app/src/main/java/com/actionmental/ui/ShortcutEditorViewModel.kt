@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.actionmental.AppGraph
 import com.actionmental.core.action.Action
+import com.actionmental.core.key.KeyCatalog
 import com.actionmental.core.key.KeyCombo
 import com.actionmental.core.shortcut.AppScope
 import com.actionmental.core.shortcut.DeviceScope
@@ -229,6 +230,15 @@ class ShortcutEditorViewModel(application: Application) : AndroidViewModel(appli
      * 手动指定主键：修饰键沿用当前草稿，没录过就是空。
      * 若主键本身是修饰键，要把它自己那一位摘掉 —— 否则得到一个永远按不出来的组合。
      */
+    /** 从符号目录里选主键：Shift 跟着符号走，别的修饰键沿用草稿。 */
+    fun setSymbol(symbol: KeyCatalog.SymbolKey) {
+        _draft.value = _draft.value.copy(combo = KeyCatalog.applySymbol(_draft.value.combo, symbol))
+    }
+
+    fun setSendKeySymbol(symbol: KeyCatalog.SymbolKey) {
+        _sendKeyCombo.value = KeyCatalog.applySymbol(_sendKeyCombo.value, symbol)
+    }
+
     fun setMainKey(keyCode: Int) {
         val inherited = _draft.value.combo?.modifiers ?: 0
         _draft.value = _draft.value.copy(

@@ -1,7 +1,6 @@
 package com.actionmental.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +20,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.IconButton
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.material.icons.outlined.AddToHomeScreen
 import androidx.compose.foundation.layout.size
 import androidx.lifecycle.Lifecycle
@@ -46,10 +49,10 @@ import com.actionmental.core.key.KeyCombo
 import com.actionmental.core.shortcut.Shortcut
 import com.actionmental.ui.AppViewModel
 import com.actionmental.ui.components.AmCard
+import com.actionmental.ui.components.AmPrimaryButton
 import com.actionmental.ui.components.AmChip
 import com.actionmental.ui.components.AmLabel
 import com.actionmental.ui.components.AmSwitch
-import com.actionmental.ui.components.combinedClickableCompat
 import com.actionmental.ui.components.KeyComboRow
 import com.actionmental.ui.theme.AmShape
 import com.actionmental.ui.theme.AmSpace
@@ -121,8 +124,8 @@ fun ShortcutListScreen(
     val all by vm.shortcuts.collectAsStateWithLifecycle()
     val pinned by vm.desktopPinned.collectAsStateWithLifecycle()
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.refreshDesktop() }
-    var query by remember { mutableStateOf("") }
-    var filter by remember { mutableStateOf<ActionCategory?>(null) }
+    var query by rememberSaveable { mutableStateOf("") }
+    var filter by rememberSaveable { mutableStateOf<ActionCategory?>(null) }
 
     val visible = all.filter { shortcut ->
         val matchesFilter = filter == null || shortcut.action.category == filter
@@ -137,23 +140,14 @@ fun ShortcutListScreen(
     Column(modifier.fillMaxSize()) {
         Column(Modifier.padding(horizontal = AmSpace.screen, vertical = AmSpace.s3)) {
             ScreenTitle("快捷键", "SHORTCUTS · " + all.size) {
-                Box(
-                    Modifier
-                        .background(c.ink, RoundedCornerShape(AmShape.key + 2.dp))
-                        .clickable { onOpenEditor(null) }
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.Add, null, tint = c.bgScreen, modifier = Modifier.height(15.dp))
-                        Text(" 录制", style = AmType.body, color = c.bgScreen)
-                    }
-                }
+                AmPrimaryButton("录制", { onOpenEditor(null) }, icon = Icons.Filled.Add)
             }
             Spacer(Modifier.height(AmSpace.s2))
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
                 singleLine = true,
+                label = { Text("搜索组合键或动作…") },
                 placeholder = { Text("搜索组合键或动作…", style = AmType.secondary, color = c.inkFaint) },
                 leadingIcon = { Icon(Icons.Filled.Search, null, tint = c.inkFaint) },
                 modifier = Modifier.fillMaxWidth(),
@@ -223,21 +217,24 @@ private fun ShortcutRow(
     var menuOpen by remember { mutableStateOf(false) }
 
     AmCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickableCompat(onClick = onClick, onLongClick = { menuOpen = true }),
-        alert = selected,
+        modifier = Modifier.fillMaxWidth(),
+        selected = selected,
+        onClick = onClick,
+        onLongClick = { menuOpen = true },
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            KeyComboRow(shortcut.combo)
-            Spacer(Modifier.width(AmSpace.s2))
+            KeyComboRow(shortcut.combo, modifier = Modifier.weight(1f))
+            IconButton(onClick = { menuOpen = true }) {
+                Icon(Icons.Filled.MoreVert, contentDescription = localize("更多"), tint = c.inkMuted)
+            }
+        }
+        Spacer(Modifier.height(AmSpace.s1))
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
                     shortcut.displayLabel,
                     style = AmType.body,
                     color = if (shortcut.enabled) c.ink else c.inkFaint,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
                 shortcut.action.detail?.let { detail ->
                     Text(
@@ -255,30 +252,30 @@ private fun ShortcutRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                // 标记放在文字下面而不是挤在开关左边：手机上这一行本来就只够放组合键、标题和开关
+                val tagged = onDesktop || shortcut.combo.isModifierKey || !shortcut.enabled || shortcut.action.requiresPrivilege
+                if (tagged) {
+                    FlowRow(
+                        Modifier.padding(top = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (onDesktop) {
+                            Icon(
+                                Icons.Outlined.AddToHomeScreen,
+                                contentDescription = localize("已在桌面"),
+                                tint = c.inkMuted,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                        if (shortcut.combo.isModifierKey) AmLabel("轻点", color = c.warn)
+                        if (!shortcut.enabled) AmLabel("已禁用", color = c.warn)
+                        if (shortcut.action.requiresPrivilege) AmLabel("SHIZUKU", color = c.warn)
+                    }
+                }
             }
-            // 一枚小图标而不是文字标签：这一列已经够挤，「在桌面上」也不是需要读的状态
-            if (onDesktop) {
-                Icon(
-                    Icons.Outlined.AddToHomeScreen,
-                    contentDescription = localize("已在桌面"),
-                    tint = c.inkMuted,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(Modifier.width(6.dp))
-            }
-            if (shortcut.combo.isModifierKey) {
-                AmLabel("轻点", color = c.warn)
-                Spacer(Modifier.width(6.dp))
-            }
-            if (!shortcut.enabled) {
-                AmLabel("已禁用", color = c.warn)
-                Spacer(Modifier.width(6.dp))
-            }
-            if (shortcut.action.requiresPrivilege) {
-                AmLabel("SHIZUKU", color = c.warn)
-                Spacer(Modifier.width(6.dp))
-            }
-            AmSwitch(checked = shortcut.enabled, onCheckedChange = onToggle)
+            Spacer(Modifier.width(AmSpace.s1))
+            AmSwitch(checked = shortcut.enabled, onCheckedChange = onToggle, label = shortcut.displayLabel)
         }
 
         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {

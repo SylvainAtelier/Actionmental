@@ -12,6 +12,7 @@ import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.luminance
 import androidx.core.graphics.ColorUtils
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -49,7 +50,13 @@ data class AmColors(
     val keycapFace: Color,
     val keycapLine: Color,
     val keycapShadow: Color,
-)
+) {
+    val onAccent: Color get() = contrastingForeground(accent)
+}
+
+/** Select an opaque foreground meeting AA on any solid accent color. */
+fun contrastingForeground(background: Color): Color =
+    if (background.luminance() > 0.179f) Color.Black else Color.White
 
 val LightAmColors = AmColors(
     bg = Color(0xFFE8E4DC),
@@ -60,15 +67,16 @@ val LightAmColors = AmColors(
     lineSoft = Color(0xFFEAE4D7),
     shadowSolid = Color(0xFFE2DCCE),
     ink = Color(0xFF1B1917),
-    inkMid = Color(0xFF57514A),
-    inkMuted = Color(0xFF8A837A),
-    inkFaint = Color(0xFFB4ADA2),
+    // 三级墨色在卡片面上分别 ≥ 9 / 6.4 / 4.6 : 1，最淡的一级也过 WCAG AA 正文线
+    inkMid = Color(0xFF4A453F),
+    inkMuted = Color(0xFF635D54),
+    inkFaint = Color(0xFF6C655C),
     accent = Color(0xFFC8452B),
     accentInk = Color(0xFF8A2C16),
     accentBg = Color(0xFFFFF3EF),
     accentLine = Color(0xFFE8BCB0),
     ok = Color(0xFF2F7A4F),
-    warn = Color(0xFFB8791F),
+    warn = Color(0xFF96610F),
     keycapFace = Color(0xFFF7F3EA),
     keycapLine = Color(0xFFD8D2C6),
     keycapShadow = Color(0xFFC9C2B4),
@@ -83,9 +91,9 @@ val DarkAmColors = AmColors(
     lineSoft = Color(0xFF2A2822),
     shadowSolid = Color(0xFF100F0E),
     ink = Color(0xFFF2EEE6),
-    inkMid = Color(0xFFA29A8E),
-    inkMuted = Color(0xFF8A837A),
-    inkFaint = Color(0xFF6B655C),
+    inkMid = Color(0xFFC8C1B6),
+    inkMuted = Color(0xFFB3ACA0),
+    inkFaint = Color(0xFFA39B8F),
     accent = Color(0xFFE4653F),
     accentInk = Color(0xFFF2A98F),
     accentBg = Color(0xFF241A16),
@@ -137,34 +145,39 @@ private val accentCache = java.util.concurrent.ConcurrentHashMap<Pair<Boolean, U
 val LocalAmColors = staticCompositionLocalOf { LightAmColors }
 
 /**
- * 字号阶梯直接对应设计规范第 3 节。
+ * 字号阶梯：正文 14sp、最小 11sp（只给全大写技术标签），行高约 1.4 倍。
+ * 原来正文 12.5sp、标签 9.5sp，在手机上要凑近才看得清，系统放大字体后层级也挤成一团。
  * IBM Plex 若随包提供，把 FontFamily 换成 res/font 即可，其余不用动。
  */
 object AmType {
     val mono = FontFamily.Monospace
     val ui = FontFamily.SansSerif
 
-    val pageTitle = TextStyle(fontFamily = ui, fontSize = 21.sp, fontWeight = FontWeight.Bold, lineHeight = 26.sp)
-    val cardTitle = TextStyle(fontFamily = ui, fontSize = 15.sp, fontWeight = FontWeight.Bold, lineHeight = 20.sp)
-    val body = TextStyle(fontFamily = ui, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, lineHeight = 17.sp)
-    val secondary = TextStyle(fontFamily = ui, fontSize = 11.sp, fontWeight = FontWeight.Normal, lineHeight = 15.sp)
-    val data = TextStyle(fontFamily = mono, fontSize = 11.5.sp, fontWeight = FontWeight.Normal, lineHeight = 15.sp)
+    val pageTitle = TextStyle(fontFamily = ui, fontSize = 22.sp, fontWeight = FontWeight.Bold, lineHeight = 28.sp)
+    val cardTitle = TextStyle(fontFamily = ui, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, lineHeight = 22.sp)
+    val body = TextStyle(fontFamily = ui, fontSize = 14.sp, fontWeight = FontWeight.Medium, lineHeight = 20.sp)
+    val secondary = TextStyle(fontFamily = ui, fontSize = 13.sp, fontWeight = FontWeight.Normal, lineHeight = 18.sp)
+    val data = TextStyle(fontFamily = mono, fontSize = 12.sp, fontWeight = FontWeight.Normal, lineHeight = 17.sp)
     val label = TextStyle(
-        fontFamily = ui, fontSize = 9.5.sp, fontWeight = FontWeight.Medium,
-        letterSpacing = 1.14.sp, lineHeight = 13.sp,
+        fontFamily = ui, fontSize = 11.sp, fontWeight = FontWeight.Medium,
+        letterSpacing = 0.8.sp, lineHeight = 15.sp,
     )
-    val keycap = TextStyle(fontFamily = mono, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-    val keycapLarge = TextStyle(fontFamily = mono, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+    val keycap = TextStyle(fontFamily = mono, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+    val keycapLarge = TextStyle(fontFamily = mono, fontSize = 22.sp, fontWeight = FontWeight.Bold)
 }
 
+/** 4dp 网格；屏幕边距 16dp（Material 手机标准），列表行与按钮触控高度 48dp。 */
 object AmSpace {
     val s1 = 8.dp
-    val s2 = 10.dp
-    val s3 = 14.dp
-    val s4 = 18.dp
-    val screen = 18.dp
-    val card = 13.dp
-    val rowMin = 44.dp
+    val s2 = 12.dp
+    val s3 = 16.dp
+    val s4 = 20.dp
+    val screen = 16.dp
+    val card = 16.dp
+    val rowMin = 48.dp
+
+    /** 单栏页面的最大正文宽度：平板上不让卡片拉成一条横线。 */
+    val contentMax = 840.dp
 }
 
 object AmShape {
@@ -172,7 +185,7 @@ object AmShape {
     val sheet = 18.dp
     val key = 6.dp
     val chip = 20.dp
-    val iconBox = 9.dp
+    val iconBox = 10.dp
 }
 
 @Composable
@@ -193,19 +206,19 @@ fun ActionmentalTheme(
 
     val scheme = if (dark) {
         darkColorScheme(
-            primary = am.accent, onPrimary = Color.White,
+            primary = am.accent, onPrimary = am.onAccent,
             background = am.bgScreen, onBackground = am.ink,
             surface = am.surface, onSurface = am.ink,
             surfaceVariant = am.surfaceSunken, onSurfaceVariant = am.inkMid,
-            outline = am.line, error = errorRed,
+            outline = am.inkFaint, error = errorRed, onError = contrastingForeground(errorRed),
         )
     } else {
         lightColorScheme(
-            primary = am.accent, onPrimary = Color.White,
+            primary = am.accent, onPrimary = am.onAccent,
             background = am.bgScreen, onBackground = am.ink,
             surface = am.surface, onSurface = am.ink,
             surfaceVariant = am.surfaceSunken, onSurfaceVariant = am.inkMid,
-            outline = am.line, error = errorRed,
+            outline = am.inkFaint, error = errorRed, onError = contrastingForeground(errorRed),
         )
     }
 

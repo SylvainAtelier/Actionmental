@@ -6,6 +6,7 @@ import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 
 /** Applies the configured app language to every user-facing Compose text node. */
@@ -17,6 +18,7 @@ fun Text(
     overflow: TextOverflow = TextOverflow.Clip,
     maxLines: Int = Int.MAX_VALUE,
     style: TextStyle = LocalTextStyle.current,
+    textAlign: TextAlign? = null,
 ) {
     androidx.compose.material3.Text(
         text = localize(text),
@@ -25,6 +27,7 @@ fun Text(
         overflow = overflow,
         maxLines = maxLines,
         style = style,
+        textAlign = textAlign,
     )
 }
 

@@ -160,7 +160,7 @@ fun ShortcutEditorScreen(
             onStartRecording = vm::startRecording,
             onCancelRecording = vm::cancelRecording,
             onOpenCatalog = {
-                openGroup = combo?.let { KeyCatalog.groupOf(it.keyCode)?.id }
+                openGroup = KeyCatalog.openGroupFor(combo)
                 sheet = EditorSheet.KEY
             },
             onToggleModifier = vm::toggleModifier,
@@ -278,7 +278,7 @@ fun ShortcutEditorScreen(
             Spacer(Modifier.height(AmSpace.s1))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("启用", style = AmType.body, color = c.ink, modifier = Modifier.weight(1f))
-                AmSwitch(checked = draft.enabled, onCheckedChange = vm::setEnabled)
+                AmSwitch(checked = draft.enabled, onCheckedChange = vm::setEnabled, label = "启用")
             }
         }
 
@@ -306,6 +306,8 @@ fun ShortcutEditorScreen(
             openGroupId = openGroup,
             onOpenGroup = { openGroup = it },
             onPick = { keyCode -> vm.setMainKey(keyCode); sheet = null },
+            selectedCombo = combo,
+            onPickSymbol = { symbol -> vm.setSymbol(symbol); sheet = null },
             onDismiss = { sheet = null },
         )
 
@@ -390,7 +392,7 @@ fun ShortcutEditorScreen(
             vm = vm,
             onOpenCatalog = {
                 vm.cancelRecording()
-                openGroup = sendKeyCombo?.let { KeyCatalog.groupOf(it.keyCode)?.id }
+                openGroup = KeyCatalog.openGroupFor(sendKeyCombo)
                 sheet = EditorSheet.SEND_KEY_CATALOG
             },
             onConfirm = { action -> vm.setAction(action); sheet = null },
@@ -402,6 +404,8 @@ fun ShortcutEditorScreen(
             openGroupId = openGroup,
             onOpenGroup = { openGroup = it },
             onPick = { keyCode -> vm.setSendKeyMain(keyCode); sheet = EditorSheet.SEND_KEY },
+            selectedCombo = sendKeyCombo,
+            onPickSymbol = { symbol -> vm.setSendKeySymbol(symbol); sheet = EditorSheet.SEND_KEY },
             onDismiss = { sheet = EditorSheet.SEND_KEY },
             subtitle = "修饰键在上一层勾选，这里只定主键",
         )
@@ -806,7 +810,7 @@ private fun TermuxSheet(
                     color = c.inkFaint,
                 )
             }
-            AmSwitch(background, onCheckedChange = { background = it })
+            AmSwitch(background, onCheckedChange = { background = it }, label = "后台执行")
         }
     }
 }

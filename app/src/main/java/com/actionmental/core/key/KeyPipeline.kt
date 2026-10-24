@@ -311,7 +311,10 @@ class KeyPipeline(
         // 于是「左 Shift 映射成 Alt」之后，Alt + X 的快捷键真的能被 左Shift + X 按出来
         val effective = rewriteCombo?.invoke(combo, _snapshot.value.pressedKeyCodes, e.device) ?: combo
 
-        val matched = onTrigger?.invoke(effective, e.device) ?: false
+        // 改写后的组合没绑东西，再拿手指真按下的组合问一次：录制录的就是它（见上），
+        // 「左 Shift → 左 Alt」之后录下的 Shift + / 才匹配得上，而不是被当成 Alt + / 发出去
+        val matched = (onTrigger?.invoke(effective, e.device) ?: false) ||
+            (physicalFallback(combo, effective)?.let { onTrigger?.invoke(it, e.device) } ?: false)
         val remapped = !matched && (onRemap?.invoke(combo, effective, e.device) ?: false)
         if (!matched && !remapped) {
             // 没绑定的键是绝大多数：打字时每一个字母都走到这里。
@@ -431,8 +434,21 @@ class KeyPipeline(
         tapCandidate = null
     }
 
-    private companion object {
+    companion object {
+        /**
+         * 改写后的组合匹配不上时，要不要退回原组合再匹配一次；要的话返回原组合。
+         *
+         * 只在改写**摘掉**了手指真按着的修饰位时才退（Shift 被映射成 Alt：原组合里的 Shift 是真按着的）。
+         * 只是**添上**修饰位的不退（Caps → Ctrl：原组合「1」里根本没有 Caps 的影子），
+         * 否则按着 Caps + 1 会去触发绑在单独「1」上的快捷键。
+         */
+        fun physicalFallback(original: KeyCombo, effective: KeyCombo): KeyCombo? {
+            if (original == effective) return null
+            val removed = original.modifiers and effective.modifiers.inv()
+            return original.takeIf { removed != 0 }
+        }
+
         /** 注入是异步的，一串事件走完 InputDispatcher 再回到无障碍服务，一秒半绰绰有余。 */
-        const val ECHO_WINDOW_MS = 1_500L
+        private const val ECHO_WINDOW_MS = 1_500L
     }
 }

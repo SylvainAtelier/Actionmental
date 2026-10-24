@@ -132,7 +132,7 @@ fun ClipHistoryScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                             color = c.inkFaint,
                         )
                     }
-                    AmSwitch(settings.clipHistory, onCheckedChange = vm::setClipHistory)
+                    AmSwitch(settings.clipHistory, onCheckedChange = vm::setClipHistory, label = "记录剪贴板历史")
                 }
                 Spacer(Modifier.height(AmSpace.s2))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -144,7 +144,7 @@ fun ClipHistoryScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                             color = c.inkFaint,
                         )
                     }
-                    AmSwitch(settings.clipBubble, onCheckedChange = vm::setClipBubble)
+                    AmSwitch(settings.clipBubble, onCheckedChange = vm::setClipBubble, label = "屏幕边缘按钮")
                 }
                 if (settings.clipBubble) {
                     Spacer(Modifier.height(6.dp))
@@ -432,7 +432,7 @@ private fun metaLine(entry: ClipEntry, vm: AppViewModel): String = listOfNotNull
 @Composable
 private fun ClipCard(entry: ClipEntry, vm: AppViewModel, onOpen: () -> Unit) {
     val c = amColors
-    AmCard(Modifier.fillMaxWidth().clip(RoundedCornerShape(AmShape.card)).clickable(onClick = onOpen)) {
+    AmCard(Modifier.fillMaxWidth(), onClick = onOpen) {
         // 用户的原文不能过界面翻译：中文模式下翻译层会把不含汉字的「 · 」分段整段丢掉
         RawText(
             ClipPolicy.preview(entry.text, 400),

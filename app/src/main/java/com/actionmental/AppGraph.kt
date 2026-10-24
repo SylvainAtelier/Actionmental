@@ -385,8 +385,11 @@ class AppGraph private constructor(context: Context) {
         isToggle = { e ->
             e.asTrigger()?.let { combo ->
                 val effective = remapMatcher.rewrite(combo, pipeline.snapshot.value.pressedKeyCodes, e.device)
-                matcher.match(effective, e.device, accessibility.foregroundPackage.value)?.action ==
-                    Action.ClipboardHistory
+                val foreground = accessibility.foregroundPackage.value
+                // 与管线的匹配同一规则：改写后的没命中，再按手指真按下的认一次
+                val shortcut = matcher.match(effective, e.device, foreground)
+                    ?: KeyPipeline.physicalFallback(combo, effective)?.let { matcher.match(it, e.device, foreground) }
+                shortcut?.action == Action.ClipboardHistory
             } ?: false
         },
         onInsert = ::insertClip,
@@ -419,6 +422,7 @@ class AppGraph private constructor(context: Context) {
         },
         onRunQuick = ::runQuickShortcut,
         onShown = accessibility::markOverlayShown,
+        onInputReturned = accessibility::markInputBorrowed,
     )
 
     private fun quickActionOf(shortcut: Shortcut): ClipPanel.QuickAction {

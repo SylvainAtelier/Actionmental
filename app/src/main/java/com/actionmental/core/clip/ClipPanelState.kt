@@ -23,6 +23,9 @@ sealed interface PanelKey {
     /** Ctrl+C：把光标所在那一条放回系统剪贴板，不上屏。 */
     data object Copy : PanelKey
 
+    /** Ctrl+E：打开光标所在那一条的编辑页。 */
+    data object Edit : PanelKey
+
     /** 直选键（默认 Ctrl + 1…9，见 [PickKeys]）：直接选用屏幕上第几条，不必先挪光标。 */
     data class Pick(val index: Int) : PanelKey
 
@@ -114,6 +117,7 @@ object PanelKeys {
             ctrl && keyCode == KeyEvent.KEYCODE_P -> PanelKey.TogglePin
             ctrl && keyCode == KeyEvent.KEYCODE_C -> PanelKey.Copy
             ctrl && keyCode == KeyEvent.KEYCODE_D -> PanelKey.Delete
+            ctrl && keyCode == KeyEvent.KEYCODE_E -> PanelKey.Edit
             ctrl && keyCode == KeyEvent.KEYCODE_U -> PanelKey.ClearQuery
             ctrl || alt -> null
             typed != null -> PanelKey.Type(typed)
@@ -133,6 +137,8 @@ sealed interface PanelEffect {
     data class Delete(val entry: ClipEntry) : PanelEffect
     /** 只放回系统剪贴板，不上屏。Ctrl+C 与长按菜单发出。 */
     data class Copy(val entry: ClipEntry) : PanelEffect
+    /** 打开编辑页改这一条的正文。Ctrl+E 与长按菜单发出。 */
+    data class Edit(val entry: ClipEntry) : PanelEffect
     data object None : PanelEffect
 }
 
@@ -180,6 +186,7 @@ data class ClipPanelState(
         PanelKey.Delete -> this to (current?.let { PanelEffect.Delete(it) } ?: PanelEffect.None)
         PanelKey.TogglePin -> this to (current?.let { PanelEffect.TogglePin(it) } ?: PanelEffect.None)
         PanelKey.Copy -> this to (current?.let { PanelEffect.Copy(it) } ?: PanelEffect.None)
+        PanelKey.Edit -> this to (current?.let { PanelEffect.Edit(it) } ?: PanelEffect.None)
         is PanelKey.Pick -> {
             val entry = entries.getOrNull(key.index)
             if (entry == null) this to PanelEffect.None

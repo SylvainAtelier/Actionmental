@@ -1,5 +1,8 @@
 package com.actionmental.ui.screens
 
+import com.actionmental.ui.components.AmChip
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -116,9 +119,12 @@ fun LogScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
             AmCard(Modifier.fillMaxWidth()) {
                 AmLabel("级别过滤 · MIN LEVEL")
                 Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     LogLevel.entries.forEach { level ->
-                        LevelChip(level, selected = level == minLevel) { minLevel = level }
+                        AmChip(level.name, selected = level == minLevel) { minLevel = level }
                     }
                 }
             }
@@ -152,7 +158,7 @@ fun LogScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
         // 这一段就是那份记录：不展示它，用户看到的就是「日志被清空了」。
         if (persisted.isNotBlank()) {
             item {
-                AmCard(Modifier.fillMaxWidth().clickable { showHistory = !showHistory }) {
+                AmCard(Modifier.fillMaxWidth(), onClick = { showHistory = !showHistory }) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("更早的记录（含上一次进程）", style = AmType.body, color = c.ink)
@@ -176,24 +182,6 @@ fun LogScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun LevelChip(level: LogLevel, selected: Boolean, onClick: () -> Unit) {
-    val c = amColors
-    Row(
-        Modifier
-            .background(if (selected) c.ink else c.surface, RoundedCornerShape(AmShape.chip))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            level.name,
-            style = AmType.data,
-            color = if (selected) c.surface else c.inkMid,
-        )
-    }
-}
-
-@Composable
 private fun LogRow(entry: LogEntry, expanded: Boolean, onToggle: () -> Unit) {
     val c = amColors
     val tone = when (entry.level) {
@@ -202,7 +190,7 @@ private fun LogRow(entry: LogEntry, expanded: Boolean, onToggle: () -> Unit) {
         LogLevel.INFO -> c.ok
         LogLevel.DEBUG -> c.inkFaint
     }
-    AmCard(Modifier.fillMaxWidth().clickable(onClick = onToggle), alert = entry.level == LogLevel.ERROR) {
+    AmCard(Modifier.fillMaxWidth(), alert = entry.level == LogLevel.ERROR, onClick = onToggle) {
         Row(verticalAlignment = Alignment.Top) {
             StatusDot(tone)
             Spacer(Modifier.width(8.dp))

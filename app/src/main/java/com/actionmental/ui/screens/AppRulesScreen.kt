@@ -74,6 +74,7 @@ fun AppRulesScreen(vm: AppViewModel, modifier: Modifier = Modifier, embedded: Bo
                 AmSwitch(
                     checked = settings.appRulesEnabled,
                     onCheckedChange = { enabled -> vm.updateSettings { it.copy(appRulesEnabled = enabled) } },
+                    label = "启用应用级规则",
                 )
             }
         }
@@ -93,7 +94,7 @@ fun AppRulesScreen(vm: AppViewModel, modifier: Modifier = Modifier, embedded: Bo
                             color = if (rule.rotationMode.isForced) c.accent else c.inkMid,
                         )
                         Spacer(Modifier.height(0.dp))
-                        AmSwitch(rule.enabled, { vm.setRuleEnabled(rule.id, it) })
+                        AmSwitch(rule.enabled, { vm.setRuleEnabled(rule.id, it) }, label = rule.appLabel)
                     }
                     Spacer(Modifier.height(6.dp))
                     // 五个方向 chip 在窄屏上放不下，横向滚动而不是挤成两行
@@ -164,7 +165,7 @@ fun AppRulesScreen(vm: AppViewModel, modifier: Modifier = Modifier, embedded: Bo
                             Text(target.appLabel, style = AmType.body, color = c.ink, maxLines = 1)
                             Text(target.packageName, style = AmType.data, color = c.inkFaint, maxLines = 1)
                         }
-                        AmSwitch(target.enabled, { vm.setCompatEnabled(target.packageName, it) })
+                        AmSwitch(target.enabled, { vm.setCompatEnabled(target.packageName, it) }, label = target.appLabel)
                     }
                     Spacer(Modifier.height(6.dp))
                     Row(

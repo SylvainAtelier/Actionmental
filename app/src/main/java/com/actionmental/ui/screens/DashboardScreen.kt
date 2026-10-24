@@ -1,6 +1,15 @@
 package com.actionmental.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -17,12 +26,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.actionmental.AppGraph
 import com.actionmental.core.hardening.HardeningRecord
 import com.actionmental.ui.AppViewModel
+import com.actionmental.ui.AdaptiveLayout
+import androidx.compose.ui.platform.LocalDensity
 import com.actionmental.ui.Destination
 import com.actionmental.ui.components.AmCard
 import com.actionmental.ui.components.AmLabel
@@ -47,6 +61,8 @@ private val noticeStamp = SimpleDateFormat("MM-dd HH:mm", Locale.US)
 fun DashboardScreen(
     vm: AppViewModel,
     modifier: Modifier = Modifier,
+    /** 首页底部「更多」里列出的入口；宽屏侧栏已经全列出来时传空。 */
+    moreEntries: List<Destination> = Destination.entries.filter { it != Destination.DASHBOARD },
     onNavigate: (Destination) -> Unit,
 ) {
     val c = amColors
@@ -58,16 +74,13 @@ fun DashboardScreen(
     val unread by vm.hardeningUnread.collectAsStateWithLifecycle()
     val latestNotice by vm.hardeningLatest.collectAsStateWithLifecycle()
 
-    val entries = listOf(
+    val badges = mapOf(
         Destination.SHORTCUTS to status.shortcutCount.toString(),
         Destination.REMAP to status.remapCount.takeIf { it > 0 }?.toString().orEmpty(),
-        Destination.MONITOR to "",
         Destination.ROTATION to status.ruleCount.takeIf { it > 0 }?.let { it.toString() + " 条规则" }.orEmpty(),
         Destination.CLIPBOARD to if (settings.clipHistory) "" else "未开启",
-        Destination.PRIVILEGE to "",
-        Destination.LOGS to "",
-        Destination.SETTINGS to "",
     )
+    val entries = moreEntries.map { it to badges[it].orEmpty() }
 
     LazyColumn(
         modifier = modifier.fillMaxWidth(),
@@ -87,59 +100,77 @@ fun DashboardScreen(
             item { HardeningNoticeCard(notice, unread) { onNavigate(Destination.PRIVILEGE) } }
         }
 
+        // 四张状态卡：手机 2×2，正文够宽（>= 640dp）时排成一行。
+        // 同一行的卡片等高，结论换行时不会一高一矮。
         item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(AmSpace.s2)) {
-                StatusCard(
-                    name = "监听服务",
-                    conclusion = when {
-                        status.accessibilityConnected -> "运行中"
-                        status.accessibilityWaitingForBind -> "已开启 · 等待连接"
-                        else -> "未开启"
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val perRow = AdaptiveLayout.statusColumns(maxWidth.value, LocalDensity.current.fontScale)
+                val cards: List<@Composable (Modifier) -> Unit> = listOf(
+                    { cardModifier ->
+                        StatusCard(
+                            name = "监听服务",
+                            conclusion = when {
+                                status.accessibilityConnected -> "运行中"
+                                status.accessibilityWaitingForBind -> "已开启 · 等待连接"
+                                else -> "未开启"
+                            },
+                            technical = "AccessibilityService",
+                            tone = when {
+                                status.accessibilityConnected -> StatusTone.OK
+                                status.accessibilityWaitingForBind -> StatusTone.WARN
+                                else -> StatusTone.ALERT
+                            },
+                            modifier = cardModifier,
+                            onClick = { onNavigate(Destination.SETTINGS) },
+                        )
                     },
-                    technical = "AccessibilityService",
-                    tone = when {
-                        status.accessibilityConnected -> StatusTone.OK
-                        status.accessibilityWaitingForBind -> StatusTone.WARN
-                        else -> StatusTone.ALERT
+                    { cardModifier ->
+                        StatusCard(
+                            name = "Shizuku",
+                            conclusion = status.shizuku.conclusion,
+                            technical = status.shizuku.identity,
+                            tone = if (status.shizuku.usable) StatusTone.OK else StatusTone.WARN,
+                            modifier = cardModifier,
+                            onClick = { onNavigate(Destination.PRIVILEGE) },
+                        )
                     },
-                    modifier = Modifier.weight(1f),
-                    onClick = { onNavigate(Destination.SETTINGS) },
-                )
-                StatusCard(
-                    name = "Shizuku",
-                    conclusion = status.shizuku.conclusion,
-                    technical = status.shizuku.identity,
-                    tone = if (status.shizuku.usable) StatusTone.OK else StatusTone.WARN,
-                    modifier = Modifier.weight(1f),
-                    onClick = { onNavigate(Destination.PRIVILEGE) },
-                )
-            }
-        }
-
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(AmSpace.s2)) {
-                StatusCard(
-                    name = "键盘",
-                    conclusion = status.primaryKeyboard?.name ?: "未检测到",
-                    technical = status.primaryKeyboard
-                        ?.let { "id " + it.id + " · " + it.transport }
-                        ?: "no physical keyboard",
-                    tone = if (status.keyboardConnected) StatusTone.OK else StatusTone.WARN,
-                    modifier = Modifier.weight(1f),
-                    onClick = { onNavigate(Destination.MONITOR) },
-                )
-                StatusCard(
-                    name = "屏幕方向",
-                    conclusion = status.rotation.mode.label,
-                    technical = status.rotation.mode.technical,
-                    tone = when {
-                        !status.rotation.available -> StatusTone.WARN
-                        status.rotation.mode.isForced -> StatusTone.ALERT
-                        else -> StatusTone.IDLE
+                    { cardModifier ->
+                        StatusCard(
+                            name = "键盘",
+                            conclusion = status.primaryKeyboard?.name ?: "未检测到",
+                            technical = status.primaryKeyboard
+                                ?.let { "id " + it.id + " · " + it.transport }
+                                ?: "no physical keyboard",
+                            tone = if (status.keyboardConnected) StatusTone.OK else StatusTone.WARN,
+                            modifier = cardModifier,
+                            onClick = { onNavigate(Destination.MONITOR) },
+                        )
                     },
-                    modifier = Modifier.weight(1f),
-                    onClick = { onNavigate(Destination.ROTATION) },
+                    { cardModifier ->
+                        StatusCard(
+                            name = "屏幕方向",
+                            conclusion = status.rotation.mode.label,
+                            technical = status.rotation.mode.technical,
+                            tone = when {
+                                !status.rotation.available -> StatusTone.WARN
+                                status.rotation.mode.isForced -> StatusTone.ALERT
+                                else -> StatusTone.IDLE
+                            },
+                            modifier = cardModifier,
+                            onClick = { onNavigate(Destination.ROTATION) },
+                        )
+                    },
                 )
+                Column(verticalArrangement = Arrangement.spacedBy(AmSpace.s2)) {
+                    cards.chunked(perRow).forEach { row ->
+                        Row(
+                            Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+                            horizontalArrangement = Arrangement.spacedBy(AmSpace.s2),
+                        ) {
+                            row.forEach { card -> card(Modifier.weight(1f).fillMaxHeight()) }
+                        }
+                    }
+                }
             }
         }
 
@@ -164,6 +195,7 @@ fun DashboardScreen(
                     }
                     AmSwitch(
                         checked = status.screenAwake.on,
+                        label = "屏幕常亮",
                         onCheckedChange = { vm.setScreenAwake(it) },
                         // 常亮不受全局暂停影响，暂停期间照样能开关
                         enabled = status.screenAwake.available,
@@ -215,26 +247,36 @@ fun DashboardScreen(
             }
         }
 
-        item { Spacer(Modifier.height(AmSpace.s1)) }
-
-        items(entries.size) { index ->
-            val (destination, badge) = entries[index]
-            AmCard(Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onNavigate(destination) },
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(destination.title, style = AmType.body, color = c.ink)
+        // 其余入口收进一张卡、行间细线分隔：一组导航就该长成一组，而不是一串一模一样的卡
+        if (entries.isNotEmpty()) {
+            item {
+                AmLabel("更多 · MORE", modifier = Modifier.padding(top = AmSpace.s1, start = 4.dp))
+            }
+            item {
+                AmCard(Modifier.fillMaxWidth(), padding = 0.dp) {
+                    entries.forEachIndexed { index, (destination, badge) ->
+                        if (index > 0) {
+                            Box(Modifier.padding(start = 52.dp).fillMaxWidth().height(1.dp).background(c.lineSoft))
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 52.dp)
+                                .clickable(role = Role.Button) { onNavigate(destination) }
+                                .padding(horizontal = AmSpace.card, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(destination.icon, contentDescription = null, tint = c.inkMuted, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(16.dp))
+                            Text(destination.title, style = AmType.body, color = c.ink, modifier = Modifier.weight(1f))
+                            if (badge.isNotEmpty()) Text(badge, style = AmType.data, color = c.inkMuted)
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = c.inkFaint,
+                            )
+                        }
                     }
-                    if (badge.isNotEmpty()) Text(badge, style = AmType.data, color = c.inkMuted)
-                    Icon(
-                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                        contentDescription = null,
-                        tint = c.inkFaint,
-                    )
                 }
             }
         }
@@ -250,9 +292,9 @@ fun DashboardScreen(
 @Composable
 private fun HardeningNoticeCard(record: HardeningRecord, unread: Int, onOpen: () -> Unit) {
     val c = amColors
-    AmCard(Modifier.fillMaxWidth(), alert = !record.ok) {
+    AmCard(Modifier.fillMaxWidth(), alert = !record.ok, onClick = onOpen) {
         Row(
-            modifier = Modifier.fillMaxWidth().clickable { onOpen() },
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {
@@ -285,7 +327,7 @@ private fun HardeningNoticeCard(record: HardeningRecord, unread: Int, onOpen: ()
 @Composable
 private fun PausedBanner(reason: AppGraph.PauseReason, onOpenSettings: () -> Unit) {
     val c = amColors
-    AmCard(Modifier.fillMaxWidth().clickable(onClick = onOpenSettings), alert = true) {
+    AmCard(Modifier.fillMaxWidth(), alert = true, onClick = onOpenSettings) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
@@ -299,8 +341,8 @@ private fun PausedBanner(reason: AppGraph.PauseReason, onOpenSettings: () -> Uni
                     } else {
                         "快捷键、映射、旋转规则都已停止 · 屏幕常亮照常"
                     },
-                    style = AmType.data,
-                    color = c.inkFaint,
+                    style = AmType.secondary,
+                    color = c.inkMid,
                 )
             }
             Icon(
@@ -317,10 +359,10 @@ fun ScreenTitle(title: String, technical: String, trailing: (@Composable () -> U
     val c = amColors
     Row(
         Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.Bottom,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(title, style = AmType.pageTitle, color = c.ink)
+        Column(Modifier.weight(1f).padding(end = AmSpace.s1)) {
+            Text(title, style = AmType.pageTitle, color = c.ink, modifier = Modifier.semantics { heading() })
         }
         trailing?.invoke()
     }

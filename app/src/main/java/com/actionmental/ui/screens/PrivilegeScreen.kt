@@ -1,5 +1,6 @@
 package com.actionmental.ui.screens
 
+import androidx.compose.ui.draw.clip
 import android.app.StatusBarManager
 import android.content.ComponentName
 import android.content.Context
@@ -242,6 +243,7 @@ fun PrivilegeScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                 AmSwitch(
                     checked = settings.keepAlive,
                     onCheckedChange = { on -> vm.updateSettings { it.copy(keepAlive = on) } },
+                    label = "常驻运行",
                 )
             }
             Spacer(Modifier.height(4.dp))
@@ -272,6 +274,7 @@ fun PrivilegeScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                     checked = settings.autoHealAccessibility,
                     onCheckedChange = { on -> vm.updateSettings { it.copy(autoHealAccessibility = on) } },
                     enabled = healWritable,
+                    label = "监听服务自愈",
                 )
             }
             Spacer(Modifier.height(4.dp))
@@ -438,7 +441,8 @@ private fun HardeningRecordRow(record: HardeningRecord) {
         Modifier
             .fillMaxWidth()
             .padding(bottom = 6.dp)
-            .background(c.surfaceSunken, shape)
+            .clip(shape)
+            .background(c.surfaceSunken)
             .clickable { expanded = !expanded }
             .padding(horizontal = 10.dp, vertical = 8.dp),
     ) {

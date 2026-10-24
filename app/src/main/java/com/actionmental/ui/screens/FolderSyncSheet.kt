@@ -217,7 +217,7 @@ fun FolderSyncSheet(
                         color = if (deletes) c.warn else c.inkFaint,
                     )
                 }
-                AmSwitch(deletes, onCheckedChange = { deletes = it })
+                AmSwitch(deletes, onCheckedChange = { deletes = it }, label = "同步删除")
             }
             Spacer(Modifier.height(AmSpace.s1))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -229,7 +229,7 @@ fun FolderSyncSheet(
                         color = c.inkFaint,
                     )
                 }
-                AmSwitch(wifiOnly, onCheckedChange = { wifiOnly = it })
+                AmSwitch(wifiOnly, onCheckedChange = { wifiOnly = it }, label = "仅 Wi-Fi")
             }
             Spacer(Modifier.height(AmSpace.s2))
             LabeledField("名称 · 可选", title, "列表与通知里显示的名字") { title = it }

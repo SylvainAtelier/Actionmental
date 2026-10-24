@@ -7,6 +7,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import com.actionmental.ui.i18n.localize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,7 +48,7 @@ fun KeyCap(
     val face = if (main) c.accent else c.keycapFace
     val edge = if (main) c.accent else c.keycapLine
     val shadow = if (main) c.accentInk else c.keycapShadow
-    val ink = if (main) Color.White else c.ink
+    val ink = if (main) c.onAccent else c.ink
 
     val drop by animateDpAsState(if (pressed) 2.dp else 0.dp, label = "keycap-drop")
     val shadowOffset: Dp = if (pressed) 0.dp else 2.dp
@@ -82,10 +86,11 @@ fun KeyTokensRow(
     pressed: Boolean = false,
     highlightLast: Boolean = true,
 ) {
-    Row(
-        modifier = modifier,
+    val accessibleKeys = localize(tokens.joinToString(" + "))
+    FlowRow(
+        modifier = modifier.clearAndSetSemantics { contentDescription = accessibleKeys },
         horizontalArrangement = Arrangement.spacedBy(if (large) 8.dp else 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         tokens.forEachIndexed { index, token ->
             val isMain = highlightLast && index == tokens.lastIndex
@@ -97,9 +102,6 @@ fun KeyTokensRow(
                 padding = if (large) PaddingValues(horizontal = 16.dp, vertical = 10.dp)
                 else PaddingValues(horizontal = 8.dp, vertical = 4.dp),
             )
-            if (large && index != tokens.lastIndex) {
-                Text("+", style = AmType.keycapLarge, color = amColors.inkFaint)
-            }
         }
     }
 }

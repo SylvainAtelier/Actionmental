@@ -116,6 +116,7 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                 AmSwitch(
                     checked = !settings.paused,
                     onCheckedChange = { on -> vm.updateSettings { it.copy(paused = !on) } },
+                    label = "运行",
                 )
             }
             Spacer(Modifier.height(AmSpace.s2))
@@ -135,6 +136,7 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                 }
                 AmSwitch(
                     settings.autoPauseWithoutKeyboard,
+                    label = "没有键盘时自动暂停",
                     onCheckedChange = { on ->
                         vm.updateSettings { it.copy(autoPauseWithoutKeyboard = on) }
                     },
@@ -206,7 +208,7 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                     Text("显示原始键值", style = AmType.body, color = c.ink)
                     Text("列表中常驻 keyCode / scanCode", style = AmType.data, color = c.inkFaint)
                 }
-                AmSwitch(settings.showRawKeyCodes, onCheckedChange = { on -> vm.updateSettings { it.copy(showRawKeyCodes = on) } })
+                AmSwitch(settings.showRawKeyCodes, onCheckedChange = { on -> vm.updateSettings { it.copy(showRawKeyCodes = on) } }, label = "显示原始键值")
             }
             Spacer(Modifier.height(AmSpace.s2))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -214,7 +216,7 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                     Text("触发提示", style = AmType.body, color = c.ink)
                     Text("快捷键启动应用时显示应用名，复制 IP / 端口时显示内容", style = AmType.data, color = c.inkFaint)
                 }
-                AmSwitch(settings.triggerHud, onCheckedChange = { on -> vm.updateSettings { it.copy(triggerHud = on) } })
+                AmSwitch(settings.triggerHud, onCheckedChange = { on -> vm.updateSettings { it.copy(triggerHud = on) } }, label = "触发提示")
             }
         }
 
@@ -378,16 +380,16 @@ private fun AccentPicker(selected: UserSettings.Accent, onSelect: (UserSettings.
             val label = localize(accent.label)
             Box(
                 modifier = Modifier
-                    .size(36.dp)
+                    .size(48.dp)
                     .border(2.dp, if (on) c.ink else Color.Transparent, CircleShape)
-                    .padding(4.dp)
+                    .padding(6.dp)
                     .background(amColorsFor(dark, accent).accent, CircleShape)
                     .clip(CircleShape)
                     .selectable(selected = on, role = Role.RadioButton) { onSelect(accent) }
                     .semantics { contentDescription = label },
                 contentAlignment = Alignment.Center,
             ) {
-                if (on) Box(Modifier.size(8.dp).background(Color.White, CircleShape))
+                if (on) Box(Modifier.size(10.dp).background(Color.White, CircleShape))
             }
         }
     }

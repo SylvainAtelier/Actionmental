@@ -356,7 +356,7 @@ private fun RemapRow(
                 AmLabel("修饰键", color = c.accent)
                 Spacer(Modifier.width(6.dp))
             }
-            AmSwitch(checked = remap.enabled, onCheckedChange = onToggle)
+            AmSwitch(checked = remap.enabled, onCheckedChange = onToggle, label = remap.from.toString() + " → " + remap.to.toString())
         }
 
         if (remap.isModifierRemap) {
@@ -570,7 +570,7 @@ private fun RemapEditorSheet(vm: RemapViewModel, draft: RemapViewModel.Draft) {
                         onStartRecording = { vm.startRecording(RemapViewModel.Field.FROM) },
                         onCancelRecording = vm::cancelRecording,
                         onOpenCatalog = {
-                            openGroup = draft.from?.let { KeyCatalog.groupOf(it.keyCode)?.id }
+                            openGroup = KeyCatalog.openGroupFor(draft.from)
                             picking = RemapViewModel.Field.FROM
                         },
                         onToggleModifier = { vm.toggleModifier(RemapViewModel.Field.FROM, it) },
@@ -587,7 +587,7 @@ private fun RemapEditorSheet(vm: RemapViewModel, draft: RemapViewModel.Draft) {
                         onStartRecording = { vm.startRecording(RemapViewModel.Field.TO) },
                         onCancelRecording = vm::cancelRecording,
                         onOpenCatalog = {
-                            openGroup = draft.to?.let { KeyCatalog.groupOf(it.keyCode)?.id }
+                            openGroup = KeyCatalog.openGroupFor(draft.to)
                             picking = RemapViewModel.Field.TO
                         },
                         onToggleModifier = { vm.toggleModifier(RemapViewModel.Field.TO, it) },
@@ -723,6 +723,8 @@ private fun RemapEditorSheet(vm: RemapViewModel, draft: RemapViewModel.Draft) {
             openGroupId = openGroup,
             onOpenGroup = { openGroup = it },
             onPick = { keyCode -> vm.setMainKey(field, keyCode); picking = null },
+            selectedCombo = vm.comboOf(field),
+            onPickSymbol = { symbol -> vm.setSymbol(field, symbol); picking = null },
             onDismiss = { picking = null },
             title = if (field == RemapViewModel.Field.FROM) "选择要映射的键" else "选择要变成的键",
             subtitle = if (field == RemapViewModel.Field.FROM) {

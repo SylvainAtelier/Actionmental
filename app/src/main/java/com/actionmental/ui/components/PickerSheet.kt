@@ -1,5 +1,10 @@
 package com.actionmental.ui.components
 
+import com.actionmental.ui.i18n.localize
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -192,7 +197,8 @@ fun AmPickerSheet(
                         Row(
                             Modifier
                                 .fillMaxWidth()
-                                .clickable { onOpenGroup(null) }
+                                .defaultMinSize(minHeight = AmSpace.rowMin)
+                                .clickable(role = Role.Button) { onOpenGroup(null) }
                                 .padding(vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -257,9 +263,10 @@ private fun GroupRow(group: PickerGroup, selected: Boolean, onClick: () -> Unit)
         Modifier
             .fillMaxWidth()
             .padding(vertical = 2.dp)
-            .background(if (selected) c.accentBg else Color.Transparent, shape)
-            .border(1.dp, if (selected) c.accentLine else Color.Transparent, shape)
-            .clickable(onClick = onClick)
+            .clip(shape)
+            .background(if (selected) c.surfaceSunken else Color.Transparent)
+            .border(1.dp, if (selected) c.ink else Color.Transparent, shape)
+            .clickable(role = Role.Button, onClick = onClick)
             .defaultMinSize(minHeight = AmSpace.rowMin)
             .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -268,7 +275,7 @@ private fun GroupRow(group: PickerGroup, selected: Boolean, onClick: () -> Unit)
             Text(
                 group.title,
                 style = AmType.body,
-                color = if (selected) c.accent else c.ink,
+                color = c.ink,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -283,7 +290,7 @@ private fun GroupRow(group: PickerGroup, selected: Boolean, onClick: () -> Unit)
         Icon(
             Icons.AutoMirrored.Filled.KeyboardArrowRight,
             contentDescription = null,
-            tint = if (selected) c.accent else c.inkFaint,
+            tint = if (selected) c.ink else c.inkFaint,
         )
     }
 }
@@ -296,10 +303,11 @@ private fun ItemRow(item: PickerItem, groupTitle: String?, onClick: () -> Unit) 
         Modifier
             .fillMaxWidth()
             .padding(vertical = 1.dp)
-            .background(if (item.selected) c.accentBg else Color.Transparent, shape)
-            .clickable(onClick = onClick)
+            .clip(shape)
+            .background(if (item.selected) c.surfaceSunken else Color.Transparent)
+            .clickable(role = Role.Button, onClick = onClick)
             .defaultMinSize(minHeight = AmSpace.rowMin)
-            .padding(horizontal = 10.dp, vertical = 7.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AmSpace.s1),
     ) {
@@ -311,7 +319,7 @@ private fun ItemRow(item: PickerItem, groupTitle: String?, onClick: () -> Unit) 
                 Text(
                     item.title,
                     style = AmType.body,
-                    color = if (item.selected) c.accent else c.ink,
+                    color = c.ink,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -330,6 +338,9 @@ private fun ItemRow(item: PickerItem, groupTitle: String?, onClick: () -> Unit) 
                     PickerTone.NEUTRAL -> c.inkFaint
                 },
             )
+        }
+        if (item.selected) {
+            Icon(Icons.Filled.Check, contentDescription = localize("已选"), tint = c.ink, modifier = Modifier.size(20.dp))
         }
     }
 }

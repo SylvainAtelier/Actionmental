@@ -1,5 +1,6 @@
 package com.actionmental.ui.components
 
+import android.view.KeyEvent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -129,6 +130,9 @@ fun KeyCombo.modifierTokens(): List<String> = buildList {
 
 /**
  * 按键目录弹层。走的是全应用统一的二级菜单，一级是分组，二级是具体的键。
+ *
+ * 「符号」一组按字符列出。给了 [onPickSymbol] 时连上档符号（! @ # … ?）一起列，
+ * 选中的是整个组合（「?」= Shift + /）；不给时只列不用按 Shift 的那些，选中的仍是一颗主键。
  */
 @Composable
 fun AmKeyPickerSheet(
@@ -139,15 +143,20 @@ fun AmKeyPickerSheet(
     onDismiss: () -> Unit,
     title: String = "选择主键",
     subtitle: String = "修饰键在上一层勾选；Ctrl / Alt / Shift / Meta 单独绑定时改为轻点触发",
+    /** 当前组合，用来在符号组里标出选中的是「/」还是「?」。 */
+    selectedCombo: KeyCombo? = null,
+    onPickSymbol: ((KeyCatalog.SymbolKey) -> Unit)? = null,
 ) {
-    val groups = remember(selectedKeyCode) {
+    val withShifted = onPickSymbol != null
+    val groups = remember(selectedKeyCode, selectedCombo, withShifted) {
+        val selectedSymbol = KeyCatalog.symbolOf(selectedCombo)
         KeyCatalog.groups.map { group ->
-            PickerGroup(
-                id = group.id,
-                title = group.label,
-                subtitle = group.technical,
-                badge = group.keyCodes.size.toString(),
-                items = group.keyCodes.map { keyCode ->
+            val items = if (group.id == SYMBOL_GROUP) {
+                KeyCatalog.symbolKeys
+                    .filter { withShifted || !it.shifted }
+                    .map { symbol -> symbolItem(symbol, selected = symbol == selectedSymbol || (!withShifted && symbol.combo.keyCode == selectedKeyCode)) }
+            } else {
+                group.keyCodes.map { keyCode ->
                     val name = KeyCombo.keyLabel(keyCode)
                     val tap = KeyCatalog.triggerMode(keyCode) == KeyCatalog.TriggerMode.TAP
                     PickerItem(
@@ -159,7 +168,14 @@ fun AmKeyPickerSheet(
                         selected = keyCode == selectedKeyCode,
                         keyTokens = listOf(name),
                     )
-                },
+                }
+            }
+            PickerGroup(
+                id = group.id,
+                title = group.label,
+                subtitle = group.technical,
+                badge = items.size.toString(),
+                items = items,
             )
         }
     }
@@ -170,10 +186,35 @@ fun AmKeyPickerSheet(
         groups = groups,
         openGroupId = openGroupId,
         onOpenGroup = onOpenGroup,
-        searchPlaceholder = "搜索键名或 keyCode…",
+        searchPlaceholder = "搜索键名、符号或 keyCode…",
         emptyHint = "没有匹配的按键",
-        onPick = { _, itemId -> itemId?.toIntOrNull()?.let(onPick) },
+        onPick = { _, itemId ->
+            val symbol = itemId?.removePrefix(SYMBOL_PREFIX)?.takeIf { itemId.startsWith(SYMBOL_PREFIX) }
+                ?.toIntOrNull()?.let(KeyCatalog.symbolKeys::getOrNull)
+            when {
+                symbol != null && onPickSymbol != null -> onPickSymbol(symbol)
+                symbol != null -> onPick(symbol.combo.keyCode)
+                else -> itemId?.toIntOrNull()?.let(onPick)
+            }
+        },
         onDismiss = onDismiss,
+    )
+}
+
+private const val SYMBOL_GROUP = "symbol"
+private const val SYMBOL_PREFIX = "sym:"
+
+/** 键帽画出要按的组合，副标题写字符和名字；搜索「?」「问号」「slash」都能找到。 */
+private fun symbolItem(symbol: KeyCatalog.SymbolKey, selected: Boolean): PickerItem {
+    val tokens = symbol.combo.tokens()
+    return PickerItem(
+        id = SYMBOL_PREFIX + KeyCatalog.symbolKeys.indexOf(symbol),
+        title = symbol.char + " " + symbol.name + " " + KeyEvent.keyCodeToString(symbol.combo.keyCode),
+        subtitle = symbol.char + "  " + symbol.name,
+        badge = if (symbol.shifted) "SHIFT" else null,
+        tone = PickerTone.NEUTRAL,
+        selected = selected,
+        keyTokens = tokens,
     )
 }
 

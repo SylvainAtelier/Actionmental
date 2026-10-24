@@ -143,6 +143,11 @@ Shizuku 是唯一能「向系统注入任意按键」「执行 `cmd window`」�
    只在输入框获得焦点时有；
 5. 都不通 → 放行原键，事件流写明原因。
 
+修饰键映射（左 Shift → 左 Alt）会先改写组合再匹配快捷键，于是 Shift + X 能按出绑在 Alt + X 上的快捷键。
+改写后的组合没命中时，再拿手指真按下的组合匹配一次（`KeyPipeline.physicalFallback`）：录制录的是真按下的组合，
+不退的话在这把键盘上录下的 Shift + / 永远匹配不上，反倒被当成 Alt + / 注入出去。只在改写**摘掉**了真按着的修饰位时才退，
+只添修饰位的（Caps → Ctrl）不退，免得 Caps + 1 去触发单独「1」的快捷键。
+
 **自愈**只读写 secure 表：用 adb 授过一次 `WRITE_SECURE_SETTINGS` 就直接写（`SettingsFirstBackend`），
 开机那一刻不必等 Shizuku 起来。
 

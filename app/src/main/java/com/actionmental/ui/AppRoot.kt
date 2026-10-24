@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -24,8 +25,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalDensity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -42,14 +45,18 @@ import com.actionmental.ui.screens.RotationScreen
 import com.actionmental.ui.screens.SettingsScreen
 import com.actionmental.ui.screens.ShortcutsPane
 import com.actionmental.ui.i18n.AppTranslations
+import com.actionmental.ui.theme.AmSpace
 import com.actionmental.ui.theme.amColors
 import kotlinx.coroutines.delay
 
 /**
  * 应用外壳。
  *
- * 自适应只有一条规则：宽度 < 600dp 用底部导航，>= 600dp 用左侧栏；
- * >= 840dp 时快捷键列表与编辑器并排（平板 / 展开态折叠屏）。
+ * 自适应按 Material 的窗口宽度分档：
+ * - < 600dp：底部导航；
+ * - 600～840dp：80dp 导航栏（rail），正文不被一整条侧栏挤窄；
+ * - >= 840dp: full sidebar; split panes only when the remaining content fits two readable panes.
+ * 单栏页面的正文宽度封顶 [AmSpace.contentMax] 并居中，宽屏上卡片不会拉成一条横线。
  * 因为 Activity 声明了 configChanges 并且布局完全由宽度驱动，
  * 折叠 / 展开 / 旋转都只是一次重组，不会重建状态。
  */
@@ -138,14 +145,18 @@ fun AppRoot(vm: AppViewModel) {
 
     BoxWithConstraints(Modifier.fillMaxSize().background(amColors.bgScreen)) {
         val widthDp = maxWidth
-        val wide = widthDp >= 600.dp
-        val twoPane = widthDp >= 840.dp
+        val navigationWidth = AdaptiveLayout.navigationWidth(widthDp.value)
+        val wide = navigationWidth > 0f
+        val expandedNavigation = navigationWidth == AdaptiveLayout.SIDEBAR_WIDTH
+        val twoPane = AdaptiveLayout.useTwoPanes(widthDp.value, LocalDensity.current.fontScale)
 
         val content: @Composable (Modifier) -> Unit = { modifier ->
             when (destination) {
                 Destination.DASHBOARD -> DashboardScreen(
                     vm = vm,
                     modifier = modifier,
+                    // 宽屏侧栏里已经列着全部入口，首页再列一遍就是重复；手机只补底栏放不下的那几个
+                    moreEntries = if (wide) emptyList() else Destination.entries.filter { !it.inBottomBar },
                     onNavigate = { destination = it },
                 )
 
@@ -175,20 +186,33 @@ fun AppRoot(vm: AppViewModel) {
             }
         }
 
+        // 快捷键双栏与键位映射的键盘筛选栏自己会用满宽度，其余页面一律收窄居中
+        val fullBleed = (destination == Destination.SHORTCUTS && twoPane) || destination == Destination.REMAP
+        val body: @Composable (Modifier) -> Unit = { modifier ->
+            if (fullBleed) {
+                content(modifier)
+            } else {
+                Box(modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                    content(Modifier.widthIn(max = AmSpace.contentMax).fillMaxSize())
+                }
+            }
+        }
+
         if (wide) {
             Row(Modifier.fillMaxSize()) {
                 NavigationSidebar(
                     current = destination,
                     onSelect = { destination = it; closeEditor() },
                     vm = vm,
-                    modifier = Modifier.width(if (widthDp >= 1000.dp) 208.dp else 168.dp).fillMaxHeight(),
+                    rail = !expandedNavigation,
+                    modifier = Modifier.width(navigationWidth.dp).fillMaxHeight(),
                 )
                 Scaffold(
                     modifier = Modifier.weight(1f),
                     containerColor = amColors.bgScreen,
                     snackbarHost = { SnackbarHost(snackbar) },
                 ) { inner ->
-                    content(Modifier.padding(inner))
+                    body(Modifier.padding(inner).consumeWindowInsets(inner))
                 }
             }
         } else {
@@ -202,7 +226,7 @@ fun AppRoot(vm: AppViewModel) {
                     )
                 },
             ) { inner ->
-                content(Modifier.padding(inner))
+                body(Modifier.padding(inner).consumeWindowInsets(inner))
             }
         }
     }

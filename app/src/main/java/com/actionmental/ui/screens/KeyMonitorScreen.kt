@@ -1,6 +1,10 @@
 package com.actionmental.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +28,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.actionmental.core.key.KeyCombo
@@ -71,87 +76,109 @@ fun KeyMonitorScreen(
     val activeCombo = snapshot.activeCombo
     val binding = activeCombo?.let { combo -> shortcuts.firstOrNull { it.combo == combo } }
 
-    Column(
-        modifier
-            .fillMaxSize()
-            .padding(AmSpace.screen),
-        verticalArrangement = Arrangement.spacedBy(AmSpace.s2),
-    ) {
-        ScreenTitle("实时按键检测", "LIVE KEY MONITOR · 本地处理，不记录文本") {
-            AmSecondaryButton("清空日志", vm::clearTraces)
-        }
+    // 正文够宽（横屏手机、平板）时左右分栏：左边组合键与原始数据，右边事件流。
+    // 竖着叠在横屏手机上，事件流会被挤到只剩一两行。
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val split = maxWidth >= 720.dp
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(AmSpace.screen),
+            verticalArrangement = Arrangement.spacedBy(AmSpace.s2),
+        ) {
+            ScreenTitle("实时按键检测", "LIVE KEY MONITOR · 本地处理，不记录文本") {
+                AmSecondaryButton("清空日志", vm::clearTraces)
+            }
 
-        if (!status.accessibilityConnected) {
-            AmCard(Modifier.fillMaxWidth(), alert = true) {
-                if (status.accessibilityWaitingForBind) {
-                    Text("服务已在系统设置里开启，但还没连上，暂时收不到按键。", style = AmType.body, color = c.accent)
-                    Text("到「设置」页点「重新连接」，或在系统设置里关掉再打开。", style = AmType.secondary, color = c.inkMid)
-                    Text("settings = ON · service_state = OFF", style = AmType.data, color = c.inkFaint)
-                } else {
-                    Text("无障碍键盘服务未开启，收不到按键。", style = AmType.body, color = c.accent)
-                    Text("settings = OFF · service_state = OFF", style = AmType.data, color = c.inkFaint)
+            val comboAndRaw: @Composable () -> Unit = {
+                if (!status.accessibilityConnected) {
+                    AmCard(Modifier.fillMaxWidth(), alert = true) {
+                        if (status.accessibilityWaitingForBind) {
+                            Text("服务已在系统设置里开启，但还没连上，暂时收不到按键。", style = AmType.body, color = c.accent)
+                            Text("到「设置」页点「重新连接」，或在系统设置里关掉再打开。", style = AmType.secondary, color = c.inkMid)
+                            Text("settings = ON · service_state = OFF", style = AmType.data, color = c.inkFaint)
+                        } else {
+                            Text("无障碍键盘服务未开启，收不到按键。", style = AmType.body, color = c.accent)
+                            Text("settings = OFF · service_state = OFF", style = AmType.data, color = c.inkFaint)
+                        }
+                    }
+                }
+
+                AmCard(Modifier.fillMaxWidth()) {
+                    KeyTokensRow(tokens, large = true, pressed = snapshot.pressedKeyCodes.isNotEmpty(), highlightLast = hasMain)
+                    Spacer(Modifier.height(AmSpace.s2))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (binding != null) {
+                            StatusDot(c.accent)
+                            AmLabel("已绑定 BOUND", color = c.accent)
+                            Spacer(Modifier.width(6.dp))
+                            Text(binding.displayLabel, style = AmType.body, color = c.ink)
+                        } else {
+                            AmLabel("当前未绑定 UNBOUND")
+                        }
+                        Spacer(Modifier.weight(1f))
+                        if (activeCombo != null && binding == null) {
+                            AmSecondaryButton("保存为快捷键", { onBind(activeCombo) }, accent = true)
+                        }
+                    }
+                }
+
+                AmCard(Modifier.fillMaxWidth()) {
+                    AmLabel("按键原始数据 · RAW")
+                    Spacer(Modifier.height(4.dp))
+                    DataRow("keyCode", last?.let { it.keyCode.toString() + " · KEYCODE_" + it.rawKeyName } ?: "—")
+                    DataRow("scanCode", last?.scanCode?.toString() ?: "—")
+                    DataRow("action", last?.let { if (it.down) "ACTION_DOWN" else "ACTION_UP" } ?: "—")
+                    DataRow("metaState", last?.let { "0x" + it.metaState.toString(16) } ?: "—")
+                    DataRow("repeatCount", last?.repeatCount?.toString() ?: "—")
+                    DataRow("deviceId", device.id.takeIf { it >= 0 }?.toString() ?: "—")
+                    DataRow("device", device.name)
+                    DataRow("vendor / product", device.vendorHex + " / " + device.productHex)
+                    DataRow("descriptor", device.shortDescriptor.ifBlank { "—" })
                 }
             }
-        }
 
-        AmCard(Modifier.fillMaxWidth()) {
-            KeyTokensRow(tokens, large = true, pressed = snapshot.pressedKeyCodes.isNotEmpty(), highlightLast = hasMain)
-            Spacer(Modifier.height(AmSpace.s2))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (binding != null) {
-                    StatusDot(c.accent)
-                    AmLabel("已绑定 BOUND", color = c.accent)
-                    Spacer(Modifier.width(6.dp))
-                    Text(binding.displayLabel, style = AmType.body, color = c.ink)
-                } else {
-                    AmLabel("当前未绑定 UNBOUND")
+            val eventStream: @Composable (Modifier) -> Unit = { streamModifier ->
+                AmCard(streamModifier) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        AmLabel("事件流 · EVENT STREAM")
+                        Spacer(Modifier.weight(1f))
+                        StatusDot(c.ok)
+                        Text("live", style = AmType.data, color = c.inkFaint)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    val listState = rememberLazyListState()
+                    LaunchedEffect(traces.size) {
+                        if (traces.isNotEmpty()) listState.animateScrollToItem(traces.lastIndex)
+                    }
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        contentPadding = PaddingValues(vertical = 2.dp),
+                    ) {
+                        items(traces, key = { it.id }) { trace -> TraceRow(trace) }
+                    }
+                    Text(
+                        "缓冲 200 条 · 仅内存 · 不记录文本输入",
+                        style = AmType.data,
+                        color = c.inkFaint,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
                 }
-                Spacer(Modifier.weight(1f))
-                if (activeCombo != null && binding == null) {
-                    AmSecondaryButton("保存为快捷键", { onBind(activeCombo) }, accent = true)
+            }
+
+            if (split) {
+                Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(AmSpace.s2)) {
+                    Column(
+                        Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(AmSpace.s2),
+                    ) { comboAndRaw() }
+                    eventStream(Modifier.weight(1f).fillMaxHeight())
                 }
+            } else {
+                comboAndRaw()
+                eventStream(Modifier.fillMaxWidth().weight(1f))
             }
-        }
-
-        AmCard(Modifier.fillMaxWidth()) {
-            AmLabel("按键原始数据 · RAW")
-            Spacer(Modifier.height(4.dp))
-            DataRow("keyCode", last?.let { it.keyCode.toString() + " · KEYCODE_" + it.rawKeyName } ?: "—")
-            DataRow("scanCode", last?.scanCode?.toString() ?: "—")
-            DataRow("action", last?.let { if (it.down) "ACTION_DOWN" else "ACTION_UP" } ?: "—")
-            DataRow("metaState", last?.let { "0x" + it.metaState.toString(16) } ?: "—")
-            DataRow("repeatCount", last?.repeatCount?.toString() ?: "—")
-            DataRow("deviceId", device.id.takeIf { it >= 0 }?.toString() ?: "—")
-            DataRow("device", device.name)
-            DataRow("vendor / product", device.vendorHex + " / " + device.productHex)
-            DataRow("descriptor", device.shortDescriptor.ifBlank { "—" })
-        }
-
-        AmCard(Modifier.fillMaxWidth().weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                AmLabel("事件流 · EVENT STREAM")
-                Spacer(Modifier.weight(1f))
-                StatusDot(c.ok)
-                Text("live", style = AmType.data, color = c.inkFaint)
-            }
-            Spacer(Modifier.height(4.dp))
-            val listState = rememberLazyListState()
-            LaunchedEffect(traces.size) {
-                if (traces.isNotEmpty()) listState.animateScrollToItem(traces.lastIndex)
-            }
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxWidth().weight(1f),
-                contentPadding = PaddingValues(vertical = 2.dp),
-            ) {
-                items(traces, key = { it.id }) { trace -> TraceRow(trace) }
-            }
-            Text(
-                "缓冲 200 条 · 仅内存 · 不记录文本输入",
-                style = AmType.data,
-                color = c.inkFaint,
-                modifier = Modifier.padding(top = 4.dp),
-            )
         }
     }
 }

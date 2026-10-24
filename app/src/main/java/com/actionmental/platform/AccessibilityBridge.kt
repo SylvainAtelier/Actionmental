@@ -235,6 +235,14 @@ class AccessibilityBridge(private val context: Context) {
     }
 
     /**
+     * 浮层里自己的输入框用完了。它占过输入连接：此刻的「连着」可能还是那个已经撤掉的框，
+     * 记成断开，上屏前就会等原来的输入框真的接回来（见 [awaitInputBack]）。
+     */
+    fun markInputBorrowed() {
+        if (inputLiveAtOverlay) _inputLive.value = false
+    }
+
+    /**
      * 浮层关上后、上屏之前调用：打开时有输入框、此刻连接却断着，就等它接回来，最多 [timeoutMs]。
      * 连接没断过（大多数系统上焦点去了不碰输入法的窗口时不会断）就立即返回。
      */

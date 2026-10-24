@@ -196,7 +196,7 @@ fun AdbTcpipSheet(
                             color = c.inkFaint,
                         )
                     }
-                    AmSwitch(copyAddress, onCheckedChange = { copyAddress = it })
+                    AmSwitch(copyAddress, onCheckedChange = { copyAddress = it }, label = "完成后复制地址")
                 }
                 Spacer(Modifier.height(AmSpace.s3))
             }

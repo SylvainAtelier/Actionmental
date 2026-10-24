@@ -8,11 +8,17 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.RippleDrawable
+import android.graphics.drawable.StateListDrawable
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.text.Editable
+import android.text.InputFilter
+import android.text.InputType
 import android.text.TextUtils
+import android.text.TextWatcher
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
@@ -21,18 +27,27 @@ import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.AbsListView
 import android.widget.BaseAdapter
+import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
+import android.animation.ValueAnimator
+import kotlinx.coroutines.CancellationException
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import androidx.annotation.RequiresApi
 import androidx.compose.ui.graphics.toArgb
 import androidx.core.graphics.ColorUtils
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.actionmental.core.action.ActionResult
 import com.actionmental.core.clip.ClipEntry
 import com.actionmental.core.clip.ClipPanelState
@@ -41,6 +56,7 @@ import com.actionmental.core.clip.PanelEffect
 import com.actionmental.core.clip.PanelKey
 import com.actionmental.core.clip.PanelKeys
 import com.actionmental.core.clip.PickKeys
+import com.actionmental.core.key.KeyCombo
 import com.actionmental.core.key.KeyPipeline
 import com.actionmental.core.key.NormalizedKeyEvent
 import com.actionmental.data.ClipHistoryStore
@@ -66,6 +82,9 @@ import kotlin.math.abs
  *
  * 置顶与最近分开摆：宽窗口（卡片 ≥ [SPLIT_MIN_DP]）左右两栏各自滚动；窄窗口是同一列表里的两段，
  * 置顶的压成单行，多了收起成前 [PIN_PEEK] 条。←→ 在两段之间跳。没有置顶时与以前一样只有一串。
+ *
+ * 长按一行（或 Ctrl+E）可以改它的正文：卡片原地换成编辑页（见 [Editor]）。只有这时窗口才临时接输入法，
+ * 改完还回去 —— 列表模式下照旧不碰输入法。
  *
  * 状态机在 [ClipPanelState]，这里只管窗口、绘制和把效果落地。除 [toggle] / [dismiss] 外全在主线程。
  */
@@ -102,6 +121,8 @@ class ClipPanel(
     private val onRunQuick: (id: String) -> Unit = {},
     /** 窗口加上去之前调用：面板要抢焦点，输入连接可能被收走，桥得先记下此刻的状态。 */
     private val onShown: () -> Unit = {},
+    /** 编辑页的输入框用完、撤掉了：它占过输入连接，桥要等原来的输入框重新接上再上屏。 */
+    private val onInputReturned: () -> Unit = {},
 ) {
     /** 一格快捷操作。[glyph] 是图标中央那一个字，[combo] 是触发它的组合键写法。 */
     data class QuickAction(val id: String, val name: String, val glyph: String, val combo: String)
@@ -170,6 +191,17 @@ class ClipPanel(
     /** 长按菜单那一层：开着时盖满整个面板，点它外面只收菜单、不关面板。 */
     private var menuLayer: View? = null
 
+    /** 窗口参数留着：进出编辑页要改输入法相关的那两项。 */
+    private var params: WindowManager.LayoutParams? = null
+
+    /** 卡片与列表模式下的那几块；编辑页打开时它们收起，卡片里只剩编辑页。 */
+    private lateinit var card: LinearLayout
+    private lateinit var browseViews: List<View>
+
+    /** 正在编辑的那一条；null 是列表模式。 */
+    private var editor: Editor? = null
+    private var editorRequest = 0L
+
     /** 三格快捷操作此刻的内容，长度恒为 [QUICK_SLOTS]。 */
     private var quick: List<QuickAction?> = List(QUICK_SLOTS) { null }
     private lateinit var quickBar: LinearLayout
@@ -181,7 +213,7 @@ class ClipPanel(
         if (service.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true) {
             return ActionResult.Failed(ActionResult.Reason.UNSUPPORTED, "锁屏时不显示剪贴板历史")
         }
-        main.post { guarded("打开 / 关闭剪贴板面板") { if (root != null) close() else show(service) } }
+        main.post { guarded("打开 / 关闭剪贴板面板") { if (editor != null) requestExitEditor(closePanel = true) else if (root != null) close() else show(service) } }
         return ActionResult.Ok(if (open) "关闭剪贴板历史" else "打开剪贴板历史")
     }
 
@@ -234,6 +266,7 @@ class ClipPanel(
         onShown()
         if (runCatching { wm.addView(view, params) }.isFailure) return
         view.playEnter()
+        this.params = params
         root = view
         owner = service
         open = true
@@ -246,9 +279,16 @@ class ClipPanel(
         pipeline.modal = null
         open = false
         generation++
+        editorRequest++
         menuLayer = null
+        // 编辑页随窗口一起撤掉，输入法跟着收起；它占过的输入连接要交还
+        if (editor != null) {
+            editor = null
+            onInputReturned()
+        }
         val view = root ?: return
         root = null
+        params = null
         runCatching { owner?.getSystemService(WindowManager::class.java)?.removeViewImmediate(view) }
         owner = null
         labels.clear()
@@ -268,9 +308,15 @@ class ClipPanel(
         if (!e.down) return false
         // 菜单开着时 Esc / 返回只收菜单；别的键先收菜单再照常处理，键盘操作不会被一个菜单卡住
         if (menuLayer != null) {
+            when (e.keyCode) {
+                KeyEvent.KEYCODE_TAB, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_CENTER,
+                KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_SPACE -> return false
+            }
             dismissMenu()
             if (e.keyCode == KeyEvent.KEYCODE_ESCAPE || e.keyCode == KeyEvent.KEYCODE_BACK) return true
         }
+        editor?.let { return onEditorKey(it, e, modifiers) }
         if (e.repeatCount == 0 && isToggle(e)) {
             close()
             return true
@@ -327,6 +373,7 @@ class ClipPanel(
             }
             is PanelEffect.TogglePin -> edit { store.setPinned(effect.entry.id, !effect.entry.pinned) }
             is PanelEffect.Delete -> edit { store.delete(effect.entry.id) }
+            is PanelEffect.Edit -> openEditor(effect.entry)
         }
     }
 
@@ -429,8 +476,11 @@ class ClipPanel(
         pinAdapter.notifyDataSetChanged()
         mainAdapter.notifyDataSetChanged()
         val empty = state.entries.isEmpty()
-        emptyView.visibility = if (empty) View.VISIBLE else View.GONE
-        lists.visibility = if (empty) View.GONE else View.VISIBLE
+        // 编辑页开着时列表那几块一直收着，后台查回来的结果不该把它们翻出来
+        if (editor == null) {
+            emptyView.visibility = if (empty) View.VISIBLE else View.GONE
+            lists.visibility = if (empty) View.GONE else View.VISIBLE
+        }
         emptyView.text = emptyText()
         pinTitle.text = sectionTitle("置顶", allPins.size)
     }
@@ -748,18 +798,27 @@ class ClipPanel(
         val trailing: String? = null,
         val checked: Boolean = false,
         val enabled: Boolean = true,
+        /** 会丢东西的那一项（放弃修改）：用强调色写，和别的项分开。 */
+        val danger: Boolean = false,
         val onClick: () -> Unit = {},
     )
 
-    /** 长按一行：置顶 / 取消置顶、复制到剪贴板。菜单贴着那一行的右缘。 */
+    /**
+     * 长按一行：编辑、置顶 / 取消置顶、复制到剪贴板。菜单贴着那一行的右缘。
+     * 右侧写上对应的组合键：用触屏点开过一次菜单，下次就知道键盘上怎么按。
+     */
     private fun showMenu(row: View, entry: ClipEntry) {
         showPopup(
             row,
             listOf(
-                MenuEntry(translate(if (entry.pinned) "取消置顶" else "置顶这一条")) { apply(PanelEffect.TogglePin(entry)) },
-                MenuEntry(translate("复制到剪贴板")) { apply(PanelEffect.Copy(entry)) },
+                MenuEntry(translate("编辑"), trailing = "Ctrl+E") { apply(PanelEffect.Edit(entry)) },
+                MenuEntry(translate(if (entry.pinned) "取消置顶" else "置顶这一条"), trailing = "Ctrl+P") {
+                    apply(PanelEffect.TogglePin(entry))
+                },
+                MenuEntry(translate("复制到剪贴板"), trailing = "Ctrl+C") { apply(PanelEffect.Copy(entry)) },
             ),
             alignEnd = true,
+            minWidthDp = 200f,
         )
     }
 
@@ -836,24 +895,32 @@ class ClipPanel(
             leftMargin = left
             topMargin = top
         }
-        menu.alpha = 0f
-        menu.scaleX = 0.96f
-        menu.scaleY = 0.96f
-        menu.pivotX = if (alignEnd) width.toFloat() else 0f
-        menu.pivotY = if (placeBelow) 0f else height.toFloat()
-        menu.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(140).setInterpolator(DecelerateInterpolator()).start()
+        if (ValueAnimator.areAnimatorsEnabled()) {
+            menu.alpha = 0f
+            menu.scaleX = 0.96f
+            menu.scaleY = 0.96f
+            menu.pivotX = if (alignEnd) width.toFloat() else 0f
+            menu.pivotY = if (placeBelow) 0f else height.toFloat()
+            menu.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(140).setInterpolator(DecelerateInterpolator()).start()
+        }
+        column.post {
+            if (menuLayer === layer) {
+                (0 until column.childCount).map { column.getChildAt(it) }.firstOrNull { it.isFocusable }?.requestFocus()
+            }
+        }
     }
 
     private fun dismissMenu() {
         val layer = menuLayer ?: return
         menuLayer = null
         (layer.parent as? ViewGroup)?.removeView(layer)
+        editor?.field?.requestFocus()
     }
 
     private fun menuItem(context: Context, entry: MenuEntry): View {
         val label = TextView(context).apply {
             text = entry.label
-            setTextColor(if (!entry.enabled) palette.faint else if (entry.checked) palette.accent else palette.ink)
+            setTextColor(if (!entry.enabled) palette.faint else if (entry.danger) palette.error else if (entry.checked) palette.emphasis else palette.ink)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, if (entry.enabled) 14f else 12.5f)
             if (entry.checked) typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             isSingleLine = entry.enabled
@@ -879,6 +946,7 @@ class ClipPanel(
             }
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             if (entry.enabled) {
+                isFocusable = true
                 val mask = GradientDrawable().apply { setColor(Color.WHITE) }
                 background = RippleDrawable(ColorStateList.valueOf(palette.ripple), null, mask)
                 setOnClickListener {
@@ -889,6 +957,509 @@ class ClipPanel(
                 }
             }
         }
+    }
+
+    // --- 编辑 ----------------------------------------------------------------
+
+    /**
+     * 编辑页：卡片原地换成一个大输入框，顶上写着改的是哪一条，右下三个按钮从轻到重排开 ——
+     * 取消（纯文字）、保存并输入（描边）、保存（实心，最右，拇指和视线最后落到的地方）。
+     *
+     * - Narrow windows show two full-width actions; the header back button remains the cancel route.
+     * - 没改过时「保存」是灰的，正文空了两个保存都灰：删一条走长按菜单 / Del，不靠清空正文；
+     * - 改过还没保存时，返回、Esc、点卡片外面都先问一句，一次手滑不会丢掉一段修改。
+     */
+    private inner class Editor(
+        val entry: ClipEntry,
+        val original: String,
+        val view: View,
+        val field: EditText,
+        val status: TextView,
+        val keys: TextView,
+        val actions: LinearLayout,
+        val buttons: List<Button>,
+        val save: Button,
+        val saveInsert: Button,
+        val feedback: TextView,
+        val back: Button,
+    ) {
+        var saving = false
+        var failure: String? = null
+        val text: String get() = this.field.text.toString()
+        val dirty: Boolean get() = text != original
+
+        private var narrow: Boolean? = null
+
+        /** 按卡片宽度（dp）换版式。在测量里调用：只改布局参数的字段，不 requestLayout。 */
+        fun fit(widthDp: Float) {
+            val next = widthDp / field.resources.configuration.fontScale < EDITOR_NARROW_DP
+            if (next == narrow) return
+            narrow = next
+            keys.visibility = if (next) View.GONE else View.VISIBLE
+            buttons.first().visibility = if (next) View.GONE else View.VISIBLE
+            (actions.layoutParams as LinearLayout.LayoutParams).apply {
+                width = if (next) 0 else ViewGroup.LayoutParams.WRAP_CONTENT
+                weight = if (next) 1f else 0f
+            }
+            buttons.forEachIndexed { i, button ->
+                (button.layoutParams as LinearLayout.LayoutParams).apply {
+                    width = if (next) 0 else ViewGroup.LayoutParams.WRAP_CONTENT
+                    weight = if (next) 1f else 0f
+                    marginStart = if (i == 0 || (next && i == 1)) 0 else dp(button.context, 8f).toInt()
+                }
+            }
+        }
+
+        /** 字数、是否改过、两个保存键能不能按。每敲一个字调一次。 */
+        fun refresh() {
+            val value = text
+            val blank = value.isBlank()
+            val count = value.codePointCount(0, value.length).toString() + " " + translate("个字符")
+            status.text = when {
+                blank -> translate("内容为空")
+                dirty -> translate("已修改") + " · " + count
+                else -> count
+            }
+            // 颜色之外字面上也写着「已修改」「内容为空」：不单靠颜色传达状态
+            status.setTextColor(if (blank) palette.error else palette.faint)
+            enable(save, dirty && !blank && !saving)
+            enable(saveInsert, !blank && !saving)
+            buttons.first().isEnabled = !saving
+            back.isEnabled = !saving
+            field.isEnabled = !saving
+            save.text = translate(if (saving) "正在保存…" else "保存")
+            feedback.text = failure ?: translate(if (blank) "内容不能为空，请输入后保存" else "仅更新这条记录，不会修改系统剪贴板")
+            feedback.setTextColor(if (failure != null || blank) palette.error else palette.faint)
+            feedback.visibility = if (saving) View.GONE else View.VISIBLE
+        }
+
+        private fun enable(button: Button, enabled: Boolean) {
+            button.isEnabled = enabled
+            button.alpha = if (enabled) 1f else 0.38f
+        }
+    }
+
+    /** 先取全文（列表里只有预览）再换成编辑页。几毫秒的事，不必另画加载态。 */
+    private fun openEditor(entry: ClipEntry) {
+        if (editor != null) return
+        dismissMenu()
+        val host = root ?: return
+        val request = ++editorRequest
+        scope.launch {
+            val result = try {
+                Result.success(store.text(entry.id) ?: throw NoSuchElementException("Clip no longer exists"))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Result.failure(error)
+            }
+            main.post {
+                if (root !== host || request != editorRequest || editor != null) return@post
+                result.onSuccess { full -> guarded("打开编辑页") { showEditor(entry, full) } }
+                    .onFailure {
+                        onError("读取编辑正文", it)
+                        Toast.makeText(host.context, translate("无法读取完整内容，请重新打开后重试"), Toast.LENGTH_LONG).show()
+                    }
+            }
+        }
+    }
+
+    private fun showEditor(entry: ClipEntry, text: String) {
+        val ed = buildEditor(card.context, entry, text)
+        editor = ed
+        browseViews.forEach { it.visibility = View.GONE }
+        card.addView(ed.view)
+        ed.refresh()
+        ed.field.setSelection(ed.field.length())
+        // 先让输入框拿到焦点再改窗口：窗口变成可接输入法时，系统按此刻的焦点去起输入连接
+        ed.field.requestFocus()
+        setWindowIme(true)
+        showKeyboard(ed.field)
+        if (ValueAnimator.areAnimatorsEnabled()) {
+            ed.view.alpha = 0f
+            ed.view.translationY = dp(card.context, 8f)
+            ed.view.animate().alpha(1f).translationY(0f).setDuration(180).setInterpolator(DecelerateInterpolator()).start()
+        }
+        ViewCompat.setAccessibilityPaneTitle(ed.view, translate("编辑记录"))
+    }
+
+    /** 回到列表。光标还在刚才那一条上，改过的话它已经换了新的预览。 */
+    private fun leaveEditor() {
+        val ed = editor ?: return
+        dismissMenu()
+        editor = null
+        ed.field.context.getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(ed.field.windowToken, 0)
+        ed.field.clearFocus()
+        card.removeView(ed.view)
+        browseViews.forEach { it.visibility = View.VISIBLE }
+        setWindowIme(false)
+        onInputReturned()
+        render()
+        lists.alpha = 0f
+        lists.animate().alpha(1f).setDuration(120).start()
+        root?.post { if (editor == null) revealSelected() }
+    }
+
+    /** 想离开编辑页：没改过直接走，改过了先问。[closePanel] 是连面板一起关（再按一次唤出键）。 */
+    private fun requestExitEditor(closePanel: Boolean) {
+        val ed = editor ?: return
+        if (ed.saving) return
+        val leave = { if (closePanel) close() else leaveEditor() }
+        if (!ed.dirty) return leave()
+        showPopup(
+            ed.actions,
+            listOf(
+                MenuEntry(translate("继续编辑")) { ed.field.requestFocus() },
+                MenuEntry(translate("放弃修改"), danger = true) { leave() },
+            ),
+            alignEnd = true,
+            title = translate("放弃这次修改？"),
+            minWidthDp = 200f,
+        )
+    }
+
+    /**
+     * 保存。[insert] 为 true 时存完接着写进原来的输入框，和在列表里按 Enter 是同一条路。
+     * 没改过的「保存并输入」就是直接输入，不碰库。
+     */
+    private fun saveEditor(insert: Boolean) {
+        val ed = editor ?: return
+        if (ed.saving) return
+        val text = ed.text
+        if (text.isBlank()) return
+        val changed = ed.dirty
+        if (!changed && !insert) return
+        val entry = ed.entry
+        val host = root ?: return
+        ed.saving = true
+        ed.failure = null
+        ed.refresh()
+        scope.launch {
+            val result = try {
+                if (changed) store.updateText(entry.id, text)
+                Result.success(Unit)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Result.failure(error)
+            }
+            main.post {
+                if (changed && result.isSuccess) onEdited()
+                // A dismissed or replaced overlay must never insert into another app later.
+                if (root !== host || editor !== ed) return@post
+                ed.saving = false
+                result.fold(
+                    onSuccess = {
+                        if (insert) {
+                            close()
+                            onInsert(entry.copy(text = text, length = text.codePointCount(0, text.length)))
+                        } else {
+                            leaveEditor()
+                            load(state.query, limit)
+                            Toast.makeText(host.context, translate("修改已保存"), Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    onFailure = {
+                        onError("保存编辑", it)
+                        ed.failure = translate("保存失败，修改仍保留，请重试")
+                        ed.refresh()
+                        ed.field.requestFocus()
+                    },
+                )
+            }
+        }
+    }
+
+    /**
+     * 编辑页开着时的实体键盘。只认几颗命令键，其余一律放行给输入框 —— 打字、方向键、
+     * Ctrl+A / C / V 这些都归输入框自己。
+     */
+    private fun onEditorKey(ed: Editor, e: NormalizedKeyEvent, modifiers: Int): Boolean {
+        val ctrl = modifiers and KeyCombo.MOD_CTRL != 0
+        val shift = modifiers and KeyCombo.MOD_SHIFT != 0
+        val enter = e.keyCode == KeyEvent.KEYCODE_ENTER || e.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
+        when {
+            e.keyCode == KeyEvent.KEYCODE_ESCAPE -> requestExitEditor(closePanel = false)
+            // 导航栏返回：键盘弹着时先收键盘，和普通应用里一样；再按一次才退回列表
+            e.keyCode == KeyEvent.KEYCODE_BACK -> if (imeVisible()) hideKeyboard(ed.field) else requestExitEditor(closePanel = false)
+            e.repeatCount == 0 && isToggle(e) -> requestExitEditor(closePanel = true)
+            ctrl && enter -> saveEditor(insert = shift)
+            ctrl && e.keyCode == KeyEvent.KEYCODE_S -> saveEditor(insert = false)
+            else -> return false
+        }
+        return true
+    }
+
+    /**
+     * 窗口接不接输入法。列表模式不接（ALT_FOCUSABLE_IM，见 [show]），编辑页要接：
+     * 窗口有焦点时这一位一变，系统就按当前焦点所在的输入框重新起输入连接。
+     */
+    private fun setWindowIme(on: Boolean) {
+        val view = root ?: return
+        val lp = params ?: return
+        lp.flags = if (on) {
+            lp.flags and WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM.inv()
+        } else {
+            lp.flags or WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
+        }
+        lp.softInputMode = if (on) {
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
+        } else {
+            WindowManager.LayoutParams.SOFT_INPUT_STATE_UNSPECIFIED
+        }
+        runCatching { owner?.getSystemService(WindowManager::class.java)?.updateViewLayout(view, lp) }
+            .onFailure { onError("切换面板输入法", it) }
+    }
+
+    /** 窗口刚改成可接输入法，输入连接下一帧才起来：晚一点再叫键盘。接着实体键盘时系统自己不弹，不用管。 */
+    private fun showKeyboard(field: EditText) {
+        field.postDelayed({
+            if (editor?.field !== field) return@postDelayed
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) field.windowInsetsController?.show(WindowInsets.Type.ime())
+            field.context.getSystemService(InputMethodManager::class.java)?.showSoftInput(field, InputMethodManager.SHOW_IMPLICIT)
+        }, KEYBOARD_DELAY_MS)
+    }
+
+    private fun hideKeyboard(field: EditText) {
+        field.context.getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(field.windowToken, 0)
+    }
+
+    private fun imeVisible(): Boolean = root?.let {
+        ViewCompat.getRootWindowInsets(it)?.isVisible(WindowInsetsCompat.Type.ime())
+    } == true
+
+    private fun buildEditor(context: Context, entry: ClipEntry, text: String): Editor {
+        val back = Button(context).apply {
+            this.text = "←"
+            setTextColor(palette.ink)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+            isAllCaps = false
+            stateListAnimator = null
+            includeFontPadding = false
+            setPadding(0, 0, 0, 0)
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = 0
+            minimumHeight = 0
+            contentDescription = translate("返回列表")
+            val mask = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) }
+            background = RippleDrawable(ColorStateList.valueOf(palette.ripple), null, mask)
+            val size = dp(context, 48f).toInt()
+            // 往左让一点：箭头的笔画和下面输入框的左缘对齐，触控区仍是完整的 44dp
+            layoutParams = LinearLayout.LayoutParams(size, size).apply { marginStart = -dp(context, 10f).toInt() }
+            setOnClickListener { guarded("编辑页返回") { requestExitEditor(closePanel = false) } }
+        }
+        val title = TextView(context).apply {
+            this.text = translate("编辑记录")
+            setTextColor(palette.ink)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        // 改的是哪一条：来源、多久前用过、是不是置顶的。和列表那一行的第二行一个写法，认得出来
+        val meta = TextView(context).apply {
+            this.text = listOfNotNull(
+                entry.sourcePackage?.let { labelOf(context, it) },
+                translate(ClipPolicy.age(System.currentTimeMillis(), entry.lastUsedAtMs)),
+                if (entry.pinned) translate("置顶") else null,
+            ).joinToString(" · ")
+            setTextColor(palette.faint)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        val titles = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(context, 2f).toInt(), 0, dp(context, 12f).toInt(), 0)
+            addView(title)
+            addView(meta)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val status = TextView(context).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            typeface = Typeface.MONOSPACE
+            isSingleLine = true
+        }
+        val header = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, dp(context, 4f).toInt(), 0)
+            addView(back)
+            addView(titles)
+        }
+
+        val fieldId = View.generateViewId()
+        val fieldLabel = TextView(context).apply {
+            this.text = translate("内容")
+            labelFor = fieldId
+            setTextColor(palette.mid)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val fieldHeading = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(context, 8f).toInt(), 0, 0)
+            addView(fieldLabel)
+            addView(status)
+        }
+        val feedback = TextView(context).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+            setPadding(0, 0, 0, dp(context, 8f).toInt())
+        }
+        val radius = dp(context, 14f)
+        val field = EditText(context).apply {
+            id = fieldId
+            contentDescription = translate("内容")
+            setText(text)
+            hint = translate("在这里输入内容")
+            setTextColor(palette.ink)
+            setHintTextColor(palette.faint)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            setLineSpacing(0f, 1.35f)
+            gravity = Gravity.TOP or Gravity.START
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+            setSaveEnabled(false)
+            // 横屏时输入法默认全屏接管、把面板整个盖住：要看着原文改，不要全屏
+            imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN or EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
+            filters = arrayOf(InputFilter.LengthFilter(ClipPolicy.MAX_CHARS))
+            setHorizontallyScrolling(false)
+            isVerticalScrollBarEnabled = true
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            highlightColor = ColorUtils.setAlphaComponent(palette.accent, 0x55)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                textCursorDrawable = GradientDrawable().apply {
+                    setColor(palette.accent)
+                    setSize(dp(context, 2f).toInt(), dp(context, 20f).toInt())
+                }
+            }
+            val padH = dp(context, 14f).toInt()
+            val padV = dp(context, 12f).toInt()
+            setPadding(padH, padV, padH, padV)
+            // 聚焦时描边换成强调色、加粗半个 dp：看得出光标在这里，又不像报错那样扎眼
+            background = StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply {
+                    cornerRadius = radius
+                    setColor(palette.field)
+                    setStroke(dp(context, 1.5f).toInt(), palette.emphasis)
+                })
+                addState(intArrayOf(), GradientDrawable().apply {
+                    cornerRadius = radius
+                    setColor(palette.field)
+                    setStroke(dp(context, 1f).toInt(), palette.line)
+                })
+            }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 96f).toInt(), 1f)
+                .apply { topMargin = dp(context, 8f).toInt(); bottomMargin = dp(context, 8f).toInt() }
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                override fun afterTextChanged(s: Editable?) {
+                    editor?.refresh()
+                }
+            })
+        }
+
+        val keys = TextView(context).apply {
+            this.text = translate("Ctrl+Enter 保存 · Ctrl+Shift+Enter 保存并输入 · Esc 取消")
+            setTextColor(palette.faint)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            maxLines = 2
+            setPadding(dp(context, 4f).toInt(), 0, dp(context, 12f).toInt(), 0)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val cancel = actionButton(context, translate("取消"), Tone.TEXT) { requestExitEditor(closePanel = false) }
+        val saveInsert = actionButton(context, translate("保存并输入"), Tone.OUTLINE) { saveEditor(insert = true) }
+        val save = actionButton(context, translate("保存"), Tone.PRIMARY) { saveEditor(insert = false) }
+        val buttons = listOf(cancel, saveInsert, save)
+        val actions = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL or Gravity.END
+            buttons.forEach(::addView)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        val footer = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(keys)
+            addView(actions)
+        }
+        val content = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(header)
+            addView(fieldHeading)
+            addView(field)
+            addView(feedback)
+            addView(footer)
+        }
+        // Keep a usable field on short landscape/IME windows; let the whole form scroll only when needed.
+        val view = ScrollView(context).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = true
+            addView(content, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+        return Editor(entry, text, view, field, status, keys, actions, buttons, save, saveInsert, feedback, back)
+    }
+
+    /** 按钮的三档轻重：纯文字 < 描边 < 实心。 */
+    private enum class Tone { TEXT, OUTLINE, PRIMARY }
+
+    /** Editor actions have a 48dp minimum target and a 3dp hard shadow on the primary button. */
+    private fun actionButton(context: Context, label: String, tone: Tone, onClick: () -> Unit): Button = Button(context).apply {
+        text = label
+        isAllCaps = false
+        stateListAnimator = null
+        isSingleLine = false
+        maxLines = 2
+        gravity = Gravity.CENTER
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        typeface = if (tone == Tone.PRIMARY) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+        val height = dp(context, 48f).toInt()
+        val lift = dp(context, 3f).toInt()
+        minWidth = dp(context, 64f).toInt()
+        minimumWidth = minWidth
+        minHeight = height
+        minimumHeight = height
+        val padH = dp(context, 16f).toInt()
+        // 实心那档的面比按钮矮 3dp（下面是阴影），字跟着面居中
+        setPadding(padH, 0, padH, if (tone == Tone.PRIMARY) lift else 0)
+        val radius = dp(context, 12f)
+        val mask = GradientDrawable().apply { cornerRadius = radius; setColor(Color.WHITE) }
+        when (tone) {
+            Tone.TEXT -> {
+                setTextColor(palette.mid)
+                background = RippleDrawable(ColorStateList.valueOf(palette.ripple), null, mask)
+            }
+            Tone.OUTLINE -> {
+                setTextColor(palette.ink)
+                val face = GradientDrawable().apply {
+                    cornerRadius = radius
+                    setColor(palette.surface)
+                    setStroke(dp(context, 1f).toInt(), palette.line)
+                }
+                background = RippleDrawable(ColorStateList.valueOf(palette.ripple), face, mask)
+            }
+            Tone.PRIMARY -> {
+                setTextColor(palette.onPrimary)
+                val shadow = GradientDrawable().apply { cornerRadius = radius; setColor(palette.shadow) }
+                val face = GradientDrawable().apply { cornerRadius = radius; setColor(palette.primary) }
+                val layers = LayerDrawable(arrayOf(shadow, face)).apply {
+                    setLayerInset(0, 0, lift, 0, 0)
+                    setLayerInset(1, 0, 0, 0, lift)
+                }
+                background = RippleDrawable(
+                    ColorStateList.valueOf(ColorUtils.setAlphaComponent(palette.onPrimary, 0x33)),
+                    layers,
+                    mask,
+                )
+            }
+        }
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        setOnClickListener { guarded("编辑页按钮") { onClick() } }
     }
 
     // --- 快捷操作 --------------------------------------------------------------
@@ -1192,7 +1763,8 @@ class ClipPanel(
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 .apply { topMargin = dp(context, 8f).toInt() }
         }
-        val card = LinearLayout(context).apply {
+        val quickBar = buildQuickBar(context)
+        card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(pad - dp(context, 4f).toInt(), pad, pad - dp(context, 4f).toInt(), pad - dp(context, 2f).toInt())
             background = GradientDrawable().apply {
@@ -1204,17 +1776,21 @@ class ClipPanel(
             // 吃掉卡片上的点击，免得穿到背景上把面板关了
             isClickable = true
             addView(header)
-            addView(buildQuickBar(context))
+            addView(quickBar)
             addView(queryView)
             addView(lists)
             addView(emptyView)
             addView(hint)
             layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
+        browseViews = listOf(header, quickBar, queryView, lists, emptyView, hint)
         return PanelRoot(context, card, hint).apply {
             setBackgroundColor(palette.backdrop)
-            // 点卡片外面关闭：面板是模态的，底下的应用此刻本来就点不到
-            setOnClickListener { close() }
+            // 点卡片外面关闭：面板是模态的，底下的应用此刻本来就点不到。
+            // 编辑页开着时只当是「返回」：手一滑点到外面，不该把没保存的修改一起关掉
+            setOnClickListener {
+                guarded("点面板外面") { if (editor != null) requestExitEditor(closePanel = false) else close() }
+            }
             addView(card)
             contentDescription = translate("剪贴板历史")
         }
@@ -1239,9 +1815,22 @@ class ClipPanel(
 
         private val backHook: Any? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) BackHook { onBack() } else null
 
-        /** 返回：菜单开着先收菜单，否则关面板。 */
+        /** 返回：菜单开着先收菜单，编辑页开着先退回列表，否则关面板。 */
         private fun onBack() = guarded("返回键关闭剪贴板面板") {
-            if (menuLayer != null) dismissMenu() else if (root === this) close()
+            when {
+                menuLayer != null -> dismissMenu()
+                editor != null -> {
+                    val ed = editor ?: return@guarded
+                    if (imeVisible()) hideKeyboard(ed.field) else requestExitEditor(closePanel = false)
+                }
+                root === this -> close()
+            }
+        }
+
+        /** 输入法弹出、收起都会换边衬：卡片跟着重新排，编辑框始终露在键盘上面。 */
+        override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets {
+            requestLayout()
+            return super.onApplyWindowInsets(insets)
         }
 
         override fun onAttachedToWindow() {
@@ -1291,7 +1880,12 @@ class ClipPanel(
             }
             val maxCard = if (split) MAX_SPLIT_CARD_WIDTH_DP else MAX_CARD_WIDTH_DP
             val side = maxOf(gutter, (availWidth - dp(context, maxCard).toInt()) / 2)
-            val vertical = maxOf(gutter, (availHeight * 0.08f).toInt())
+            // 键盘弹出来时高度很金贵（横屏手机上只剩一百多 dp）：上下的留白收到最小，让给编辑框
+            val vertical = if (editor != null && insets[4] > 0) {
+                dp(context, 12f).toInt()
+            } else {
+                maxOf(gutter, (availHeight * 0.08f).toInt())
+            }
             val lp = card.layoutParams as LayoutParams
             lp.leftMargin = insets[0] + side
             lp.topMargin = insets[1] + vertical
@@ -1308,22 +1902,33 @@ class ClipPanel(
                 },
             ).replace(PickKeys.TEMPLATE, pick.hint)
             if (hint.text.toString() != wanted) hint.text = wanted
+            editor?.fit(px2dp(cardWidth))
             super.onMeasure(widthMeasureSpec, heightMeasureSpec)
         }
 
-        /** 左、上、右、下。拿不到窗口边衬时上方按 24dp 估。 */
+        /**
+         * 左、上、右、下，第五个是输入法比系统栏多占了多高（没弹出是 0）。拿不到窗口边衬时上方按 24dp 估。
+         *
+         * 底边取系统栏与输入法里高的那个：窗口被输入法顶小了的系统上输入法边衬是 0，
+         * 没顶小的（Android 11 起多半如此）由这里让出键盘的高度，两种都不会让两次。
+         */
         private fun systemInsets(): IntArray {
-            val insets = rootWindowInsets ?: return intArrayOf(0, dp(context, 24f).toInt(), 0, 0)
+            val insets = rootWindowInsets ?: return intArrayOf(0, dp(context, 24f).toInt(), 0, 0, 0)
             return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val i = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
-                intArrayOf(i.left, i.top, i.right, i.bottom)
+                val ime = insets.getInsets(WindowInsets.Type.ime()).bottom
+                intArrayOf(i.left, i.top, i.right, maxOf(i.bottom, ime), (ime - i.bottom).coerceAtLeast(0))
             } else {
+                @Suppress("DEPRECATION")
+                val bottom = insets.systemWindowInsetBottom
                 @Suppress("DEPRECATION")
                 intArrayOf(
                     insets.systemWindowInsetLeft,
                     insets.systemWindowInsetTop,
                     insets.systemWindowInsetRight,
-                    insets.systemWindowInsetBottom,
+                    bottom,
+                    // 旧系统的底边衬里已经含着输入法；比导航栏高出一截就当它弹出来了
+                    if (editor != null && bottom > dp(context, 80f)) bottom else 0,
                 )
             }
         }
@@ -1346,6 +1951,8 @@ class ClipPanel(
 
         /** 顶上快捷操作的格数。 */
         const val QUICK_SLOTS = 3
+        const val EDITOR_NARROW_DP = 560f
+        const val KEYBOARD_DELAY_MS = 100L
 
         /** 卡片最宽多少 dp：再宽一行字就长得读不过来了。 */
         const val MAX_CARD_WIDTH_DP = 640f
@@ -1390,7 +1997,14 @@ class ClipPanel(
         val mid = c.inkMid.toArgb()
         val faint = c.inkMuted.toArgb()
         val accent = c.accent.toArgb()
+        val emphasis = c.accentInk.toArgb()
+        val error = amColorsFor(dark, UserSettings.Accent.TERRACOTTA).accentInk.toArgb()
         val onAccent = Color.WHITE
+
+        /** 主按钮与应用里的 AmPrimaryButton 一致：墨色面、底色字、3dp 硬阴影。两种主题下对比度都在 12:1 以上。 */
+        val primary = ink
+        val onPrimary = c.bgScreen.toArgb()
+        val shadow = c.shadowSolid.toArgb()
 
         /** 快捷操作图标的底：强调色淡淡一层。 */
         val accentSoft = ColorUtils.blendARGB(surface, accent, if (dark) 0.26f else 0.14f)

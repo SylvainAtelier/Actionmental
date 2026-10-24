@@ -211,6 +211,37 @@ class KeyRemapTest {
     }
 
     @Test
+    fun `左 Shift 映射成 Alt 时，录下的 Shift + 斜杠 快捷键照样触发，不再被当成 Alt + 斜杠 发出去`() {
+        val fired = mutableListOf<KeyCombo>()
+        val emitted = mutableListOf<KeyCombo>()
+        val shiftSlash = KeyCombo(KeyEvent.KEYCODE_SLASH, KeyCombo.MOD_SHIFT)
+        val pipeline = KeyPipeline(traceCapacity = 0).apply {
+            onTrigger = { combo, _ -> fired += combo; combo == shiftSlash }
+            rewriteCombo = { combo, pressed, _ -> rewriteModifiers(combo, pressed, listOf(shiftToAlt)) }
+            onRemap = { _, effective, _ -> emitted += effective; true }
+        }
+
+        pipeline.dispatch(down(KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.META_SHIFT_ON))
+        assertTrue(pipeline.dispatch(down(KeyEvent.KEYCODE_SLASH, KeyEvent.META_SHIFT_ON)))
+
+        // 先按改写后的 Alt + / 找，没有再按真按下的 Shift + / 找
+        assertEquals(listOf(KeyCombo(KeyEvent.KEYCODE_SLASH, KeyCombo.MOD_ALT), shiftSlash), fired)
+        assertTrue(emitted.isEmpty())
+    }
+
+    @Test
+    fun `只添上修饰位的改写不退回原组合，Caps + 1 不会触发单独 1 的快捷键`() {
+        val ctrlOne = KeyCombo(KeyEvent.KEYCODE_1, KeyCombo.MOD_CTRL)
+        assertNull(KeyPipeline.physicalFallback(KeyCombo(KeyEvent.KEYCODE_1), ctrlOne))
+        assertNull(KeyPipeline.physicalFallback(ctrlOne, ctrlOne))
+        val shiftSlash = KeyCombo(KeyEvent.KEYCODE_SLASH, KeyCombo.MOD_SHIFT)
+        assertEquals(
+            shiftSlash,
+            KeyPipeline.physicalFallback(shiftSlash, KeyCombo(KeyEvent.KEYCODE_SLASH, KeyCombo.MOD_ALT)),
+        )
+    }
+
+    @Test
     fun `自己注入的按键原样放行，不会自己触发自己`() {
         val fired = mutableListOf<KeyCombo>()
         val pipeline = KeyPipeline(traceCapacity = 0).apply {

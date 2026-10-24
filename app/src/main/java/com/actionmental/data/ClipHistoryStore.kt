@@ -14,6 +14,18 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 
+/** The caller must keep all callbacks in one transaction and roll it back on any failure. */
+internal fun updateExistingClipText(
+    id: Long,
+    exists: () -> Boolean,
+    mergeDuplicate: () -> Unit,
+    writeText: () -> Int,
+) {
+    if (id <= 0L || !exists()) throw NoSuchElementException("Clipboard entry $id no longer exists")
+    mergeDuplicate()
+    if (writeText() != 1) throw NoSuchElementException("Clipboard entry $id no longer exists")
+}
+
 /**
  * 剪贴板历史的本地库。
  *
@@ -245,6 +257,64 @@ class ClipHistoryStore(context: Context, private val keyOf: (String) -> String) 
             "id = ?",
             arrayOf(id.toString()),
         )
+    }
+
+    /**
+     * 改一条的正文，搜索键、去重哈希跟着重算。
+     *
+     * 不碰「最近使用」与置顶：改完它还待在原来的位置，不会在眼皮底下跳走。
+     * 改成了库里另一条已有的内容时两条并成一条 —— 哈希唯一，不能有两行一样的正文：
+     * 留下正在改的这条，另一条的使用次数并进来；这条没置顶而另一条置顶了，就接过它的置顶。然后删掉另一条。
+     *
+     * @throws NoSuchElementException if the target no longer exists. No changes are committed on failure.
+     */
+    suspend fun updateText(id: Long, text: String): Unit = withContext(Dispatchers.IO) {
+        val hash = ClipPolicy.hash(text)
+        // 事务外算：查 ICU 是这一趟里最慢的一步，不该占着写锁
+        val key = keyOf(text)
+        val db = helper.writableDatabase
+        db.beginTransaction()
+        try {
+            updateExistingClipText(
+                id = id,
+                exists = {
+                    db.rawQuery("SELECT id FROM clips WHERE id = ?", arrayOf(id.toString())).use {
+                        it.moveToFirst()
+                    }
+                },
+                mergeDuplicate = {
+                    db.rawQuery(
+                        "SELECT id, use_count, pinned_at FROM clips WHERE hash = ? AND id != ?",
+                        arrayOf(hash, id.toString()),
+                    ).use { c ->
+                        if (c.moveToFirst()) {
+                            db.execSQL(
+                                "UPDATE clips SET use_count = use_count + ?, " +
+                                    "pinned_at = CASE WHEN pinned_at = 0 THEN ? ELSE pinned_at END WHERE id = ?",
+                                arrayOf<Any?>(c.getInt(1), c.getLong(2), id),
+                            )
+                            db.delete("clips", "id = ?", arrayOf(c.getLong(0).toString()))
+                        }
+                    }
+                },
+                writeText = {
+                    db.update(
+                        "clips",
+                        ContentValues().apply {
+                            put("hash", hash)
+                            put("search_key", key)
+                            put("text", text)
+                        },
+                        "id = ?",
+                        arrayOf(id.toString()),
+                    )
+                },
+            )
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        changed()
     }
 
     suspend fun delete(id: Long) = update(id) {
