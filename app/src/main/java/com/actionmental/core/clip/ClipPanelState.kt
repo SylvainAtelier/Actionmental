@@ -2,6 +2,9 @@ package com.actionmental.core.clip
 
 import android.view.KeyEvent
 import com.actionmental.core.key.KeyCombo
+import com.actionmental.core.translate.TranslationHistoryEntry
+import com.actionmental.core.translate.TranslationLanguage
+import com.actionmental.core.translate.TranslationRequest
 
 /** 面板认得的按键，由平台层从 KeyEvent 翻译过来。 */
 sealed interface PanelKey {
@@ -25,6 +28,7 @@ sealed interface PanelKey {
 
     /** Ctrl+E：打开光标所在那一条的编辑页。 */
     data object Edit : PanelKey
+    data object Translate : PanelKey
 
     /** 直选键（默认 Ctrl + 1…9，见 [PickKeys]）：直接选用屏幕上第几条，不必先挪光标。 */
     data class Pick(val index: Int) : PanelKey
@@ -118,6 +122,7 @@ object PanelKeys {
             ctrl && keyCode == KeyEvent.KEYCODE_C -> PanelKey.Copy
             ctrl && keyCode == KeyEvent.KEYCODE_D -> PanelKey.Delete
             ctrl && keyCode == KeyEvent.KEYCODE_E -> PanelKey.Edit
+            ctrl && keyCode == KeyEvent.KEYCODE_T -> PanelKey.Translate
             ctrl && keyCode == KeyEvent.KEYCODE_U -> PanelKey.ClearQuery
             ctrl || alt -> null
             typed != null -> PanelKey.Type(typed)
@@ -139,6 +144,7 @@ sealed interface PanelEffect {
     data class Copy(val entry: ClipEntry) : PanelEffect
     /** 打开编辑页改这一条的正文。Ctrl+E 与长按菜单发出。 */
     data class Edit(val entry: ClipEntry) : PanelEffect
+    data class Translate(val entry: ClipEntry) : PanelEffect
     data object None : PanelEffect
 }
 
@@ -187,6 +193,7 @@ data class ClipPanelState(
         PanelKey.TogglePin -> this to (current?.let { PanelEffect.TogglePin(it) } ?: PanelEffect.None)
         PanelKey.Copy -> this to (current?.let { PanelEffect.Copy(it) } ?: PanelEffect.None)
         PanelKey.Edit -> this to (current?.let { PanelEffect.Edit(it) } ?: PanelEffect.None)
+        PanelKey.Translate -> this to (current?.let { PanelEffect.Translate(it) } ?: PanelEffect.None)
         is PanelKey.Pick -> {
             val entry = entries.getOrNull(key.index)
             if (entry == null) this to PanelEffect.None
@@ -227,5 +234,85 @@ data class ClipPanelState(
         /** 懒加载：一页查多少条。滚到离末尾不足 [PREFETCH] 条时再要下一页。 */
         const val PAGE_SIZE = 60
         const val PREFETCH = 15
+    }
+}
+
+/** Detail shortcuts keep Tab and ordinary characters available to native focus navigation. */
+sealed interface TranslationPanelKey {
+    data object Confirm : TranslationPanelKey
+    data object Escape : TranslationPanelKey
+    data object BackToList : TranslationPanelKey
+    data object PreviousTarget : TranslationPanelKey
+    data object NextTarget : TranslationPanelKey
+    data object Retry : TranslationPanelKey
+    data class PickTarget(val index: Int) : TranslationPanelKey
+}
+
+object TranslationPanelKeys {
+    fun map(keyCode: Int, modifiers: Int, pick: PickKeys): TranslationPanelKey? {
+        val ctrl = modifiers and KeyCombo.MOD_CTRL != 0
+        val alt = modifiers and KeyCombo.MOD_ALT != 0
+        pick.indexOf(keyCode, ctrl, alt)?.let { return TranslationPanelKey.PickTarget(it) }
+        return when {
+            keyCode == KeyEvent.KEYCODE_ESCAPE || keyCode == KeyEvent.KEYCODE_BACK -> TranslationPanelKey.Escape
+            ctrl && keyCode == KeyEvent.KEYCODE_T -> TranslationPanelKey.BackToList
+            ctrl && keyCode == KeyEvent.KEYCODE_R -> TranslationPanelKey.Retry
+            !ctrl && !alt && keyCode == KeyEvent.KEYCODE_DPAD_LEFT -> TranslationPanelKey.PreviousTarget
+            !ctrl && !alt && keyCode == KeyEvent.KEYCODE_DPAD_RIGHT -> TranslationPanelKey.NextTarget
+            keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER -> TranslationPanelKey.Confirm
+            else -> null
+        }
+    }
+}
+
+/** Translation detail data has no clipboard or networking dependency. */
+class ClipTranslationState(source: String, target: TranslationLanguage?) {
+    var source: String = source
+        private set
+    var target: TranslationLanguage? = target
+        private set
+    var result: String? = null
+        private set
+    var loading: Boolean = false
+        private set
+    var inserting: Boolean = false
+    private var generation = 0L
+
+    fun beginRequest(): Long {
+        loading = true
+        return ++generation
+    }
+
+    /** A cancelled request cannot replace a newer selection, even if its transport ignores cancellation. */
+    fun finishRequest(token: Long, translated: Result<String>): Boolean {
+        if (token != generation || !loading) return false
+        loading = false
+        translated.getOrNull()?.takeIf { it.isNotBlank() }?.let { result = it }
+        return true
+    }
+
+    fun cancel() {
+        generation++
+        loading = false
+        inserting = false
+    }
+
+    fun selectTarget(language: TranslationLanguage) {
+        cancel()
+        target = language
+        result = null
+    }
+
+    fun restore(entry: TranslationHistoryEntry, languages: List<TranslationLanguage>) {
+        restore(entry, languages.firstOrNull { it.id == entry.targetId }
+            ?: TranslationLanguage(entry.targetId, entry.targetName,
+                entry.prompt.removeSuffix("\n\n" + TranslationRequest.RULES)))
+    }
+
+    fun restore(entry: TranslationHistoryEntry, language: TranslationLanguage) {
+        cancel()
+        source = entry.source
+        target = language
+        result = entry.result
     }
 }

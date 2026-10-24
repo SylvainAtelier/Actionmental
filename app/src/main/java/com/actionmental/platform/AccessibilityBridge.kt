@@ -11,6 +11,7 @@ import android.os.Looper
 import android.provider.Settings
 import android.text.TextUtils
 import android.view.accessibility.AccessibilityManager
+import android.view.accessibility.AccessibilityNodeInfo
 import androidx.annotation.RequiresApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -222,6 +223,11 @@ class AccessibilityBridge(private val context: Context) {
     @Volatile
     private var inputLiveAtOverlay = false
 
+    /** Identity of the original field; translation must never fall back to another target. */
+    private var overlayInputTarget: AccessibilityNodeInfo? = null
+    private var overlayEditorPackage: String? = null
+    private var overlayEditorFieldId: Int? = null
+
     fun onInputStarted() { _inputLive.value = true }
     fun onInputFinished() { _inputLive.value = false }
 
@@ -232,6 +238,30 @@ class AccessibilityBridge(private val context: Context) {
             runCatching { service?.inputMethod?.currentInputStarted == true }.getOrDefault(false)
         if (started) _inputLive.value = true
         inputLiveAtOverlay = _inputLive.value
+        val editor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+            runCatching { service?.inputMethod?.currentInputEditorInfo }.getOrNull() else null
+        overlayEditorPackage = editor?.packageName
+        overlayEditorFieldId = editor?.fieldId
+        overlayInputTarget = runCatching {
+            service?.rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                ?.takeIf { it.isEditable && it.isEnabled }
+        }.getOrNull()
+    }
+
+    /** Commit only to the exact field captured before opening the panel, never the clipboard. */
+    fun commitTextToOverlayTarget(text: String): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
+        return runCatching {
+            val expected = overlayInputTarget ?: return false
+            val input = service?.inputMethod ?: return false
+            val editor = input.currentInputEditorInfo ?: return false
+            if (!input.currentInputStarted || overlayEditorPackage == null ||
+                editor.packageName != overlayEditorPackage || editor.fieldId != overlayEditorFieldId) return false
+            if (!expected.refresh() || !expected.isEditable || !expected.isEnabled) return false
+            val focused = service?.rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
+            if (focused != expected || !focused.isFocused) return false
+            commitText(text)
+        }.getOrDefault(false)
     }
 
     /**

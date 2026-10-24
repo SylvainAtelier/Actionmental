@@ -18,6 +18,11 @@ import com.actionmental.core.shortcut.Shortcut
 import com.actionmental.data.UserSettings
 import com.actionmental.platform.PackageBackend
 import com.actionmental.core.clip.ClipEntry
+import com.actionmental.core.translate.TranslationLanguage
+import com.actionmental.ui.screens.TranslationSettingsUiState
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,6 +47,77 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     val status = graph.status
     val settings = graph.settingsRepository.settings
+
+    private val translationOperations = MutableStateFlow(TranslationSettingsUiState())
+    val translationSettings = combine(settings, translationOperations) { saved, operation ->
+        operation.copy(settings = saved.translation)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TranslationSettingsUiState())
+
+    fun saveTranslationToken(token: String) = changeTranslationToken(token)
+    fun clearTranslationToken() = changeTranslationToken(null)
+
+    private fun changeTranslationToken(token: String?) {
+        if (translationOperations.value.tokenSaving || translationOperations.value.connectionTesting) return
+        translationOperations.update { it.copy(tokenSaving = true, tokenMessage = null, connectionMessage = null) }
+        viewModelScope.launch {
+            try {
+                val present = withContext(Dispatchers.IO) {
+                    if (token == null) graph.miniMaxTranslator.clearToken() else graph.miniMaxTranslator.saveToken(token)
+                    graph.miniMaxTranslator.hasToken()
+                }
+                translationOperations.update { it.copy(tokenConfigured = present, tokenSaving = false,
+                    tokenFailed = false, tokenMessage = if (token == null) "Token 已移除" else "Token 已保存") }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                translationOperations.update { it.copy(tokenSaving = false, tokenFailed = true, tokenMessage = "Token 保存失败，请重试") }
+            }
+        }
+    }
+
+    fun updateTranslationModel(model: String) {
+        val clean = model.trim()
+        if (clean.isBlank() || clean.length > 128 || clean.any { it.isWhitespace() || it.isISOControl() }) return
+        saveTranslationSettings { it.copy(model = clean) }
+    }
+
+    fun updateTranslationLanguages(languages: List<TranslationLanguage>) {
+        if (languages.isEmpty() || languages.size > 30 || languages.map { it.id }.distinct().size != languages.size ||
+            languages.any { it.id.isBlank() || it.id.length > 128 || it.name.isBlank() || it.name.length > 80 ||
+                it.prompt.isBlank() || it.prompt.length > 2000 }) return
+        saveTranslationSettings { previous -> previous.copy(languages = languages,
+            lastTargetId = previous.lastTargetId.takeIf { id -> languages.any { it.id == id } } ?: languages.first().id) }
+    }
+
+    private fun saveTranslationSettings(transform: (com.actionmental.core.translate.TranslationSettings) -> com.actionmental.core.translate.TranslationSettings) {
+        translationOperations.update { it.copy(connectionMessage = null) }
+        viewModelScope.launch {
+            try {
+                graph.settingsRepository.update { it.copy(translation = transform(it.translation)) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                translationOperations.update { it.copy(tokenFailed = true, tokenMessage = "设置保存失败，请重试") }
+            }
+        }
+    }
+
+    fun testTranslationConnection() {
+        if (translationOperations.value.tokenSaving || translationOperations.value.connectionTesting) return
+        val model = settings.value.translation.model
+        translationOperations.update { it.copy(connectionTesting = true, connectionMessage = null) }
+        viewModelScope.launch {
+            try {
+                graph.miniMaxTranslator.testConnection(model)
+                translationOperations.update { it.copy(connectionTesting = false, connectionFailed = false, connectionMessage = "连接成功") }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                translationOperations.update { it.copy(connectionTesting = false, connectionFailed = true,
+                    connectionMessage = translationFailureMessage(error)) }
+            }
+        }
+    }
 
     /**
      * 真的停下来了没有，以及是谁让它停的。
@@ -94,6 +170,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val toast: StateFlow<String?> = _toast.asStateFlow()
 
     init {
+        viewModelScope.launch {
+            val present = withContext(Dispatchers.IO) { runCatching { graph.miniMaxTranslator.hasToken() }.getOrDefault(false) }
+            translationOperations.update { it.copy(tokenConfigured = present) }
+        }
         // 自愈发生在图里、可能在用户没看屏幕时；界面一回来就把它接过来当作提示
         viewModelScope.launch {
             graph.hardeningNotice.collect { notice ->

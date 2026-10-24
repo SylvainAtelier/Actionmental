@@ -1,6 +1,9 @@
 package com.actionmental.ui
 
 import android.os.Bundle
+import android.content.Intent
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -12,14 +15,30 @@ import com.actionmental.ui.theme.ActionmentalTheme
 
 class MainActivity : ComponentActivity() {
 
+    private var settingsRequest by mutableIntStateOf(0)
+
+    private fun consumeNavigation(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_TRANSLATION_SETTINGS, false) == true) {
+            intent.removeExtra(EXTRA_TRANSLATION_SETTINGS)
+            settingsRequest++
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        consumeNavigation(intent)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        consumeNavigation(intent)
         setContent {
             val vm: AppViewModel = viewModel()
             val settings by vm.settings.collectAsStateWithLifecycle()
             ActionmentalTheme(theme = settings.theme, language = settings.language, accent = settings.accent) {
-                AppRoot(vm)
+                AppRoot(vm, settingsRequest)
             }
         }
     }
@@ -39,5 +58,9 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         AppGraph.get(this).onUiStopped()
+    }
+
+    companion object {
+        const val EXTRA_TRANSLATION_SETTINGS = "translation_settings"
     }
 }

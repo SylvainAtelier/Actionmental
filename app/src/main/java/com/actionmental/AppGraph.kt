@@ -110,6 +110,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import kotlinx.coroutines.delay
+import com.actionmental.platform.MiniMaxTranslator
+import com.actionmental.data.TranslationHistoryStore
+import com.actionmental.core.translate.TranslationResult
+import com.actionmental.ui.MainActivity
 
 /**
  * 组合根。
@@ -142,6 +146,8 @@ class AppGraph private constructor(context: Context) {
     private val appStore = AppStore(context)
 
     val settingsRepository = SettingsRepository(appStore, scope)
+    val miniMaxTranslator = MiniMaxTranslator(appContext)
+    val translationHistoryStore = TranslationHistoryStore(appContext)
     val shortcutRepository = ShortcutRepository(appStore, scope)
     val rotationRuleRepository = RotationRuleRepository(appStore, scope)
     val orientationCompatRepository = OrientationCompatRepository(appStore, scope)
@@ -423,6 +429,45 @@ class AppGraph private constructor(context: Context) {
         onRunQuick = ::runQuickShortcut,
         onShown = accessibility::markOverlayShown,
         onInputReturned = accessibility::markInputBorrowed,
+        translationSettings = { settingsRepository.settings.value.translation },
+        translationConfigured = miniMaxTranslator::hasToken,
+        onTranslate = { request, force ->
+            val cached = if (force) null else try {
+                translationHistoryStore.findMatch(request)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) { null }
+            if (cached != null) TranslationResult(cached.result) else {
+                val result = miniMaxTranslator.translate(request)
+                try {
+                    translationHistoryStore.record(request, result)
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(appContext, translate("译文已生成，但历史保存失败"), Toast.LENGTH_LONG).show()
+                    }
+                }
+                result
+            }
+        },
+        translationHistory = translationHistoryStore::recent,
+        onDeleteTranslation = translationHistoryStore::delete,
+        onClearTranslations = translationHistoryStore::clear,
+        onTranslationTarget = { target ->
+            scope.launch { settingsRepository.update { saved ->
+                saved.copy(translation = saved.translation.copy(lastTargetId = target))
+            } }
+        },
+        onInsertTranslation = { text ->
+            accessibility.awaitInputBack()
+            withContext(Dispatchers.Main) { accessibility.commitTextToOverlayTarget(text) }
+        },
+        onOpenTranslationSettings = {
+            appContext.startActivity(Intent(appContext, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(MainActivity.EXTRA_TRANSLATION_SETTINGS, true))
+        },
     )
 
     private fun quickActionOf(shortcut: Shortcut): ClipPanel.QuickAction {

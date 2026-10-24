@@ -127,6 +127,8 @@ data class UserSettings(
      * 快捷键被删了就当空格子显示，不在这里级联清理。
      */
     val clipQuickShortcuts: List<String> = emptyList(),
+    /** Non-secret translation preferences; credentials and history never enter DataStore. */
+    val translation: com.actionmental.core.translate.TranslationSettings = com.actionmental.core.translate.TranslationSettings(),
 ) {
     enum class Theme(val label: String) { LIGHT("浅色"), DARK("深色"), SYSTEM("跟随系统") }
 

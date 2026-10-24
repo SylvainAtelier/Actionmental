@@ -56,6 +56,8 @@ import com.actionmental.core.clip.PanelEffect
 import com.actionmental.core.clip.PanelKey
 import com.actionmental.core.clip.PanelKeys
 import com.actionmental.core.clip.PickKeys
+import com.actionmental.core.clip.TranslationPanelKey
+import com.actionmental.core.clip.TranslationPanelKeys
 import com.actionmental.core.key.KeyCombo
 import com.actionmental.core.key.KeyPipeline
 import com.actionmental.core.key.NormalizedKeyEvent
@@ -65,6 +67,11 @@ import com.actionmental.ui.theme.AmColors
 import com.actionmental.ui.theme.amColorsFor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import com.actionmental.core.translate.TranslationSettings
+import com.actionmental.core.translate.TranslationRequest
+import com.actionmental.core.translate.TranslationResult
+import com.actionmental.core.translate.TranslationHistoryEntry
 import kotlin.math.abs
 
 /**
@@ -123,6 +130,15 @@ class ClipPanel(
     private val onShown: () -> Unit = {},
     /** 编辑页的输入框用完、撤掉了：它占过输入连接，桥要等原来的输入框重新接上再上屏。 */
     private val onInputReturned: () -> Unit = {},
+    private val translationSettings: () -> TranslationSettings = { TranslationSettings() },
+    private val onTranslate: suspend (TranslationRequest, Boolean) -> TranslationResult = { _, _ -> error("Translation is not configured") },
+    private val translationHistory: suspend () -> List<TranslationHistoryEntry> = { emptyList() },
+    private val onDeleteTranslation: suspend (Long) -> Unit = {},
+    private val onClearTranslations: suspend () -> Unit = {},
+    private val onTranslationTarget: (String) -> Unit = {},
+    private val onInsertTranslation: suspend (String) -> Boolean = { false },
+    private val translationConfigured: () -> Boolean = { true },
+    private val onOpenTranslationSettings: () -> Unit = {},
 ) {
     /** 一格快捷操作。[glyph] 是图标中央那一个字，[combo] 是触发它的组合键写法。 */
     data class QuickAction(val id: String, val name: String, val glyph: String, val combo: String)
@@ -201,6 +217,23 @@ class ClipPanel(
     /** 正在编辑的那一条；null 是列表模式。 */
     private var editor: Editor? = null
     private var editorRequest = 0L
+    private var translationPage: ClipTranslatePage? = null
+    private var translationJob: Job? = null
+    private var translationRequest = 0L
+    private var historyRequest = 0L
+
+    /** Shared detail navigation keeps browsing state and editor IME behavior intact. */
+    private fun showDetail(view: View) {
+        browseViews.forEach { it.visibility = View.GONE }
+        card.addView(view)
+    }
+
+    private fun removeDetail(view: View) {
+        card.removeView(view)
+        browseViews.forEach { it.visibility = View.VISIBLE }
+        render()
+        root?.post { if (editor == null && translationPage == null) revealSelected() }
+    }
 
     /** 三格快捷操作此刻的内容，长度恒为 [QUICK_SLOTS]。 */
     private var quick: List<QuickAction?> = List(QUICK_SLOTS) { null }
@@ -280,6 +313,11 @@ class ClipPanel(
         open = false
         generation++
         editorRequest++
+        translationRequest++
+        historyRequest++
+        translationJob?.cancel()
+        translationJob = null
+        translationPage = null
         menuLayer = null
         // 编辑页随窗口一起撤掉，输入法跟着收起；它占过的输入连接要交还
         if (editor != null) {
@@ -317,6 +355,26 @@ class ClipPanel(
             if (e.keyCode == KeyEvent.KEYCODE_ESCAPE || e.keyCode == KeyEvent.KEYCODE_BACK) return true
         }
         editor?.let { return onEditorKey(it, e, modifiers) }
+        translationPage?.let { page ->
+            if (e.repeatCount == 0 && isToggle(e)) { close(); return true }
+            val key = TranslationPanelKeys.map(e.keyCode, modifiers, pick)
+            if (page.inserting && key != TranslationPanelKey.Escape && key != TranslationPanelKey.BackToList) return true
+            when (key) {
+                TranslationPanelKey.Escape -> if (e.repeatCount == 0) escapeTranslation()
+                TranslationPanelKey.BackToList -> if (e.repeatCount == 0) leaveTranslation()
+                TranslationPanelKey.PreviousTarget -> moveTranslationTarget(page, -1)
+                TranslationPanelKey.NextTarget -> moveTranslationTarget(page, 1)
+                is TranslationPanelKey.PickTarget -> page.languages.getOrNull(key.index)?.let { selectTranslationTarget(page, it) }
+                TranslationPanelKey.Retry -> if (e.repeatCount == 0) requestTranslation(page, true)
+                TranslationPanelKey.Confirm -> {
+                    val focused = root?.findFocus()
+                    if (focused?.isClickable == true && focused !== page.confirm) return false
+                    if (e.repeatCount == 0) confirmTranslation(page)
+                }
+                null -> return false
+            }
+            return true
+        }
         if (e.repeatCount == 0 && isToggle(e)) {
             close()
             return true
@@ -374,6 +432,7 @@ class ClipPanel(
             is PanelEffect.TogglePin -> edit { store.setPinned(effect.entry.id, !effect.entry.pinned) }
             is PanelEffect.Delete -> edit { store.delete(effect.entry.id) }
             is PanelEffect.Edit -> openEditor(effect.entry)
+            is PanelEffect.Translate -> openTranslation(effect.entry)
         }
     }
 
@@ -477,7 +536,7 @@ class ClipPanel(
         mainAdapter.notifyDataSetChanged()
         val empty = state.entries.isEmpty()
         // 编辑页开着时列表那几块一直收着，后台查回来的结果不该把它们翻出来
-        if (editor == null) {
+        if (editor == null && translationPage == null) {
             emptyView.visibility = if (empty) View.VISIBLE else View.GONE
             lists.visibility = if (empty) View.GONE else View.VISIBLE
         }
@@ -812,6 +871,7 @@ class ClipPanel(
             row,
             listOf(
                 MenuEntry(translate("编辑"), trailing = "Ctrl+E") { apply(PanelEffect.Edit(entry)) },
+                MenuEntry(translate("翻译"), trailing = "Ctrl+T") { apply(PanelEffect.Translate(entry)) },
                 MenuEntry(translate(if (entry.pinned) "取消置顶" else "置顶这一条"), trailing = "Ctrl+P") {
                     apply(PanelEffect.TogglePin(entry))
                 },
@@ -959,6 +1019,279 @@ class ClipPanel(
         }
     }
 
+    // --- Translation ----------------------------------------------------------
+
+    private fun openTranslation(entry: ClipEntry) {
+        if (editor != null || translationPage != null) return
+        dismissMenu()
+        val host = root ?: return
+        val request = ++editorRequest
+        scope.launch {
+            val full = try { store.text(entry.id) } catch (cancelled: CancellationException) { throw cancelled }
+                catch (error: Exception) { onError("Read translation source", error); null }
+            main.post {
+                if (root !== host || request != editorRequest || editor != null || translationPage != null) return@post
+                if (full == null) {
+                    Toast.makeText(host.context, translate("无法读取完整内容，请重新打开后重试"), Toast.LENGTH_LONG).show()
+                    return@post
+                }
+                guarded("Open translation detail") {
+                    val settings = translationSettings()
+                    val page = ClipTranslatePage(host.context, full, settings.languages,
+                        settings.languages.firstOrNull { it.id == settings.lastTargetId } ?: settings.languages.firstOrNull(),
+                        ClipTranslatePage.Colors(palette.ink, palette.faint, palette.field, palette.line, palette.error),
+                        translate, { label, primary, click -> actionButton(host.context, label, if (primary) Tone.PRIMARY else Tone.TEXT, click) },
+                        ::leaveTranslation, { translationPage?.let(::confirmTranslation) }, {
+                            translationPage?.let { current ->
+                                if (current.loading) cancelTranslationRequest(current)
+                                else requestTranslation(current, true)
+                            }
+                        }, { translationPage?.let(::loadTranslationHistory) })
+                    translationPage = page
+                    page.languagePicker = { anchor ->
+                        showPopup(anchor, page.languages.map { language ->
+                            MenuEntry(language.name, checked = page.target?.id == language.id) {
+                                selectTranslationTarget(page, language)
+                            }
+                        }, false)
+                    }
+                    page.draft.addView(actionButton(host.context, translate("翻译设置 · 将离开当前输入目标"), Tone.TEXT) {
+                        close()
+                        onOpenTranslationSettings()
+                    })
+                    page.draft.addView(TextView(host.context).apply {
+                        text = translate("←→ 切换语言 · Ctrl+1…9 选择语言 · Ctrl+R 重新翻译 · Ctrl+T 返回列表 · Esc 返回").replace(PickKeys.TEMPLATE, pick.hint)
+                        setTextColor(palette.faint)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                        setPadding(0, dp(host.context, 8f).toInt(), 0, 0)
+                    })
+                    showDetail(page.view)
+                    page.confirm.requestFocus()
+                    if (!translationConfigured()) {
+                        page.error = translate("尚未配置翻译密钥，请前往翻译设置；打开设置将离开当前输入目标")
+                        page.refresh()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun cancelTranslation() {
+        translationRequest++
+        translationJob?.cancel()
+        translationJob = null
+        translationPage?.state?.cancel()
+    }
+
+    private fun cancelTranslationRequest(page: ClipTranslatePage) {
+        cancelTranslation()
+        page.error = translate(if (page.result != null) "重译未完成，保留上次译文" else "请求已取消，可重新翻译")
+        page.refresh()
+    }
+
+    private fun selectTranslationTarget(page: ClipTranslatePage, language: com.actionmental.core.translate.TranslationLanguage) {
+        if (page.inserting || page.target?.id == language.id) return
+        cancelTranslation()
+        page.state.selectTarget(language)
+        page.error = null
+        onTranslationTarget(language.id)
+        page.refresh()
+        page.confirm.requestFocus()
+    }
+
+    private fun moveTranslationTarget(page: ClipTranslatePage, delta: Int) {
+        if (page.languages.isEmpty()) return
+        val current = page.languages.indexOfFirst { it.id == page.target?.id }
+        val next = Math.floorMod(current + delta, page.languages.size)
+        selectTranslationTarget(page, page.languages[next])
+    }
+
+    private fun escapeTranslation() {
+        val page = translationPage ?: return
+        when {
+            page.returnFromHistory() -> page.confirm.requestFocus()
+            page.loading -> cancelTranslationRequest(page)
+            else -> leaveTranslation()
+        }
+    }
+
+    private fun leaveTranslation() {
+        val page = translationPage ?: return
+        cancelTranslation()
+        historyRequest++
+        dismissMenu()
+        translationPage = null
+        restoreTranslationWindow()
+        removeDetail(page.view)
+    }
+
+    private fun confirmTranslation(page: ClipTranslatePage) {
+        if (page.loading || page.inserting) return
+        if (page.result != null) insertTranslation(page) else requestTranslation(page, false)
+    }
+
+    private fun requestTranslation(page: ClipTranslatePage, force: Boolean) {
+        if (translationPage !== page || page.loading || page.inserting) return
+        if (page.source.length > TranslationRequest.MAX_SOURCE) {
+            page.error = translate("原文超过 8000 字符，请先编辑缩短后再翻译")
+            page.refresh()
+            return
+        }
+        if (!translationConfigured()) {
+            page.error = translate("尚未配置翻译密钥，请前往翻译设置；打开设置将离开当前输入目标")
+            page.refresh()
+            return
+        }
+        val target = page.target ?: return
+        cancelTranslation()
+        val token = translationRequest
+        val request = TranslationRequest(page.source, target, translationSettings().model)
+        val pageToken = page.state.beginRequest()
+        page.error = null
+        page.refresh()
+        translationJob = scope.launch {
+            val result = try { Result.success(onTranslate(request, force)) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (error: Exception) { Result.failure(error) }
+            main.post {
+                if (translationPage !== page || token != translationRequest || root == null) return@post
+                if (!page.state.finishRequest(pageToken, result.map { it.text })) return@post
+                result.fold({ translated ->
+                    if (translated.text.isBlank()) page.error = translate("翻译返回为空，请重新翻译")
+                }, { error ->
+                    onError("Translate clip", error)
+                    page.error = translate(com.actionmental.ui.translationFailureMessage(error)) +
+                        if (page.result != null) "\n" + translate("重译未完成，保留上次译文") else ""
+                })
+                page.refresh()
+                if (page.historyExpanded) loadTranslationHistory(page)
+            }
+        }
+    }
+
+    private fun insertTranslation(page: ClipTranslatePage) {
+        val text = page.result ?: return
+        val host = root ?: return
+        val lp = params ?: return
+        if (page.inserting || page.loading) return
+        page.inserting = true
+        page.error = null
+        page.refresh()
+        val token = ++translationRequest
+        host.visibility = View.INVISIBLE
+        lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        owner?.getSystemService(WindowManager::class.java)?.updateViewLayout(host, lp)
+        host.postDelayed({
+            if (root !== host || translationPage !== page || token != translationRequest) return@postDelayed
+            translationJob = scope.launch {
+                val success = try { onInsertTranslation(text) }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (error: Exception) { onError("Insert translation", error); false }
+                main.post {
+                    if (root !== host || translationPage !== page || token != translationRequest) return@post
+                    if (success) close() else {
+                        restoreTranslationWindow()
+                        page.inserting = false
+                        page.error = translate("未能写入原输入框，请回到原应用聚焦后重试；译文已保留")
+                        page.refresh()
+                        page.confirm.requestFocus()
+                    }
+                }
+            }
+        }, 80L)
+    }
+
+    private fun restoreTranslationWindow() {
+        val host = root ?: return
+        val lp = params ?: return
+        lp.flags = lp.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+        owner?.getSystemService(WindowManager::class.java)?.updateViewLayout(host, lp)
+        host.visibility = View.VISIBLE
+    }
+
+    private fun loadTranslationHistory(page: ClipTranslatePage) {
+        if (!page.historyExpanded || translationPage !== page) return
+        val token = ++historyRequest
+        scope.launch {
+            val result = try { Result.success(translationHistory()) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (error: Exception) { Result.failure(error) }
+            main.post {
+                if (translationPage !== page || token != historyRequest || !page.historyExpanded) return@post
+                page.history.removeAllViews()
+                result.fold({ entries ->
+                    if (entries.isEmpty()) page.history.addView(TextView(card.context).apply { text = translate("暂无本地翻译历史"); setTextColor(palette.faint) })
+                    entries.forEach { entry -> page.history.addView(translationHistoryRow(page, entry)) }
+                    if (entries.isNotEmpty()) page.history.addView(actionButton(card.context, translate("清空本地翻译历史"), Tone.TEXT) {
+                        showPopup(page.history, listOf(MenuEntry(translate("确认清空本地翻译历史"), danger = true) {
+                            mutateTranslationHistory(page) { onClearTranslations() }
+                        }), false)
+                    })
+                }, { error ->
+                    onError("Read translation history", error)
+                    page.error = translate("无法读取本地翻译历史，请重试")
+                    page.history.addView(actionButton(card.context, page.error!!, Tone.TEXT) { loadTranslationHistory(page) })
+                    page.refresh()
+                })
+            }
+        }
+    }
+
+    private fun translationHistoryRow(page: ClipTranslatePage, entry: TranslationHistoryEntry): View {
+        val context = card.context
+        val time = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT)
+            .format(java.util.Date(entry.createdAtMs))
+        val body = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            minimumHeight = dp(context, 72f).toInt()
+            setPadding(dp(context, 12f).toInt(), dp(context, 8f).toInt(), dp(context, 8f).toInt(), dp(context, 8f).toInt())
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            background = RippleDrawable(ColorStateList.valueOf(palette.ripple), null,
+                GradientDrawable().apply { cornerRadius = dp(context, 12f); setColor(Color.WHITE) })
+            isFocusable = true
+            contentDescription = entry.targetName + " · " + time + "\n" + ClipPolicy.preview(entry.result) + "\n" + ClipPolicy.preview(entry.source)
+            fun line(value: String, size: Float, color: Int, lines: Int) = TextView(context).apply {
+                text = value
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
+                setTextColor(color)
+                maxLines = lines
+                ellipsize = TextUtils.TruncateAt.END
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                setPadding(0, dp(context, 2f).toInt(), 0, dp(context, 2f).toInt())
+            }
+            addView(line(entry.targetName + " · " + time, 12f, palette.emphasis, 2))
+            addView(line(ClipPolicy.preview(entry.result), 14f, palette.ink, 2))
+            addView(line(ClipPolicy.preview(entry.source), 12f, palette.faint, 1))
+            setOnClickListener {
+                guarded("Restore translation history") {
+                    if (!page.inserting) { cancelTranslation(); page.restore(entry); page.confirm.requestFocus() }
+                }
+            }
+        }
+        return LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(body)
+            addView(actionButton(context, translate("删除"), Tone.TEXT) {
+                if (!page.inserting) mutateTranslationHistory(page) { onDeleteTranslation(entry.id) }
+            }.apply { contentDescription = translate("删除") + " · " + entry.targetName })
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { bottomMargin = dp(context, 8f).toInt() }
+        }
+    }
+
+    private fun mutateTranslationHistory(page: ClipTranslatePage, block: suspend () -> Unit) {
+        scope.launch {
+            try { block() } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                onError("Change translation history", error)
+                main.post { if (translationPage === page) { page.error = translate("历史操作失败，请重试"); page.refresh() } }
+                return@launch
+            }
+            main.post { if (translationPage === page) loadTranslationHistory(page) }
+        }
+    }
+
     // --- 编辑 ----------------------------------------------------------------
 
     /**
@@ -1041,7 +1374,7 @@ class ClipPanel(
 
     /** 先取全文（列表里只有预览）再换成编辑页。几毫秒的事，不必另画加载态。 */
     private fun openEditor(entry: ClipEntry) {
-        if (editor != null) return
+        if (editor != null || translationPage != null) return
         dismissMenu()
         val host = root ?: return
         val request = ++editorRequest
@@ -1054,7 +1387,7 @@ class ClipPanel(
                 Result.failure(error)
             }
             main.post {
-                if (root !== host || request != editorRequest || editor != null) return@post
+                if (root !== host || request != editorRequest || editor != null || translationPage != null) return@post
                 result.onSuccess { full -> guarded("打开编辑页") { showEditor(entry, full) } }
                     .onFailure {
                         onError("读取编辑正文", it)
@@ -1067,8 +1400,7 @@ class ClipPanel(
     private fun showEditor(entry: ClipEntry, text: String) {
         val ed = buildEditor(card.context, entry, text)
         editor = ed
-        browseViews.forEach { it.visibility = View.GONE }
-        card.addView(ed.view)
+        showDetail(ed.view)
         ed.refresh()
         ed.field.setSelection(ed.field.length())
         // 先让输入框拿到焦点再改窗口：窗口变成可接输入法时，系统按此刻的焦点去起输入连接
@@ -1090,11 +1422,9 @@ class ClipPanel(
         editor = null
         ed.field.context.getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(ed.field.windowToken, 0)
         ed.field.clearFocus()
-        card.removeView(ed.view)
-        browseViews.forEach { it.visibility = View.VISIBLE }
+        removeDetail(ed.view)
         setWindowIme(false)
         onInputReturned()
-        render()
         lists.alpha = 0f
         lists.animate().alpha(1f).setDuration(120).start()
         root?.post { if (editor == null) revealSelected() }
@@ -1789,7 +2119,7 @@ class ClipPanel(
             // 点卡片外面关闭：面板是模态的，底下的应用此刻本来就点不到。
             // 编辑页开着时只当是「返回」：手一滑点到外面，不该把没保存的修改一起关掉
             setOnClickListener {
-                guarded("点面板外面") { if (editor != null) requestExitEditor(closePanel = false) else close() }
+                guarded("点面板外面") { if (editor != null) requestExitEditor(closePanel = false) else if (translationPage != null) leaveTranslation() else close() }
             }
             addView(card)
             contentDescription = translate("剪贴板历史")
@@ -1823,6 +2153,7 @@ class ClipPanel(
                     val ed = editor ?: return@guarded
                     if (imeVisible()) hideKeyboard(ed.field) else requestExitEditor(closePanel = false)
                 }
+                translationPage != null -> escapeTranslation()
                 root === this -> close()
             }
         }
@@ -1878,7 +2209,7 @@ class ClipPanel(
                 applyColumns()
                 refreshData(follow = true)
             }
-            val maxCard = if (split) MAX_SPLIT_CARD_WIDTH_DP else MAX_CARD_WIDTH_DP
+            val maxCard = if (split || translationPage != null) MAX_SPLIT_CARD_WIDTH_DP else MAX_CARD_WIDTH_DP
             val side = maxOf(gutter, (availWidth - dp(context, maxCard).toInt()) / 2)
             // 键盘弹出来时高度很金贵（横屏手机上只剩一百多 dp）：上下的留白收到最小，让给编辑框
             val vertical = if (editor != null && insets[4] > 0) {
@@ -1903,6 +2234,7 @@ class ClipPanel(
             ).replace(PickKeys.TEMPLATE, pick.hint)
             if (hint.text.toString() != wanted) hint.text = wanted
             editor?.fit(px2dp(cardWidth))
+            translationPage?.fit(px2dp(cardWidth))
             super.onMeasure(widthMeasureSpec, heightMeasureSpec)
         }
 

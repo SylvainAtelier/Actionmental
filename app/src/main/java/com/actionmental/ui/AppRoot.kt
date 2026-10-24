@@ -43,6 +43,7 @@ import com.actionmental.ui.screens.PrivilegeScreen
 import com.actionmental.ui.screens.RemapScreen
 import com.actionmental.ui.screens.RotationScreen
 import com.actionmental.ui.screens.SettingsScreen
+import com.actionmental.ui.screens.TranslationSettingsActions
 import com.actionmental.ui.screens.ShortcutsPane
 import com.actionmental.ui.i18n.AppTranslations
 import com.actionmental.ui.theme.AmSpace
@@ -61,7 +62,7 @@ import kotlinx.coroutines.delay
  * 折叠 / 展开 / 旋转都只是一次重组，不会重建状态。
  */
 @Composable
-fun AppRoot(vm: AppViewModel) {
+fun AppRoot(vm: AppViewModel, settingsRequest: Int = 0) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val settingsLoaded by vm.settingsLoaded.collectAsStateWithLifecycle()
     val toast by vm.toast.collectAsStateWithLifecycle()
@@ -106,6 +107,9 @@ fun AppRoot(vm: AppViewModel) {
     }
 
     var destination by rememberSaveable { mutableStateOf(Destination.DASHBOARD) }
+    LaunchedEffect(settingsRequest) {
+        if (settingsRequest > 0) destination = Destination.SETTINGS
+    }
     var editingShortcutId by rememberSaveable { mutableStateOf<String?>(null) }
     var editingNew by rememberSaveable { mutableStateOf(false) }
     var presetCombo by remember { mutableStateOf<KeyCombo?>(null) }
@@ -182,7 +186,16 @@ fun AppRoot(vm: AppViewModel) {
                 Destination.CLIPBOARD -> ClipHistoryScreen(vm, modifier)
                 Destination.PRIVILEGE -> PrivilegeScreen(vm, modifier)
                 Destination.LOGS -> LogScreen(vm, modifier)
-                Destination.SETTINGS -> SettingsScreen(vm, modifier)
+                Destination.SETTINGS -> {
+                    val translationState by vm.translationSettings.collectAsStateWithLifecycle()
+                    SettingsScreen(vm, modifier, translationState, TranslationSettingsActions(
+                        onSaveToken = vm::saveTranslationToken,
+                        onClearToken = vm::clearTranslationToken,
+                        onModelChange = vm::updateTranslationModel,
+                        onLanguagesChange = vm::updateTranslationLanguages,
+                        onTestConnection = vm::testTranslationConnection,
+                    ))
+                }
             }
         }
 

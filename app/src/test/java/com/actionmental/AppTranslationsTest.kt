@@ -16,6 +16,28 @@ class AppTranslationsTest {
     }
 
     @Test
+    fun translationDefaultsMigrateExistingSettingsWithoutCredentials() {
+        val settings = Json.decodeFromString<UserSettings>("""{"theme":"SYSTEM"}""")
+        assertEquals("MiniMax-M2.7", settings.translation.model)
+        assertEquals(3, settings.translation.languages.size)
+        assertEquals("zh-Hans", settings.translation.lastTargetId)
+        val encoded = Json.encodeToString(UserSettings.serializer(), settings)
+        assertFalse(encoded.contains("apiKey", ignoreCase = true))
+        assertFalse(encoded.contains("token", ignoreCase = true))
+    }
+
+    @Test
+    fun translationFeedbackHasEnglishRecoveryInstructions() {
+        com.actionmental.core.translate.TranslationFailure.entries.forEach { kind ->
+            val message = com.actionmental.ui.translationFailureMessage(com.actionmental.core.translate.TranslationException(kind))
+            assertFalse(AppTranslations.translate(message, UserSettings.Language.ENGLISH).contains(Regex("[\\p{IsHan}]")))
+        }
+        listOf("翻译", "译文已生成，但历史保存失败", "连接成功", "Token 已保存").forEach {
+            assertFalse(AppTranslations.translate(it, UserSettings.Language.ENGLISH).contains(Regex("[\\p{IsHan}]")))
+        }
+    }
+
+    @Test
     fun bilingualLabelsRenderAsOneLanguage() {
         assertEquals(
             "语言",
