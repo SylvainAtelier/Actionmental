@@ -614,6 +614,40 @@ class ClipHistoryTest {
         assertEquals(listOf(null, PanelKey.Pick(0), PanelKey.Type('1')), picks)
     }
 
+    @Test
+    fun `输入页里面板不认的键照常走快捷键与映射`() {
+        val pipeline = KeyPipeline()
+        val ctrl = KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
+        val triggered = mutableListOf<KeyCombo>()
+        pipeline.onTrigger = { combo, _ -> (combo.keyCode == KeyEvent.KEYCODE_J).also { if (it) triggered += combo } }
+        val replaced = mutableListOf<Pair<Int, Boolean>>()
+        pipeline.onReplacedKey = { keyCode, _, down, _ ->
+            (keyCode == KeyEvent.KEYCODE_INSERT).also { if (it) replaced += keyCode to down }
+        }
+        // 面板只认 Ctrl+Enter，其余交回管线
+        pipeline.modal = { e, modifiers, _ ->
+            if (e.down && e.keyCode == KeyEvent.KEYCODE_ENTER && modifiers and KeyCombo.MOD_CTRL != 0) true else null
+        }
+
+        // 面板命令照旧吃掉，快捷键不抢
+        assertTrue(pipeline.dispatch(key(true, KeyEvent.KEYCODE_ENTER, ctrl)))
+        assertTrue(pipeline.dispatch(key(false, KeyEvent.KEYCODE_ENTER, ctrl)))
+
+        // 全局快捷键命中：按下、抬起都拦住
+        assertTrue(pipeline.dispatch(key(true, KeyEvent.KEYCODE_J, ctrl)))
+        assertTrue(pipeline.dispatch(key(false, KeyEvent.KEYCODE_J, ctrl)))
+        assertEquals(listOf(KeyCombo(KeyEvent.KEYCODE_J, KeyCombo.MOD_CTRL)), triggered)
+
+        // 整键替换：按下、抬起都换成目标键
+        assertTrue(pipeline.dispatch(key(true, KeyEvent.KEYCODE_INSERT)))
+        assertTrue(pipeline.dispatch(key(false, KeyEvent.KEYCODE_INSERT)))
+        assertEquals(listOf(KeyEvent.KEYCODE_INSERT to true, KeyEvent.KEYCODE_INSERT to false), replaced)
+
+        // 没绑东西的字母落到输入框
+        assertFalse(pipeline.dispatch(key(true, KeyEvent.KEYCODE_A), 'a'))
+        assertFalse(pipeline.dispatch(key(false, KeyEvent.KEYCODE_A)))
+    }
+
     // --- 动作 -----------------------------------------------------------------
 
     @Test

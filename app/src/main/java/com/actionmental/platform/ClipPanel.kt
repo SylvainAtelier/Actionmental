@@ -80,7 +80,8 @@ import kotlin.math.abs
  * 窗口和触发提示一样挂 `TYPE_ACCESSIBILITY_OVERLAY`。它**可聚焦但不碰输入法**（ALT_FOCUSABLE_IM）：
  * 拿焦点是为了收到导航栏返回键与返回手势 —— 系统只把它们发给有焦点的窗口；不碰输入法是为了
  * 让原来那个输入框的输入连接尽量留着，选中之后经无障碍输入通道上屏。
- * 实体键盘的按键仍由 [KeyPipeline.modal] 在无障碍服务那一层截下来交给面板，比窗口分发更早。
+ * 实体键盘的按键仍由 [KeyPipeline.modal] 在无障碍服务那一层截下来交给面板，比窗口分发更早；
+ * 编辑页、翻译页里面板不认的键再交回管线，快捷键与键位映射照常生效。
  *
  * 顶上三格快捷操作：放用户挑的三条快捷键，点一下关面板、执行它。空格子点开就是选单。
  *
@@ -343,15 +344,18 @@ class ClipPanel(
     // --- 按键 ----------------------------------------------------------------
 
     /** 按键线程（即主线程）上被管线调用。 */
-    private fun onKey(e: NormalizedKeyEvent, modifiers: Int, typed: Char?): Boolean {
+    private fun onKey(e: NormalizedKeyEvent, modifiers: Int, typed: Char?): Boolean? {
         if (root == null || owner !== serviceProvider()) {
             close()
             return false
         }
+        // 编辑页、翻译页是输入框：面板不认的键交回管线，快捷键与键位映射照常生效，和在普通应用里打字一样。
+        // 列表页的字符是搜索输入，不认的键仍原样放行
+        val unclaimed: Boolean? = if (editor != null || translationPage != null) null else false
         // 修饰键放行：它们只是状态，吞掉反而会让底下的应用以为 Ctrl 一直按着
-        if (e.isModifier) return false
+        if (e.isModifier) return unclaimed
         // 自己吞掉的按下，抬起由管线负责拦；别人的抬起原样放行
-        if (!e.down) return false
+        if (!e.down) return unclaimed
         // 菜单开着时 Esc / 返回只收菜单；别的键先收菜单再照常处理，键盘操作不会被一个菜单卡住
         if (menuLayer != null) {
             when (e.keyCode) {
@@ -372,7 +376,7 @@ class ClipPanel(
                     TranslationPanelKey.BackToList -> if (e.repeatCount == 0) leaveTranslation()
                     TranslationPanelKey.Confirm -> if (e.repeatCount == 0) confirmTranslation(page)
                     TranslationPanelKey.Retry -> if (e.repeatCount == 0) requestTranslation(page, true)
-                    else -> return false // The modal bypasses global shortcuts; native editing owns all other keys.
+                    else -> return null
                 }
                 return true
             }
@@ -385,7 +389,7 @@ class ClipPanel(
                 is TranslationPanelKey.PickTarget -> page.languages.getOrNull(key.index)?.let { selectTranslationTarget(page, it) }
                 TranslationPanelKey.Retry -> if (e.repeatCount == 0) requestTranslation(page, true)
                 TranslationPanelKey.Confirm -> if (e.repeatCount == 0) confirmTranslation(page)
-                null -> return false
+                null -> return null
             }
             return true
         }
@@ -1588,10 +1592,10 @@ class ClipPanel(
     }
 
     /**
-     * 编辑页开着时的实体键盘。只认几颗命令键，其余一律放行给输入框 —— 打字、方向键、
-     * Ctrl+A / C / V 这些都归输入框自己。
+     * 编辑页开着时的实体键盘。只认几颗命令键，其余交回管线走快捷键与映射，最后落到输入框 ——
+     * 打字、方向键、Ctrl+A / C / V 这些都归输入框自己。
      */
-    private fun onEditorKey(ed: Editor, e: NormalizedKeyEvent, modifiers: Int): Boolean {
+    private fun onEditorKey(ed: Editor, e: NormalizedKeyEvent, modifiers: Int): Boolean? {
         val ctrl = modifiers and KeyCombo.MOD_CTRL != 0
         val shift = modifiers and KeyCombo.MOD_SHIFT != 0
         val enter = e.keyCode == KeyEvent.KEYCODE_ENTER || e.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
@@ -1602,7 +1606,7 @@ class ClipPanel(
             e.repeatCount == 0 && isToggle(e) -> requestExitEditor(closePanel = true)
             ctrl && enter -> saveEditor(insert = shift)
             ctrl && e.keyCode == KeyEvent.KEYCODE_S -> saveEditor(insert = false)
-            else -> return false
+            else -> return null
         }
         return true
     }

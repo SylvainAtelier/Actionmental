@@ -54,16 +54,18 @@ class KeyPipeline(
     var onReplacedKey: ((keyCode: Int, modifiers: Int, down: Boolean, device: KeyboardDevice) -> Boolean)? = null
 
     /**
-     * 模态接管：剪贴板面板这类浮层打开期间，按键先交给它，快捷键与映射一概不参与。
+     * 模态接管：剪贴板面板这类浮层打开期间，按键先交给它。
      *
      * 第二个参数是修饰键映射改写之后的修饰位，面板认组合键时用它而不是事件自己的 metaState；
      * 第三个参数是这颗键按当前修饰状态打出的字符（打不出字就是 null），面板拿它做搜索输入。
      * 返回 true 表示吃掉。被吃掉的按下会记进 [consumedKeyCodes]：面板在按下时就关了的话，
      * 那颗键的抬起照样要拦住 —— 单行输入框在 Enter 抬起时触发「发送」，放出去就把消息发走了。
+     * 返回 false 表示原样放行给窗口，快捷键与映射都不参与；
+     * 返回 null 表示这颗键不归面板管，照平时一样走快捷键与映射 —— 面板里的输入框要和普通应用一样打字。
      * 运行在按键线程，必须非阻塞。
      */
     @Volatile
-    var modal: ((NormalizedKeyEvent, modifiers: Int, typed: Char?) -> Boolean)? = null
+    var modal: ((NormalizedKeyEvent, modifiers: Int, typed: Char?) -> Boolean?)? = null
 
     private val _snapshot = MutableStateFlow(KeyPressSnapshot())
     val snapshot: StateFlow<KeyPressSnapshot> = _snapshot.asStateFlow()
@@ -196,7 +198,7 @@ class KeyPipeline(
             // 不然返回落到底下的应用，面板还挂着、应用却退了一页
             if (normalized.keyCode == KeyEvent.KEYCODE_BACK) {
                 modal?.let { handler ->
-                    val consumed = handler(normalized, 0, null)
+                    val consumed = handler(normalized, 0, null) ?: false
                     if (consumed && normalized.down) consumedKeyCodes += normalized.keyCode
                     return consumed
                 }
@@ -213,15 +215,19 @@ class KeyPipeline(
         // 整颗替换中的键不归面板管：它的抬起必须补给目标键，否则目标键会卡住
         val handler = modal
         if (handler != null && normalized.keyCode !in replacedKeys) {
-            tapCandidate = null
             // 面板打开之前就被拦下的键（比如唤出面板的那个快捷键），抬起照旧吞掉
             if (!normalized.down && consumedKeyCodes.remove(normalized.keyCode)) {
                 activeRemaps -= normalized.keyCode
+                tapCandidate = null
                 return true
             }
             val consumed = handler(normalized, modalModifiers(normalized), typed)
-            if (consumed && normalized.down) consumedKeyCodes += normalized.keyCode
-            return consumed
+            if (consumed != null) {
+                tapCandidate = null
+                if (consumed && normalized.down) consumedKeyCodes += normalized.keyCode
+                return consumed
+            }
+            // 面板不认的键：往下走快捷键与映射，轻点判定也留给下面
         }
 
         if (normalized.keyCode in consumedKeyCodes) {
