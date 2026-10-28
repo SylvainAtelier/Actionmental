@@ -9,6 +9,7 @@ import android.content.IntentFilter
 import android.content.res.Configuration
 import android.util.Log
 import android.widget.Toast
+import androidx.core.content.edit
 import androidx.core.content.ContextCompat
 import com.actionmental.core.action.Action
 import com.actionmental.core.action.ActionExecutor
@@ -109,6 +110,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import com.actionmental.platform.MiniMaxTranslator
 import com.actionmental.data.TranslationHistoryStore
@@ -147,6 +149,112 @@ class AppGraph private constructor(context: Context) {
 
     val settingsRepository = SettingsRepository(appStore, scope)
     val miniMaxTranslator = MiniMaxTranslator(appContext)
+
+    // A short-lived memory draft survives returning to the original app after insertion fails.
+    private val _speechDraft = MutableStateFlow("")
+    val speechDraft: StateFlow<String> = _speechDraft.asStateFlow()
+    private val _speechCanInsert = MutableStateFlow(false)
+    val speechCanInsert: StateFlow<Boolean> = _speechCanInsert.asStateFlow()
+
+    /** Where a finished transcript goes: the captured input field, or the translation source. */
+    enum class SpeechRoute { INSERT, TRANSLATE }
+    private val _speechRoute = MutableStateFlow(SpeechRoute.INSERT)
+    val speechRoute: StateFlow<SpeechRoute> = _speechRoute.asStateFlow()
+    private var speechTranslationPrefix = ""
+    private val speechPrefs by lazy { appContext.getSharedPreferences("speech", Context.MODE_PRIVATE) }
+    /** Deliver a transcript without a review step; on by default, remembered per device. */
+    var speechAutoDeliver: Boolean
+        get() = speechPrefs.getBoolean("auto_deliver", true)
+        set(value) { speechPrefs.edit { putBoolean("auto_deliver", value) } }
+    private var speechCommitter: ((String) -> Boolean)? = null
+    private var speechInsertion: Job? = null
+    private var speechCaptureOwner: Any? = null
+    private val speechCaptureVisible: Boolean get() = speechCaptureOwner != null
+
+    fun markSpeechCaptureVisible(owner: Any, visible: Boolean) {
+        if (visible) speechCaptureOwner = owner
+        else if (speechCaptureOwner === owner) speechCaptureOwner = null
+    }
+
+    fun updateSpeechDraft(text: String) { _speechDraft.value = text }
+
+    fun copySpeechText(text: String) {
+        if (text.isBlank()) return
+        scope.launch {
+            val copied = runCatching { clipboardWriter.write("speech", text) }.getOrDefault(false)
+            withContext(Dispatchers.Main) {
+                Toast.makeText(appContext, translate(if (copied) "已复制转写文本" else "复制失败，请重试"), Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /** Wait until the speech page has handed the foreground back, instead of guessing a fixed delay. */
+    private suspend fun awaitSpeechPageGone() {
+        accessibility.markInputBorrowed()
+        withTimeoutOrNull(1_500L) {
+            accessibility.foregroundPackage.first { it != null && it != appContext.packageName }
+        }
+        accessibility.awaitInputBack()
+    }
+
+    fun insertSpeechText(text: String) {
+        if (text.isBlank() || speechInsertion?.isActive == true) return
+        _speechDraft.value = text
+        val commit = speechCommitter
+        speechInsertion = scope.launch(Dispatchers.Main) {
+            awaitSpeechPageGone()
+            // Focus can land a few frames after the window: retry briefly rather than fail on the first look.
+            var inserted = false
+            if (commit != null) withTimeoutOrNull(1_200L) {
+                while (!inserted) {
+                    inserted = runCatching { commit(text) }.getOrDefault(false)
+                    if (!inserted) delay(80)
+                }
+            }
+            if (inserted && _speechDraft.value == text) _speechDraft.value = ""
+            if (inserted) {
+                speechCommitter = null
+                _speechCanInsert.value = false
+                triggerHud.show(TriggerFeedback(translate("已上屏")))
+            } else Toast.makeText(appContext, translate(
+                "未能写入原输入框，文本已保留；请打开语音转文字后复制"), Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** Reopen the panel on the translation page with the transcript after the earlier source. */
+    fun sendSpeechToTranslation(text: String) {
+        if (text.isBlank() || speechInsertion?.isActive == true) return
+        _speechDraft.value = text
+        val source = speechTranslationPrefix.trimEnd().let { if (it.isEmpty()) text else it + "\n" + text }
+        speechInsertion = scope.launch(Dispatchers.Main) {
+            awaitSpeechPageGone()
+            val opened = CompletableDeferred<Boolean>()
+            if (clipPanel.openTranslationWith(source, opened::complete) !is ActionResult.Ok) opened.complete(false)
+            if (opened.await()) {
+                speechTranslationPrefix = ""
+                if (_speechDraft.value == text) _speechDraft.value = ""
+            } else Toast.makeText(appContext, translate(
+                "未能打开翻译，文本已保留；请打开语音转文字后复制"), Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** A non-null [translationSource] means the request came from the translation page. */
+    private fun openSpeechCapture(translationSource: String?) {
+        if (appContext.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked != false) {
+            triggerHud.show(TriggerFeedback(translate("锁屏时无法录音，请先解锁"), failed = true))
+            return
+        }
+        _speechRoute.value = if (translationSource != null) SpeechRoute.TRANSLATE else SpeechRoute.INSERT
+        speechTranslationPrefix = translationSource.orEmpty()
+        // Re-entering from a panel above the recording page must not capture its own editor.
+        if (!speechCaptureVisible) {
+            speechCommitter = accessibility.captureOverlayCommitter()
+            _speechCanInsert.value = speechCommitter != null
+        }
+        accessibility.markInputBorrowed()
+        appContext.startActivity(Intent(appContext, com.actionmental.platform.SpeechCaptureActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+    }
     val translationHistoryStore = TranslationHistoryStore(appContext)
     val shortcutRepository = ShortcutRepository(appStore, scope)
     val rotationRuleRepository = RotationRuleRepository(appStore, scope)
@@ -464,6 +572,7 @@ class AppGraph private constructor(context: Context) {
             withContext(Dispatchers.Main) { accessibility.commitTextToOverlayTarget(text) }
         },
         onCopyTranslation = { text -> clipboardWriter.write("translation", text) },
+        onOpenSpeech = ::openSpeechCapture,
         onOpenTranslationSettings = {
             appContext.startActivity(Intent(appContext, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)

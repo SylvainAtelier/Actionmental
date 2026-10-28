@@ -142,6 +142,7 @@ class ClipPanel(
     private val onCopyTranslation: suspend (String) -> Boolean = { false },
     private val translationConfigured: () -> Boolean = { true },
     private val onOpenTranslationSettings: () -> Unit = {},
+    private val onOpenSpeech: (translationSource: String?) -> Unit = {},
 ) {
     /** 一格快捷操作。[glyph] 是图标中央那一个字，[combo] 是触发它的组合键写法。 */
     data class QuickAction(val id: String, val name: String, val glyph: String, val combo: String)
@@ -255,6 +256,29 @@ class ClipPanel(
         }
         main.post { guarded("打开 / 关闭剪贴板面板") { if (editor != null) requestExitEditor(closePanel = true) else if (root != null) close() else show(service) } }
         return ActionResult.Ok(if (open) "关闭剪贴板历史" else "打开剪贴板历史")
+    }
+
+    /** Open (or reuse) the panel on the translation page with [text] as the source, ready to translate. */
+    fun openTranslationWith(text: String, onOpened: (Boolean) -> Unit): ActionResult {
+        val service = serviceProvider() ?: return ActionResult.Failed(ActionResult.Reason.ACCESSIBILITY_OFF)
+        if (service.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true) {
+            return ActionResult.Failed(ActionResult.Reason.UNSUPPORTED, "锁屏时不显示剪贴板历史")
+        }
+        main.post {
+            var opened = false
+            guarded("Open translation with transcript") {
+                // An unsaved clip edit is never discarded on the transcript's behalf.
+                if (editor != null) return@guarded
+                if (root == null) show(service)
+                if (translationPage == null) openTranslation()
+                val page = translationPage ?: return@guarded
+                page.sourceField.setText(text)
+                page.sourceField.setSelection(page.sourceField.length())
+                opened = true
+            }
+            onOpened(opened)
+        }
+        return ActionResult.Ok("打开翻译")
     }
 
     /** 熄屏、服务断开时调用。 */
@@ -1085,6 +1109,12 @@ class ClipPanel(
                 }, { translationPage?.let(::copyTranslation) }, { translationPage?.let { current -> returnTranslationInput(current); loadTranslationHistory(current) } }, {
                     close()
                     onOpenTranslationSettings()
+                }, onSpeech = {
+                    translationPage?.let { current ->
+                        val source = current.source
+                        close()
+                        onOpenSpeech(source)
+                    }
                 })
             translationPage = page
             translationDraft = page
@@ -2109,8 +2139,20 @@ class ClipPanel(
             openTranslation()
         }.apply {
             tooltipText = "Ctrl+T"
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                .apply { marginStart = dp(context, 12f).toInt() }
+        }
+        val speech = actionButton(context, translate("语音转文字"), Tone.OUTLINE) {
+            close()
+            onOpenSpeech(null)
+        }.apply {
+            val mic = context.getDrawable(com.actionmental.R.drawable.ic_speech_microphone)?.mutate()
+            mic?.setTint(palette.ink)
+            setCompoundDrawablesRelativeWithIntrinsicBounds(mic, null, null, null)
+            compoundDrawablePadding = dp(context, 8f).toInt()
+        }
+        val tools = LinearLayout(context).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(translationSwitch)
+            addView(speech, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(context, 8f).toInt() })
         }
         val titles = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -2118,12 +2160,43 @@ class ClipPanel(
             addView(countView)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
-        val header = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
+        val header = object : LinearLayout(context) {
+            private var layoutMode = -1
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                // Text scaling participates in the breakpoint, keeping labels discoverable.
+                val readableWidth = MeasureSpec.getSize(widthMeasureSpec) /
+                    resources.displayMetrics.density / resources.configuration.fontScale
+                val stacked = readableWidth < 480f
+                val compact = readableWidth < 260f
+                val mode = if (compact) 2 else if (stacked) 1 else 0
+                if (layoutMode == mode) {
+                    super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+                    return
+                }
+                layoutMode = mode
+                orientation = if (stacked) VERTICAL else HORIZONTAL
+                titles.layoutParams = LinearLayout.LayoutParams(if (stacked) -1 else 0, -2, if (stacked) 0f else 1f)
+                tools.orientation = if (compact) VERTICAL else HORIZONTAL
+                tools.layoutParams = LinearLayout.LayoutParams(if (stacked) -1 else -2, -2).apply {
+                    topMargin = if (stacked) dp(context, 12f).toInt() else 0
+                    marginStart = if (stacked) 0 else dp(context, 12f).toInt()
+                }
+                listOf(translationSwitch, speech).forEachIndexed { index, button ->
+                    button.layoutParams = LinearLayout.LayoutParams(
+                        if (compact) -1 else if (stacked) 0 else -2, -2,
+                        if (stacked && !compact) 1f else 0f,
+                    ).apply {
+                        marginStart = if (index > 0 && !compact) dp(context, 8f).toInt() else 0
+                        topMargin = if (index > 0 && compact) dp(context, 8f).toInt() else 0
+                    }
+                }
+                super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+            }
+        }.apply {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(context, 4f).toInt(), 0, dp(context, 4f).toInt(), 0)
             addView(titles)
-            addView(translationSwitch)
+            addView(tools)
         }
         queryView = TextView(context).apply {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)

@@ -249,14 +249,32 @@ class AccessibilityBridge(private val context: Context) {
     }
 
     /** Commit only to the exact field captured before opening the panel, never the clipboard. */
-    fun commitTextToOverlayTarget(text: String): Boolean {
+    fun commitTextToOverlayTarget(text: String): Boolean =
+        commitToTarget(text, overlayInputTarget, overlayEditorPackage, overlayEditorFieldId)
+
+    /** Freeze the original target before a visible recording Activity borrows input focus. */
+    fun captureOverlayCommitter(): ((String) -> Boolean)? {
+        val expected = overlayInputTarget ?: return null
+        val expectedPackage = overlayEditorPackage ?: return null
+        val expectedField = overlayEditorFieldId
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || expectedPackage == context.packageName) return null
+        return { text -> commitToTarget(text, expected, expectedPackage, expectedField) }
+    }
+
+    private fun commitToTarget(
+        text: String,
+        target: AccessibilityNodeInfo?,
+        expectedPackage: String?,
+        expectedField: Int?,
+    ): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
         return runCatching {
-            val expected = overlayInputTarget ?: return false
+            val expected = target ?: return false
+            if (context.getSystemService(android.app.KeyguardManager::class.java)?.isKeyguardLocked != false) return false
             val input = service?.inputMethod ?: return false
             val editor = input.currentInputEditorInfo ?: return false
-            if (!input.currentInputStarted || overlayEditorPackage == null ||
-                editor.packageName != overlayEditorPackage || editor.fieldId != overlayEditorFieldId) return false
+            if (!input.currentInputStarted || expectedPackage == null ||
+                editor.packageName != expectedPackage || editor.fieldId != expectedField) return false
             if (!expected.refresh() || !expected.isEditable || !expected.isEnabled) return false
             val focused = service?.rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
             if (focused != expected || !focused.isFocused) return false

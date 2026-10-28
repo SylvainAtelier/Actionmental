@@ -39,6 +39,23 @@ class AppTranslationsTest {
     }
 
     @Test
+    fun speechEntryAndInsertionFeedbackHaveEnglishRecoveryInstructions() {
+        listOf(
+            "语音转文字",
+            "已复制转写文本",
+            "已插入转写文本",
+            "未能写入原输入框，文本已保留；请打开语音转文字后复制",
+            "已上屏",
+            "语音输入",
+            "语音输入原文",
+            "未能打开翻译，文本已保留；请打开语音转文字后复制",
+        ).forEach { message ->
+            assertEquals(message, AppTranslations.translate(message, UserSettings.Language.CHINESE))
+            assertFalse(AppTranslations.translate(message, UserSettings.Language.ENGLISH).contains(Regex("[\\p{IsHan}]")))
+        }
+    }
+
+    @Test
     fun bilingualLabelsRenderAsOneLanguage() {
         assertEquals(
             "语言",

@@ -8,6 +8,16 @@ import com.actionmental.data.UserSettings
  */
 object AppTranslations {
     private val english = linkedMapOf(
+        "语音转文字" to "Speech to text",
+        "复制失败，请重试" to "Could not copy. Try again.",
+        "锁屏时无法录音，请先解锁" to "Unlock your device before recording.",
+        "已复制转写文本" to "Transcription copied",
+        "已插入转写文本" to "Transcription inserted",
+        "已上屏" to "Inserted",
+        "语音输入原文" to "Dictate the source text",
+        "未能打开翻译，文本已保留；请打开语音转文字后复制" to "Could not open translation. Your text is kept; reopen Speech to text to copy it.",
+        "未能写入原输入框，文本已保留；请打开语音转文字后复制" to "Could not insert into the original field. Your text is kept; reopen Speech to text to copy it.",
+        "按键仅在内存中处理，不记录文本输入。剪贴板历史默认关闭，开启后保存在本机。主动翻译时，原文与目标语言提示发送至 MiniMax 中国站；连接测试也会联网。语音转文字仅在点击开始后使用麦克风，点击完成并转写才上传录音至 MiniMax 中国站，不后台录音，不保存转写历史。临时录音在转写成功、取消录音或关闭语音页后清理。Token 在本机加密保存，不包含在配置导出或备份中。应用不申请通讯录或位置权限；共享存储权限仅供文件夹同步使用。" to "Keys are processed in memory; typed text is not recorded. Clipboard history is off by default and stays on this device. Requested translations send source text and target-language instructions to MiniMax China; connection tests also go online. Speech to text uses the microphone only after Start and uploads audio to MiniMax China only after Finish and transcribe. There is no background recording or transcription history. Temporary audio is cleared after successful transcription, cancelling the recording or closing the speech page. Tokens are encrypted on this device and excluded from exports and backups. No contacts or location permission is requested; shared storage access is only for folder sync.",
         "输入或粘贴要翻译的原文" to "Type or paste the source text",
         "新建空白翻译" to "New translation",
         "确认目标语言后，按 Ctrl+Enter 或点击翻译" to "Confirm the target language, then press Ctrl+Enter or select Translate",

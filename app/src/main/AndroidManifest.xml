@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Shizuku：唯一的高权限入口。应用本身不申请通讯录 / 位置；网络与存储只服务于「文件夹同步」一个动作（见下）。 -->
+    <!-- Shizuku is the privileged bridge. Network also supports opt-in translation and transcription. -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
@@ -44,6 +44,9 @@
     -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Requested only after the user starts a visible speech recording. No background recording. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
@@ -88,6 +91,18 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Visible, user-initiated short recording; isolated from the settings task. -->
+        <activity
+            android:name=".platform.SpeechCaptureActivity"
+            android:launchMode="singleTask"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:resizeableActivity="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density|uiMode|fontScale|locale|layoutDirection"
+            android:theme="@style/Theme.Actionmental"
+            android:windowSoftInputMode="adjustResize" />
 
         <!--
             后台写剪贴板的跳板：ROM 把 WRITE_CLIPBOARD 限成仅前台时，快捷键复制要借它进一下前台。

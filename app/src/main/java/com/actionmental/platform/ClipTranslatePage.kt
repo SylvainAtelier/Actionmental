@@ -63,6 +63,7 @@ internal class ClipTranslatePage(
     onCopy: () -> Unit,
     onHistory: () -> Unit,
     onSettings: () -> Unit,
+    onSpeech: (() -> Unit)? = null,
 ) {
     enum class ButtonStyle { TEXT, OUTLINE, PRIMARY }
 
@@ -230,6 +231,17 @@ internal class ClipTranslatePage(
         sourceField.setText("")
         sourceField.requestFocus()
     }).apply { contentDescription = tr("清空原文") }
+    /** Dictate into the source: the panel steps aside for the recording page, then returns here filled. */
+    private val dictate = onSpeech?.let { action ->
+        compact(button(tr("语音输入"), ButtonStyle.TEXT, action)).apply {
+            contentDescription = tr("语音输入原文")
+            context.getDrawable(com.actionmental.R.drawable.ic_speech_microphone)?.mutate()?.let { mic ->
+                mic.setTint(colors.ink)
+                setCompoundDrawablesRelativeWithIntrinsicBounds(mic, null, null, null)
+                compoundDrawablePadding = dp(context, 4)
+            }
+        }
+    }
 
     @SuppressLint("ClickableViewAccessibility")
     val sourceField = EditText(context).apply {
@@ -284,6 +296,7 @@ internal class ClipTranslatePage(
         addView(headRow(context).apply {
             addView(sourceLabel, LinearLayout.LayoutParams(0, -2, 1f))
             addView(sourceCount)
+            dictate?.let { addView(it, LinearLayout.LayoutParams(-2, -2)) }
             addView(clear, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = -dp(context, 8) })
         }, LinearLayout.LayoutParams(-1, -2))
         addView(sourceField)
