@@ -70,6 +70,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import com.actionmental.core.translate.TranslationSettings
 import com.actionmental.core.translate.TranslationRequest
+import com.actionmental.core.translate.TextAction
 import com.actionmental.core.translate.TranslationResult
 import com.actionmental.core.translate.TranslationHistoryEntry
 import kotlin.math.abs
@@ -281,6 +282,21 @@ class ClipPanel(
         return ActionResult.Ok("打开翻译")
     }
 
+    /**
+     * The speech shortcut pressed while the panel is up: behave like the panel's own speech entry,
+     * so the translation page keeps its source. Main thread only; false when the panel is closed,
+     * true when the press was consumed here.
+     */
+    fun handOffToSpeech(): Boolean {
+        if (!open) return false
+        // An unsaved clip edit is never dropped for a recording: surface its discard prompt instead.
+        if (editor?.dirty == true) return true.also { requestExitEditor(closePanel = true) }
+        val source = translationPage?.source
+        close()
+        onOpenSpeech(source)
+        return true
+    }
+
     /** 熄屏、服务断开时调用。 */
     fun dismiss() {
         if (open) main.post { guarded("收起剪贴板面板") { close() } }
@@ -394,7 +410,7 @@ class ClipPanel(
         translationPage?.let { page ->
             if (e.repeatCount == 0 && isToggle(e)) { close(); return true }
             val key = TranslationPanelKeys.map(e.keyCode, modifiers, pick)
-            if (page.sourceField.hasFocus() && !page.inserting) {
+            if (page.editing && !page.inserting) {
                 when (key) {
                     TranslationPanelKey.Escape -> if (e.repeatCount == 0) escapeTranslation()
                     TranslationPanelKey.BackToList -> if (e.repeatCount == 0) leaveTranslation()
@@ -620,7 +636,7 @@ class ClipPanel(
         countView.text = if (size == 0) "" else (state.selected + 1).toString() + " / " + size + if (hasMore) "+" else ""
         translationSwitch.isEnabled = true
         translationSwitch.alpha = 1f
-        translationSwitch.contentDescription = translate(if (state.current != null) "翻译当前选中的记录" else "新建空白翻译")
+        translationSwitch.contentDescription = translate("翻译、润色、摘要与改写")
     }
 
     /** 第 [index] 条在哪个列表的第几行。 */
@@ -921,6 +937,7 @@ class ClipPanel(
             listOf(
                 MenuEntry(translate("编辑"), trailing = "Ctrl+E") { apply(PanelEffect.Edit(entry)) },
                 MenuEntry(translate("翻译"), trailing = "Ctrl+T") { apply(PanelEffect.Translate(entry)) },
+                MenuEntry(translate("润色 / 摘要…")) { processClip(entry) },
                 MenuEntry(translate(if (entry.pinned) "取消置顶" else "置顶这一条"), trailing = "Ctrl+P") {
                     apply(PanelEffect.TogglePin(entry))
                 },
@@ -1126,13 +1143,22 @@ class ClipPanel(
                     page.refresh()
                 }
             }
-            page.onSourceFocus = { focused ->
+            page.onSourceFocus = { field ->
                 if (translationPage === page) {
-                    if (focused && !page.inserting) {
+                    if (field != null && !page.inserting) {
                         translationInputBorrowed = true
                         setWindowIme(true)
-                        showKeyboard(page.sourceField)
-                    } else returnTranslationInput(page)
+                        showKeyboard(field)
+                    } else if (field == null) returnTranslationInput(page)
+                }
+            }
+            page.onAction = { action -> selectTextAction(page, action) }
+            page.onInstructionChanged = {
+                if (translationPage === page && page.action == TextAction.CUSTOM && !page.inserting) {
+                    cancelTranslation()
+                    page.state.selectTarget(page.targetFor(TextAction.CUSTOM))
+                    page.error = null
+                    page.refresh()
                 }
             }
             page.languagePicker = { anchor ->
@@ -1148,6 +1174,34 @@ class ClipPanel(
             if (!translationConfigured()) {
                 page.error = translate("尚未配置翻译密钥，请前往翻译设置；打开设置将离开当前输入目标")
                 page.refresh()
+            }
+        }
+    }
+
+    /** Explicitly chosen from a clip's menu: unlike plain translation, the clip itself becomes the source. */
+    private fun processClip(entry: ClipEntry) {
+        if (editor != null || translationPage != null) return
+        dismissMenu()
+        val host = root ?: return
+        val request = ++editorRequest
+        scope.launch {
+            // The list holds a preview only; the source must be the whole clip.
+            val full = try { store.text(entry.id) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (error: Exception) { onError("Read clip for text action", error); null }
+            main.post {
+                if (root !== host || request != editorRequest || editor != null || translationPage != null) return@post
+                if (full == null) {
+                    Toast.makeText(host.context, translate("无法读取完整内容，请重新打开后重试"), Toast.LENGTH_LONG).show()
+                    return@post
+                }
+                guarded("Open text action for clip") {
+                    openTranslation()
+                    val page = translationPage ?: return@guarded
+                    page.sourceField.setText(full)
+                    if (page.action == TextAction.TRANSLATE) selectTextAction(page, TextAction.POLISH)
+                    page.confirm.requestFocus()
+                }
             }
         }
     }
@@ -1171,9 +1225,21 @@ class ClipPanel(
         page.refresh()
     }
 
-    private fun selectTranslationTarget(page: ClipTranslatePage, language: com.actionmental.core.translate.TranslationLanguage) {
-        if (page.inserting || page.target?.id == language.id) return
+    private fun selectTextAction(page: ClipTranslatePage, action: TextAction) {
+        if (page.inserting || page.action == action) return
+        val target = page.targetFor(action)
         cancelTranslation()
+        page.selectAction(action)
+        page.state.selectTarget(target)
+        page.error = null
+        page.refresh()
+        if (action == TextAction.CUSTOM && target == null) page.instructionField.requestFocus() else page.confirm.requestFocus()
+    }
+
+    private fun selectTranslationTarget(page: ClipTranslatePage, language: com.actionmental.core.translate.TranslationLanguage) {
+        if (page.inserting || (page.action == TextAction.TRANSLATE && page.target?.id == language.id)) return
+        cancelTranslation()
+        page.selectAction(TextAction.TRANSLATE)
         page.state.selectTarget(language)
         page.error = null
         onTranslationTarget(language.id)
@@ -1182,6 +1248,12 @@ class ClipPanel(
     }
 
     private fun moveTranslationTarget(page: ClipTranslatePage, delta: Int) {
+        // Outside translation the arrows step through the actions instead of the languages.
+        if (page.action != TextAction.TRANSLATE) {
+            val actions = TextAction.entries
+            selectTextAction(page, actions[Math.floorMod(actions.indexOf(page.action) + delta, actions.size)])
+            return
+        }
         if (page.languages.isEmpty()) return
         val current = page.languages.indexOfFirst { it.id == page.target?.id }
         val next = Math.floorMod(current + delta, page.languages.size)
@@ -1192,8 +1264,9 @@ class ClipPanel(
         if (!translationInputBorrowed) return
         translationInputBorrowed = false
         hideKeyboard(page.sourceField)
-        if (page.sourceField.hasFocus()) page.view.requestFocus()
+        if (page.editing) page.view.requestFocus()
         page.sourceField.clearFocus()
+        page.instructionField.clearFocus()
         setWindowIme(false)
         onInputReturned()
     }
@@ -1665,7 +1738,8 @@ class ClipPanel(
     /** 窗口刚改成可接输入法，输入连接下一帧才起来：晚一点再叫键盘。接着实体键盘时系统自己不弹，不用管。 */
     private fun showKeyboard(field: EditText) {
         field.postDelayed({
-            if (editor?.field !== field && (translationPage?.sourceField !== field || !translationInputBorrowed || !field.hasFocus())) return@postDelayed
+            val translationField = translationPage?.let { it.sourceField === field || it.instructionField === field } == true
+            if (editor?.field !== field && (!translationField || !translationInputBorrowed || !field.hasFocus())) return@postDelayed
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) field.windowInsetsController?.show(WindowInsets.Type.ime())
             field.context.getSystemService(InputMethodManager::class.java)?.showSoftInput(field, InputMethodManager.SHOW_IMPLICIT)
         }, KEYBOARD_DELAY_MS)
@@ -2135,10 +2209,16 @@ class ClipPanel(
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             typeface = Typeface.MONOSPACE
         }
-        translationSwitch = actionButton(context, translate("翻译"), Tone.OUTLINE) {
+        // Named for both jobs so polishing and summarizing are found without opening the page first.
+        translationSwitch = actionButton(context, translate("翻译与润色"), Tone.OUTLINE) {
             openTranslation()
         }.apply {
             tooltipText = "Ctrl+T"
+            contentDescription = translate("翻译、润色、摘要与改写")
+            val glyph = context.getDrawable(com.actionmental.R.drawable.ic_text_action)?.mutate()
+            glyph?.setTint(palette.ink)
+            setCompoundDrawablesRelativeWithIntrinsicBounds(glyph, null, null, null)
+            compoundDrawablePadding = dp(context, 8f).toInt()
         }
         val speech = actionButton(context, translate("语音转文字"), Tone.OUTLINE) {
             close()

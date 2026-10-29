@@ -82,7 +82,13 @@ import java.io.File
 
 /** A visible, opt-in recording session; leaving the screen never starts an upload. */
 class SpeechCaptureActivity : ComponentActivity() {
-    private enum class Phase { IDLE, RECORDING, SAVING, READY, TRANSCRIBING, DONE }
+    companion object {
+        /** Set by the shortcut when the page is already up: advance to the next step instead of reopening. */
+        const val EXTRA_TOGGLE = "com.actionmental.speech.TOGGLE"
+    }
+
+    /** CONFIRM: a voice command was matched and waits for the user's go-ahead; nothing runs on its own. */
+    private enum class Phase { IDLE, RECORDING, SAVING, READY, TRANSCRIBING, DONE, CONFIRM }
 
     private val graph by lazy { AppGraph.get(this) }
     private val recognizer by lazy { MiniMaxSpeechRecognizer(this) }
@@ -97,6 +103,14 @@ class SpeechCaptureActivity : ComponentActivity() {
     /** null until the credential check has run off the main thread. */
     private var hasToken by mutableStateOf<Boolean?>(null)
     private var autoDeliver by mutableStateOf(true)
+    private var tidy by mutableStateOf(false)
+    private var commandMode by mutableStateOf(false)
+    private var hasCommands by mutableStateOf(true)
+    private var command by mutableStateOf<AppGraph.SpeechCommand?>(null)
+    /** What was heard for the last command attempt, shown so a wrong match is obvious. */
+    private var heard by mutableStateOf("")
+    /** Names the request in flight: transcription, tidying or command matching. */
+    private var work by mutableStateOf("")
     private var uploadWhenReady = false
     private var discardWhenReady = false
     private var request: Job? = null
@@ -128,6 +142,9 @@ class SpeechCaptureActivity : ComponentActivity() {
                     file.isFile && file.name.startsWith("speech-") && file.name.endsWith(".wav") && file.lastModified() < sessionStarted
                 }?.forEach { runCatching { it.delete() } }
                 autoDeliver = graph.speechAutoDeliver
+                tidy = graph.speechTidy
+                commandMode = graph.speechCommandMode
+                hasCommands = graph.hasVoiceCommands
                 runCatching { recognizer.hasToken() }.getOrDefault(false)
             }
             hasToken = ready
@@ -149,6 +166,29 @@ class SpeechCaptureActivity : ComponentActivity() {
         if (!autoStartPending || hasToken != true || !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
         autoStartPending = false
         if (graph.speechDraft.value.isBlank()) begin()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_TOGGLE, false)) advance()
+    }
+
+    /** One shortcut, one meaning: do the step the primary button would do right now. */
+    private fun advance() {
+        val draft = graph.speechDraft.value
+        when (phase(draft)) {
+            Phase.RECORDING -> stopRecording(true)
+            Phase.READY -> transcribe()
+            Phase.IDLE -> if (hasToken == true) begin()
+            Phase.CONFIRM -> runCommand()
+            Phase.DONE -> when {
+                graph.speechRoute.value == SpeechRoute.TRANSLATE -> deliver(draft, SpeechRoute.TRANSLATE)
+                graph.speechCanInsert.value && Build.VERSION.SDK_INT >= 33 -> deliver(draft, SpeechRoute.INSERT)
+                else -> Unit
+            }
+            Phase.SAVING, Phase.TRANSCRIBING -> Unit
+        }
     }
 
     private fun tr(text: String): String = if (english) speechEnglish[text] ?: text else text
@@ -244,21 +284,46 @@ class SpeechCaptureActivity : ComponentActivity() {
         if (hasToken != true) { report(tr("请先保存语音 API Key。"), error = true); return }
         report("")
         busy = true
+        command = null
+        work = tr("正在转写…")
         transcribeStartedAt = SystemClock.elapsedRealtime()
         val generation = ++requestGeneration
+        val route = graph.speechRoute.value
+        val commanding = commandActive(route)
         request = lifecycleScope.launch {
             try {
-                val text = recognizer.transcribe(file)
+                val raw = recognizer.transcribe(file)
                 if (generation != requestGeneration || closing) return@launch
-                graph.updateSpeechDraft(text)
                 clearAudio()
+                if (commanding) {
+                    heard = raw
+                    work = tr("正在匹配快捷操作…")
+                    val attempt = runCatching { graph.matchVoiceCommand(raw) }
+                        .onFailure { if (it is CancellationException) throw it }
+                    if (generation != requestGeneration || closing) return@launch
+                    command = attempt.getOrNull()
+                    when {
+                        command != null -> haptic(true)
+                        // Matching uses the translation key and model; say so instead of blaming the wording.
+                        attempt.isFailure -> report(tr("指令匹配失败：需要可用的翻译密钥和网络，请重新录音。"), error = true)
+                        else -> report(tr("没有匹配到快捷操作，可换个说法重新录音。"), error = true)
+                    }
+                    return@launch
+                }
+                var text = raw
+                if (tidy) {
+                    work = tr("正在整理口述…")
+                    val tidied = graph.tidyDictation(raw)
+                    if (generation != requestGeneration || closing) return@launch
+                    if (tidied != null) text = tidied else report(tr("整理未完成，已使用原始转写。"))
+                }
+                graph.updateSpeechDraft(text)
                 haptic(true)
-                val route = graph.speechRoute.value
                 val insertable = graph.speechCanInsert.value && Build.VERSION.SDK_INT >= 33
                 when {
                     route == SpeechRoute.TRANSLATE -> deliver(text, SpeechRoute.TRANSLATE)
                     autoDeliver && insertable -> deliver(text, SpeechRoute.INSERT)
-                    else -> report(tr("转写完成，可编辑后上屏、翻译或复制。"))
+                    notice.isEmpty() -> report(tr("转写完成，可编辑后上屏、翻译或复制。"))
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -268,6 +333,30 @@ class SpeechCaptureActivity : ComponentActivity() {
                 if (generation == requestGeneration) busy = false
             }
         }
+    }
+
+    /** Commands only make sense for the app underneath, never for the translation source. */
+    private fun commandActive(route: SpeechRoute) = commandMode && route == SpeechRoute.INSERT
+
+    private fun runCommand() {
+        val match = command ?: return
+        leave()
+        graph.runVoiceCommand(match.shortcutId)
+    }
+
+    private fun chooseCommandMode(value: Boolean) {
+        // The mode only decides what happens after transcription, so it may change mid-take.
+        if (value == commandMode || finalizing || busy) return
+        commandMode = value
+        command = null
+        heard = ""
+        report("")
+        lifecycleScope.launch(Dispatchers.IO) { graph.speechCommandMode = value }
+    }
+
+    private fun saveTidy(value: Boolean) {
+        tidy = value
+        lifecycleScope.launch(Dispatchers.IO) { graph.speechTidy = value }
     }
 
     private fun deliver(text: String, route: SpeechRoute) {
@@ -345,6 +434,8 @@ class SpeechCaptureActivity : ComponentActivity() {
             KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_SPACE -> { stopRecording(true); return true }
             KeyEvent.KEYCODE_ESCAPE -> { cancelRecording(); return true }
         }
+        if (command != null && !busy && event.repeatCount == 0 &&
+            (keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER)) { runCommand(); return true }
         return super.onKeyDown(keyCode, event)
     }
 
@@ -353,6 +444,9 @@ class SpeechCaptureActivity : ComponentActivity() {
         finalizing -> Phase.SAVING
         busy -> Phase.TRANSCRIBING
         audioFile != null -> Phase.READY
+        command != null -> Phase.CONFIRM
+        // A dictation draft is not this mode's result: command mode starts clean.
+        commandActive(graph.speechRoute.value) -> Phase.IDLE
         draft.isNotBlank() -> Phase.DONE
         else -> Phase.IDLE
     }
@@ -369,12 +463,14 @@ class SpeechCaptureActivity : ComponentActivity() {
         var confirmLeave by remember { mutableStateOf(false) }
         var savingKey by remember { mutableStateOf(false) }
         val occupied = phase == Phase.RECORDING || phase == Phase.SAVING || phase == Phase.TRANSCRIBING || savingKey
-        val autoInsert = route == SpeechRoute.INSERT && autoDeliver && canInsert
+        val commanding = commandActive(route)
+        val autoInsert = route == SpeechRoute.INSERT && autoDeliver && canInsert && !commanding
         fun back() {
             if (occupied || audioFile != null) confirmLeave = true else leave()
         }
         BackHandler { back() }
         val destination = when {
+            commanding -> tr("执行匹配的快捷操作（先确认）")
             route == SpeechRoute.TRANSLATE -> tr("填入翻译原文")
             canInsert -> tr("上屏到原输入框")
             else -> tr("预览后复制")
@@ -386,11 +482,15 @@ class SpeechCaptureActivity : ComponentActivity() {
                 val twoPane = maxWidth >= 600.dp || (maxWidth > maxHeight && maxHeight < 480.dp)
                 val orbSize = if (maxHeight < 480.dp) 88.dp else 120.dp
                 Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Header(destination, ::back)
+                    Header(tr(if (commanding) "语音指令" else "语音转文字"), destination, ::back)
+                    // Intent is chosen before speaking: dictation writes text, a command runs a shortcut.
+                    // Recording starts on open; the mode stays switchable until the take is sent.
+                    if (route == SpeechRoute.INSERT) ModeSwitch(enabled = !savingKey &&
+                        (phase == Phase.IDLE || phase == Phase.RECORDING || phase == Phase.READY || phase == Phase.DONE))
                     val guide: @Composable ColumnScope.() -> Unit = {
-                        Steps(phase, route, canInsert)
+                        Steps(phase, route, canInsert, commanding)
                         Spacer(Modifier.height(if (twoPane) 8.dp else 16.dp))
-                        Orb(phase, orbSize, enabled = hasToken == true && !savingKey) {
+                        Orb(phase, orbSize, enabled = hasToken == true && !savingKey && (!commanding || hasCommands)) {
                             when (phase) {
                                 Phase.IDLE -> begin()
                                 Phase.RECORDING -> stopRecording(true)
@@ -399,7 +499,7 @@ class SpeechCaptureActivity : ComponentActivity() {
                             }
                         }
                         Waveform(phase)
-                        StatusLine(phase, route, autoInsert)
+                        StatusLine(phase, route, autoInsert, commanding)
                     }
                     val details: @Composable ColumnScope.() -> Unit = {
                         if (notice.isNotBlank()) Notice(notice, failed)
@@ -409,8 +509,15 @@ class SpeechCaptureActivity : ComponentActivity() {
                                 startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, "package:$packageName".toUri()))
                             }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text(tr("打开应用权限设置")) }
                         }
-                        if (route == SpeechRoute.INSERT && canInsert) AutoDeliverRow(enabled = !occupied)
-                        if (draft.isNotBlank() && phase != Phase.RECORDING) {
+                        if (commanding) {
+                            if (!hasCommands) Notice(tr("还没有可用的快捷操作。先在「快捷键」中添加，再用语音执行。"), true)
+                            else Text(tr("说出想做的事，例如「打开微信」或「切换横屏」。只会从你已设置的快捷操作中选择，执行前需要确认。"),
+                                color = colors.inkMid, style = AmType.body)
+                        } else {
+                            TidyRow(enabled = !occupied)
+                            if (route == SpeechRoute.INSERT && canInsert) AutoDeliverRow(enabled = !occupied)
+                        }
+                        if (!commanding && draft.isNotBlank() && phase != Phase.RECORDING) {
                             OutlinedTextField(
                                 value = draft, onValueChange = graph::updateSpeechDraft,
                                 label = { Text(tr("识别结果（可编辑）")) },
@@ -440,7 +547,7 @@ class SpeechCaptureActivity : ComponentActivity() {
                             details()
                         }
                     }
-                    ActionBar(phase, draft, route, canInsert, autoInsert, savingKey, maxWidth = if (twoPane) 1040.dp else 640.dp,
+                    ActionBar(phase, draft, route, canInsert, autoInsert, commanding, savingKey, maxWidth = if (twoPane) 1040.dp else 640.dp,
                         onRerecord = { confirmRerecord = true })
                 }
             }
@@ -456,12 +563,25 @@ class SpeechCaptureActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun Header(destination: String, onClose: () -> Unit) {
+    private fun ModeSwitch(enabled: Boolean) {
+        val options = listOf(false to tr("听写"), true to tr("指令"))
+        SingleChoiceSegmentedButtonRow(Modifier.widthIn(max = 360.dp).fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp)) {
+            options.forEachIndexed { index, (value, label) ->
+                SegmentedButton(selected = commandMode == value, onClick = { chooseCommandMode(value) }, enabled = enabled,
+                    shape = SegmentedButtonDefaults.itemShape(index, options.size), modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text(label)
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun Header(title: String, destination: String, onClose: () -> Unit) {
         val colors = LocalAmColors.current
         Row(Modifier.widthIn(max = 1040.dp).fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 4.dp),
             verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(tr("语音转文字"), style = AmType.pageTitle, color = colors.ink, modifier = Modifier.semantics { heading() })
+                Text(title, style = AmType.pageTitle, color = colors.ink, modifier = Modifier.semantics { heading() })
                 // States where the words will land before anything is said.
                 Text(tr("结果去向：") + destination, style = AmType.body, color = colors.inkMid)
             }
@@ -471,19 +591,20 @@ class SpeechCaptureActivity : ComponentActivity() {
 
     /** Three numbered steps; done steps carry a check, so progress never depends on colour alone. */
     @Composable
-    private fun Steps(phase: Phase, route: SpeechRoute, canInsert: Boolean) {
+    private fun Steps(phase: Phase, route: SpeechRoute, canInsert: Boolean, commanding: Boolean) {
         val colors = LocalAmColors.current
         val active = when (phase) {
             Phase.IDLE, Phase.RECORDING, Phase.SAVING -> 0
             Phase.READY, Phase.TRANSCRIBING -> 1
-            Phase.DONE -> 2
+            Phase.DONE, Phase.CONFIRM -> 2
         }
         val last = when {
+            commanding -> tr("确认")
             route == SpeechRoute.TRANSLATE -> tr("翻译")
             canInsert -> tr("上屏")
             else -> tr("编辑")
         }
-        val labels = listOf(tr("录音"), tr("转写"), last)
+        val labels = listOf(tr("录音"), tr(if (commanding) "识别" else "转写"), last)
         val summary = tr("第 %d 步，共 3 步：%s").format(active + 1, labels[active])
         Row(Modifier.padding(top = 4.dp).clearAndSetSemantics { contentDescription = summary },
             verticalAlignment = Alignment.CenterVertically) {
@@ -561,7 +682,7 @@ class SpeechCaptureActivity : ComponentActivity() {
                 when {
                     // A square "stop" glyph: recording is told by shape, not by the accent hue.
                     recordingNow -> Box(Modifier.size(core * 0.26f).clip(RoundedCornerShape(6.dp)).background(colors.onAccent))
-                    phase == Phase.DONE -> Text("✓", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = colors.ink)
+                    phase == Phase.DONE || phase == Phase.CONFIRM -> Text("✓", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = colors.ink)
                     failed && phase != Phase.TRANSCRIBING -> Text("!", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = colors.warn)
                     else -> Icon(painterResource(R.drawable.ic_speech_microphone), null,
                         Modifier.size(core * 0.36f), tint = if (enabled) colors.ink else colors.inkFaint)
@@ -591,19 +712,23 @@ class SpeechCaptureActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun StatusLine(phase: Phase, route: SpeechRoute, autoInsert: Boolean) {
+    private fun StatusLine(phase: Phase, route: SpeechRoute, autoInsert: Boolean, commanding: Boolean) {
         val colors = LocalAmColors.current
+        val match = command
         val headline = when (phase) {
-            Phase.IDLE -> if (hasToken == false) tr("先设置语音密钥") else tr("点击麦克风开始说话")
+            Phase.IDLE -> if (hasToken == false) tr("先设置语音密钥") else tr(if (commanding) "点击麦克风说出指令" else "点击麦克风开始说话")
             Phase.RECORDING -> tr("正在聆听…")
             Phase.SAVING -> tr("正在保存录音…")
             Phase.READY -> tr("录音待转写")
-            Phase.TRANSCRIBING -> tr("正在转写…")
+            Phase.TRANSCRIBING -> work.ifEmpty { tr("正在转写…") }
             Phase.DONE -> tr("转写完成")
+            Phase.CONFIRM -> tr("将执行：") + (match?.name ?: "")
         }
         val hint = when (phase) {
             Phase.IDLE -> tr("最长 2 分钟；点击完成后才上传")
+            Phase.CONFIRM -> tr("听到：「%s」").format(heard.take(80)) + (match?.combo?.let { " · $it" } ?: "")
             Phase.RECORDING -> when {
+                commanding -> tr("说完点「完成」，匹配后会先请你确认")
                 route == SpeechRoute.TRANSLATE -> tr("说完点「完成」，文字会填入翻译原文")
                 autoInsert -> tr("说完点「完成」，文字会直接上屏")
                 else -> tr("说完点「完成」，先预览再决定去向")
@@ -670,6 +795,20 @@ class SpeechCaptureActivity : ComponentActivity() {
     }
 
     @Composable
+    private fun TidyRow(enabled: Boolean) {
+        val colors = LocalAmColors.current
+        Row(Modifier.fillMaxWidth().heightIn(min = 56.dp)
+            .toggleable(value = tidy, enabled = enabled, role = Role.Switch, onValueChange = ::saveTidy),
+            verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(tr("整理口述"), style = AmType.cardTitle, color = colors.ink)
+                Text(tr("去掉口头禅、补标点和分段；会多一次文本请求，失败时用原始转写"), style = AmType.body, color = colors.inkMid)
+            }
+            Switch(checked = tidy, onCheckedChange = null, enabled = enabled)
+        }
+    }
+
+    @Composable
     private fun AutoDeliverRow(enabled: Boolean) {
         val colors = LocalAmColors.current
         Row(Modifier.fillMaxWidth().heightIn(min = 56.dp)
@@ -692,7 +831,7 @@ class SpeechCaptureActivity : ComponentActivity() {
     /** Pinned in the thumb zone; the primary action is always the next step, named after where the words go. */
     @Composable
     private fun ActionBar(
-        phase: Phase, draft: String, route: SpeechRoute, canInsert: Boolean, autoInsert: Boolean,
+        phase: Phase, draft: String, route: SpeechRoute, canInsert: Boolean, autoInsert: Boolean, commanding: Boolean,
         savingKey: Boolean, maxWidth: Dp, onRerecord: () -> Unit,
     ) {
         val colors = LocalAmColors.current
@@ -703,12 +842,13 @@ class SpeechCaptureActivity : ComponentActivity() {
                     horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     val tall = Modifier.heightIn(min = 52.dp)
                     when (phase) {
-                        Phase.IDLE -> Button(onClick = ::begin, enabled = hasToken == true && !savingKey,
+                        Phase.IDLE -> Button(onClick = ::begin, enabled = hasToken == true && !savingKey && (!commanding || hasCommands),
                             modifier = tall.weight(1f)) { Text(tr("开始录音")) }
                         Phase.RECORDING -> {
                             OutlinedButton(onClick = ::cancelRecording, modifier = tall.weight(1f)) { Text(tr("取消")) }
                             Button(onClick = { stopRecording(true) }, modifier = tall.weight(2f)) {
                                 Text(tr(when {
+                                    commanding -> "完成并识别"
                                     route == SpeechRoute.TRANSLATE -> "完成并填入翻译"
                                     autoInsert -> "完成并上屏"
                                     else -> "完成并转写"
@@ -720,7 +860,12 @@ class SpeechCaptureActivity : ComponentActivity() {
                             OutlinedButton(onClick = onRerecord, modifier = tall.weight(1f)) { Text(tr("重新录音")) }
                             Button(onClick = ::transcribe, enabled = hasToken == true && !savingKey, modifier = tall.weight(2f)) { Text(tr("转写")) }
                         }
-                        Phase.TRANSCRIBING -> OutlinedButton(onClick = ::cancelRequest, modifier = tall.weight(1f)) { Text(tr("取消转写")) }
+                        Phase.TRANSCRIBING -> OutlinedButton(onClick = ::cancelRequest, modifier = tall.weight(1f)) { Text(tr("取消")) }
+                        Phase.CONFIRM -> {
+                            OutlinedButton(onClick = { command = null; heard = ""; begin() }, modifier = tall.weight(1f)) { Text(tr("重说")) }
+                            OutlinedButton(onClick = { command = null; heard = "" }, modifier = tall.weight(1f)) { Text(tr("取消")) }
+                            Button(onClick = ::runCommand, modifier = tall.weight(1.6f)) { Text(tr("执行"), maxLines = 1) }
+                        }
                         Phase.DONE -> {
                             // The destination this page was opened for leads; the others stay one tap away.
                             val insertFirst = route == SpeechRoute.INSERT && canInsert
@@ -833,6 +978,17 @@ private val LocalLevel = staticCompositionLocalOf { mutableFloatStateOf(0f) }
 private val LocalHistory = staticCompositionLocalOf { LevelHistory() }
 
 private val speechEnglish = mapOf(
+    "语音指令" to "Voice command", "听写" to "Dictate", "指令" to "Command", "执行匹配的快捷操作（先确认）" to "a matching shortcut, after you confirm",
+    "确认" to "Confirm", "识别" to "Recognize", "点击麦克风说出指令" to "Tap the microphone and say a command",
+    "将执行：" to "Will run: ", "听到：「%s」" to "Heard: “%s”", "说完点「完成」，匹配后会先请你确认" to "Select Finish when done; you confirm before anything runs",
+    "完成并识别" to "Finish and match", "重说" to "Say again", "执行" to "Run",
+    "正在匹配快捷操作…" to "Matching a shortcut…", "正在整理口述…" to "Tidying the transcript…",
+    "没有匹配到快捷操作，可换个说法重新录音。" to "No shortcut matched. Try saying it another way.",
+    "指令匹配失败：需要可用的翻译密钥和网络，请重新录音。" to "Could not match the command. It needs a working translation key and network; record again.",
+    "整理未完成，已使用原始转写。" to "Tidying did not finish; the raw transcript is used.",
+    "还没有可用的快捷操作。先在「快捷键」中添加，再用语音执行。" to "No shortcuts yet. Add some under Shortcuts, then run them by voice.",
+    "说出想做的事，例如「打开微信」或「切换横屏」。只会从你已设置的快捷操作中选择，执行前需要确认。" to "Say what you want, such as “open WeChat” or “rotate to landscape”. Only your own shortcuts can be chosen, and you confirm before one runs.",
+    "整理口述" to "Tidy dictation", "去掉口头禅、补标点和分段；会多一次文本请求，失败时用原始转写" to "Removes filler words and adds punctuation and paragraphs. Makes one more text request; the raw transcript is kept if it fails.",
     "语音转文字" to "Speech to text", "关闭" to "Close", "结果去向：" to "Result goes to: ",
     "填入翻译原文" to "translation source", "上屏到原输入框" to "the original input field", "预览后复制" to "preview, then copy",
     "录音" to "Record", "转写" to "Transcribe", "翻译" to "Translate", "上屏" to "Insert", "编辑" to "Edit",

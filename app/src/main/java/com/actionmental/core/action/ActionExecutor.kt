@@ -40,6 +40,8 @@ class ActionExecutor(
     private val clipboard: ClipboardWriter,
     /** 剪贴板面板挂在无障碍服务的窗口上，开关它由平台层做；这里只转一手。 */
     private val toggleClipboardHistory: () -> ActionResult,
+    /** Opens the visible recording page, or finishes the recording already running there. */
+    private val speechToText: suspend () -> ActionResult,
     private val privileged: () -> PrivilegedBackend,
 ) {
 
@@ -67,6 +69,7 @@ class ActionExecutor(
         is Action.WirelessDebug -> copyWirelessDebug(action.target)
         is Action.AdbTcpip -> switchAdbTcpip(action)
         is Action.ClipboardHistory -> toggleClipboardHistory()
+        is Action.SpeechToText -> speechToText()
         is Action.VoiceInput -> voiceInput.trigger(action.mode)
         is Action.SendKey -> keyChord.send(action.combo)
         is Action.TypeSymbol -> typeSymbol(action.text)

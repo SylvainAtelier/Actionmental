@@ -49,6 +49,10 @@ class AppTranslationsTest {
             "语音输入",
             "语音输入原文",
             "未能打开翻译，文本已保留；请打开语音转文字后复制",
+            "润色", "摘要", "改写", "处理", "处理方式", "指令", "结果", "正在处理…", "输入结果", "重新生成",
+            "润色 / 摘要…", "例如：改成正式的邮件语气", "先写下要怎样处理原文", "点击「%s」获取结果",
+            "正在请求 · 切换处理方式将取消，不会自动重发",
+            "翻译与润色", "翻译、润色、摘要与改写", "点击处理时才联网 · 点复制时才写入剪贴板", "输入或粘贴要处理的文字",
         ).forEach { message ->
             assertEquals(message, AppTranslations.translate(message, UserSettings.Language.CHINESE))
             assertFalse(AppTranslations.translate(message, UserSettings.Language.ENGLISH).contains(Regex("[\\p{IsHan}]")))

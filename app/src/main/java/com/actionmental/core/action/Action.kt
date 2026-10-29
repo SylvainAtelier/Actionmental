@@ -249,6 +249,19 @@ sealed interface Action {
     }
 
     /**
+     * 录音并经 MiniMax 转写：第一次按开始录音，录音中再按一次完成，文字写回按键前聚焦的输入框；
+     * 剪贴板面板停在翻译页时，文字改为填进翻译原文。录音页始终可见，不在后台录音。
+     */
+    @Serializable
+    @SerialName("speech_to_text")
+    data object SpeechToText : Action {
+        override val category get() = ActionCategory.INPUT
+        override val label get() = "语音转文字"
+        override val technical get() = "SPEECH_TO_TEXT"
+        override val detail get() = "按一次开始录音，再按一次完成并上屏"
+    }
+
+    /**
      * 唤起输入法的语音输入。
      *
      * Gboard、微信、搜狗这类把语音做在键盘里的，去输入法窗口里找语音键点下去；
@@ -424,6 +437,10 @@ object ActionCatalog {
         ),
         Group(GROUP_ADB_TCPIP, "ADB 网络调试", "ADB TCPIP", "固定端口，电脑上 adb connect 直连", direct = true),
         Group("clipboard", "剪贴板", "CLIPBOARD", "历史记录面板", listOf(Action.ClipboardHistory)),
+        Group(
+            "speech_to_text", "语音转文字", "SPEECH TO TEXT", "录音转写后直接上屏或填入翻译",
+            listOf(Action.SpeechToText),
+        ),
         Group(
             "voice_input", "语音输入", "VOICE INPUT", "唤起 Gboard、微信等输入法的语音",
             Action.VoiceInput.Mode.entries.map { Action.VoiceInput(it) } + Action.SendKey.GBOARD_VOICE,

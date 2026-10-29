@@ -34,13 +34,15 @@ import com.actionmental.core.clip.ClipTranslationState
 import com.actionmental.core.translate.TranslationHistoryEntry
 import com.actionmental.core.translate.TranslationLanguage
 import com.actionmental.core.translate.TranslationRequest
+import com.actionmental.core.translate.TextAction
 
 /**
  * Editable draft detail. Opening, editing or changing language never makes a request.
  *
  * Everything sits on one grid so the page stays orderly from a phone to an unfolded foldable:
  * - header (48dp): back arrow, title with the privacy promise, then compact History / Settings;
- * - language bar: "译成" plus one-tap chips, full width, above both panes;
+ * - action bar: translate, polish, summarize, rewrite or a custom instruction, all through one request path;
+ * - language bar (translate only) or instruction field (custom only), full width, above both panes;
  * - two panes with the same anatomy: a 48dp label row, then a box with the same radius and padding.
  *   Side by side the boxes share one height, so tops, first lines and bottoms all line up;
  *   the request status lives at the foot of the result box instead of floating between rows;
@@ -93,7 +95,15 @@ internal class ClipTranslatePage(
     var historyExpanded = false
         private set
     var onSourceChanged: ((String) -> Unit)? = null
-    var onSourceFocus: ((Boolean) -> Unit)? = null
+    /** Fires with the field that took input focus, or null once neither editable field holds it. */
+    var onSourceFocus: ((EditText?) -> Unit)? = null
+    /** The chosen action; [state] holds the request target derived from it. */
+    var action: TextAction = TextAction.of(initialTarget?.id)
+        private set
+    var onAction: ((TextAction) -> Unit)? = null
+    var onInstructionChanged: ((String) -> Unit)? = null
+    /** The language to return to when switching back to translation. */
+    private var lastLanguage: TranslationLanguage? = initialTarget?.takeIf { action == TextAction.TRANSLATE }
     /** Chosen from a chip (few languages) or from the popup that [languagePicker] opens (many). */
     var onLanguage: ((TranslationLanguage) -> Unit)? = null
     var languagePicker: ((View) -> Unit)? = null
@@ -218,6 +228,76 @@ internal class ClipTranslatePage(
         else addView(languageButton, LinearLayout.LayoutParams(-2, -2))
     }
 
+    // --- Action bar -----------------------------------------------------------
+
+    private val actionChips = FlowRow(context, dp(context, 8))
+    private val actionBar = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.TOP
+        addView(label(context, tr("处理")).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            minHeight = dp(context, 48)
+            minimumHeight = minHeight
+            setPadding(0, 0, dp(context, 12), 0)
+        })
+        addView(actionChips, LinearLayout.LayoutParams(0, -2, 1f))
+    }
+
+    private val instructionId = View.generateViewId()
+    val instructionField = EditText(context).apply {
+        id = instructionId
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+        setTextColor(colors.ink)
+        setHintTextColor(colors.muted)
+        hint = tr("例如：改成正式的邮件语气")
+        inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+        imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN or
+            EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
+        importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+        setSaveEnabled(false)
+        maxLines = 3
+        filters = arrayOf(android.text.InputFilter.LengthFilter(TextAction.MAX_INSTRUCTION))
+        setPadding(dp(context, BOX_PAD_H), dp(context, 10), dp(context, BOX_PAD_H), dp(context, 10))
+        background = fieldBackground(context)
+        setOnFocusChangeListener { _, focused -> focusChanged(this, focused) }
+        addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                onInstructionChanged?.invoke(s?.toString().orEmpty())
+            }
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
+    }
+    private val instructionPane = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(headRow(context).apply {
+            addView(label(context, tr("指令")).apply { labelFor = instructionId }, LinearLayout.LayoutParams(0, -2, 1f))
+        }, LinearLayout.LayoutParams(-1, -2))
+        addView(instructionField, LinearLayout.LayoutParams(-1, -2))
+    }
+
+    /** The target [next] would use; remembers the language when leaving translation. */
+    fun targetFor(next: TextAction): TranslationLanguage? {
+        if (action == TextAction.TRANSLATE) target?.let { lastLanguage = it }
+        return if (next == TextAction.TRANSLATE) lastLanguage ?: languages.firstOrNull()
+        else next.target(tr(next.label), instructionField.text.toString())
+    }
+
+    fun selectAction(next: TextAction) {
+        action = next
+        // The instruction field disappears with the custom action; its focus must not linger there.
+        if (next != TextAction.CUSTOM && instructionField.hasFocus()) view.requestFocus()
+    }
+
+    private fun focusChanged(field: EditText, focused: Boolean) {
+        if (focused) onSourceFocus?.invoke(field)
+        // Moving between the two fields must not hand the input back in between.
+        else field.post { if (!sourceField.hasFocus() && !instructionField.hasFocus()) onSourceFocus?.invoke(null) }
+    }
+
+    /** True while either editable field has focus: typed keys belong to it, not to page shortcuts. */
+    val editing: Boolean get() = sourceField.hasFocus() || instructionField.hasFocus()
+
     // --- Source ---------------------------------------------------------------
 
     private val sourceId = View.generateViewId()
@@ -272,7 +352,7 @@ internal class ClipTranslatePage(
         }
         // Same insets as the result box, so both first lines start at the same point.
         setPadding(dp(context, BOX_PAD_H), dp(context, BOX_PAD_V), dp(context, BOX_PAD_H), dp(context, BOX_PAD_V))
-        background = fieldBackground()
+        background = fieldBackground(context)
         // Long sources scroll inside the field; keep the page from stealing that drag.
         setOnTouchListener { v, e ->
             if (v.canScrollVertically(1) || v.canScrollVertically(-1)) {
@@ -281,7 +361,7 @@ internal class ClipTranslatePage(
             }
             false
         }
-        setOnFocusChangeListener { _, focused -> onSourceFocus?.invoke(focused) }
+        setOnFocusChangeListener { _, focused -> focusChanged(this, focused) }
         addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
@@ -373,7 +453,9 @@ internal class ClipTranslatePage(
     private val panes = LinearLayout(context)
     val draft = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
+        addView(actionBar, LinearLayout.LayoutParams(-1, -2))
         addView(languageBar, LinearLayout.LayoutParams(-1, -2))
+        addView(instructionPane, LinearLayout.LayoutParams(-1, -2))
         addView(panes, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(context, 4) })
         addView(footer, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(context, 16) })
     }
@@ -384,7 +466,7 @@ internal class ClipTranslatePage(
     val history = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
     /** Same 48dp row as the language bar, so the two columns start on one line. */
     private val historyHeading = headRow(context).apply {
-        addView(label(context, tr("翻译历史")).apply { ViewCompat.setAccessibilityHeading(this, true) },
+        addView(label(context, tr("历史记录")).apply { ViewCompat.setAccessibilityHeading(this, true) },
             LinearLayout.LayoutParams(0, -2, 1f))
         addView(TextView(context).apply {
             text = tr("仅保存在本机")
@@ -417,7 +499,13 @@ internal class ClipTranslatePage(
         view.addView(header, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
         view.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         view.addView(bottomBar, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
-        if (useChips) languages.forEach { chips.addView(chip(context, it)) }
+        if (useChips) languages.forEach { language ->
+            chips.addView(chip(context, language.id, language.name, tr("译成") + " " + language.name) { onLanguage?.invoke(language) })
+        }
+        TextAction.entries.forEach { item ->
+            val name = tr(item.label)
+            actionChips.addView(chip(context, item.id, name, tr("处理方式") + " " + name) { onAction?.invoke(item) })
+        }
         ViewCompat.setAccessibilityPaneTitle(view, tr("翻译"))
         fitWorkspace()
         refresh()
@@ -518,10 +606,18 @@ internal class ClipTranslatePage(
         bottomBar.visibility = if (!inHeader && !historyExpanded) View.VISIBLE else View.GONE
     }
 
+    /** The title names the current action, so the mode is never only implied by a highlighted chip. */
     private fun fitHeader() {
         val inHistory = narrow && historyExpanded
-        title.text = tr(if (inHistory) "翻译历史" else "翻译")
-        subtitle.text = tr(if (inHistory) "仅保存在本机" else "点击翻译时才联网 · 点复制时才写入剪贴板")
+        val translating = action == TextAction.TRANSLATE
+        setIfChanged(title, if (inHistory) tr("历史记录") else tr(action.label))
+        setIfChanged(subtitle, tr(when {
+            inHistory -> "仅保存在本机"
+            translating -> "点击翻译时才联网 · 点复制时才写入剪贴板"
+            else -> "点击处理时才联网 · 点复制时才写入剪贴板"
+        }))
+        setIfChanged(sourceField, tr(if (translating) "输入或粘贴要翻译的原文" else "输入或粘贴要处理的文字"), hint = true)
+        ViewCompat.setAccessibilityPaneTitle(view, tr(action.label))
         back.contentDescription = tr(if (inHistory) "返回翻译详情" else "返回列表")
         historyButton.visibility = if (inHistory) View.GONE else View.VISIBLE
         historyButton.text = tr(if (historyExpanded) "收起历史记录" else "历史记录")
@@ -542,6 +638,14 @@ internal class ClipTranslatePage(
 
     fun restore(entry: TranslationHistoryEntry) {
         state.restore(entry, languages)
+        action = TextAction.of(entry.targetId)
+        if (action == TextAction.TRANSLATE) lastLanguage = target
+        if (action == TextAction.CUSTOM) {
+            val listener = onInstructionChanged
+            onInstructionChanged = null
+            instructionField.setText(target?.prompt.orEmpty())
+            onInstructionChanged = listener
+        }
         error = null
         if (narrow) historyExpanded = false
         fitWorkspace()
@@ -559,24 +663,28 @@ internal class ClipTranslatePage(
         sourceCount.text = "$length/$limit"
         sourceCount.setTextColor(if (length > limit) colors.error else colors.muted)
 
-        for (i in 0 until chips.childCount) {
-            val chip = chips.getChildAt(i) as TextView
-            val selected = (chip.tag as? String) == target?.id
-            chip.isSelected = selected
-            // Selected chips also read bold: colour alone never carries the state.
-            chip.typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-            chip.isEnabled = !inserting
-            chip.alpha = if (inserting) 0.5f else 1f
-        }
+        val translating = action == TextAction.TRANSLATE
+        markChips(chips, target?.id)
+        markChips(actionChips, action.id)
+        val languageVisibility = if (translating) View.VISIBLE else View.GONE
+        if (languageBar.visibility != languageVisibility) languageBar.visibility = languageVisibility
+        val instructionVisibility = if (action == TextAction.CUSTOM) View.VISIBLE else View.GONE
+        if (instructionPane.visibility != instructionVisibility) instructionPane.visibility = instructionVisibility
+        instructionField.isEnabled = !inserting
+        val verb = tr(action.label)
+        fitHeader()
         languageButton.text = (target?.name ?: tr("请先配置目标语言")) + "  ▾"
         enable(languageButton, !inserting && languages.isNotEmpty())
 
-        resultLabel.text = target?.let { tr("译文") + " · " + it.name } ?: tr("译文")
-        resultText.text = result ?: tr(when {
-            loading -> "正在翻译…"
-            languages.isEmpty() -> "请先配置目标语言"
-            else -> "点击「翻译」获取译文"
-        })
+        resultLabel.text = if (translating) target?.let { tr("译文") + " · " + it.name } ?: tr("译文") else tr("结果") + " · " + verb
+        resultText.text = result ?: when {
+            !translating && loading -> tr("正在处理…")
+            !translating && target == null -> tr("先写下要怎样处理原文")
+            !translating -> tr("点击「%s」获取结果").format(verb)
+            loading -> tr("正在翻译…")
+            languages.isEmpty() -> tr("请先配置目标语言")
+            else -> tr("点击「翻译」获取译文")
+        }
         resultText.setTextColor(if (result != null) colors.ink else colors.muted)
         val tint = if (result != null) (if (colors.dark) 0.16f else 0.08f) else (if (colors.dark) 0.08f else 0.04f)
         resultBox.background = card(
@@ -586,7 +694,7 @@ internal class ClipTranslatePage(
 
         val message = error ?: when {
             inserting -> tr("正在输入…")
-            loading -> tr("正在请求 · 切换语言将取消，不会自动重发")
+            loading -> tr(if (translating) "正在请求 · 切换语言将取消，不会自动重发" else "正在请求 · 切换处理方式将取消，不会自动重发")
             else -> null
         }
         status.visibility = if (message == null) View.GONE else View.VISIBLE
@@ -597,7 +705,8 @@ internal class ClipTranslatePage(
             statusMark.background = GradientDrawable().apply { cornerRadius = dp(2).toFloat(); setColor(tone) }
         }
 
-        confirm.text = tr(when { inserting -> "正在输入…"; loading -> "正在翻译…"; result != null -> "输入译文"; else -> "翻译" })
+        confirm.text = if (translating) tr(when { inserting -> "正在输入…"; loading -> "正在翻译…"; result != null -> "输入译文"; else -> "翻译" })
+            else when { inserting -> tr("正在输入…"); loading -> tr("正在处理…"); result != null -> tr("输入结果"); else -> verb }
         enable(confirm, !loading && !inserting && target != null && source.isNotBlank(), disabledAlpha = 0.38f)
         // Before the first result a second "translate" button would only repeat the primary one.
         retryOrCancel.visibility = if (result != null || loading) View.VISIBLE else View.GONE
@@ -605,12 +714,18 @@ internal class ClipTranslatePage(
         copy.visibility = if (result != null && !loading) View.VISIBLE else View.GONE
         gapBefore(copy, retryOrCancel.visibility == View.VISIBLE)
         gapBefore(confirm, retryOrCancel.visibility == View.VISIBLE || copy.visibility == View.VISIBLE)
-        retryOrCancel.text = tr(if (loading) "取消请求" else "重新翻译")
+        retryOrCancel.text = tr(if (loading) "取消请求" else if (translating) "重新翻译" else "重新生成")
         enable(retryOrCancel, !inserting && target != null && source.isNotBlank())
         enable(copy, !inserting)
         enable(historyButton, !inserting)
         enable(settingsButton, !inserting)
         enable(back, !inserting)
+    }
+
+    /** Text and hint changes request a layout; refresh runs per keystroke, so skip identical values. */
+    private fun setIfChanged(view: TextView, value: String, hint: Boolean = false) {
+        if (hint) { if (view.hint?.toString() != value) view.hint = value }
+        else if (view.text.toString() != value) view.text = value
     }
 
     private fun gapBefore(view: View, gap: Boolean) {
@@ -640,10 +755,22 @@ internal class ClipTranslatePage(
     }
 
     /** A 48dp-tall target whose visible pill is 36dp: compact to look at, easy to hit. */
-    private fun chip(context: Context, language: TranslationLanguage) = TextView(context).apply {
-        tag = language.id
-        text = language.name
-        contentDescription = tr("译成") + " " + language.name
+    /** Selected chips also read bold: colour alone never carries the state. */
+    private fun markChips(row: ViewGroup, selectedId: String?) {
+        for (i in 0 until row.childCount) {
+            val chip = row.getChildAt(i) as TextView
+            val selected = (chip.tag as? String) == selectedId
+            chip.isSelected = selected
+            chip.typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+            chip.isEnabled = !inserting
+            chip.alpha = if (inserting) 0.5f else 1f
+        }
+    }
+
+    private fun chip(context: Context, id: String, name: String, description: String, onPick: () -> Unit) = TextView(context).apply {
+        tag = id
+        text = name
+        contentDescription = description
         gravity = Gravity.CENTER
         isSingleLine = true
         ellipsize = TextUtils.TruncateAt.END
@@ -675,18 +802,18 @@ internal class ClipTranslatePage(
             arrayOf(intArrayOf(android.R.attr.state_selected), intArrayOf()),
             intArrayOf(colors.accentInk, colors.ink),
         ))
-        setOnClickListener { if (!isSelected) onLanguage?.invoke(language) }
+        setOnClickListener { if (!isSelected) onPick() }
         layoutParams = ViewGroup.LayoutParams(-2, -2)
     }
 
-    private fun fieldBackground(): Drawable {
-        val radius = dp(view.context, BOX_RADIUS).toFloat()
+    private fun fieldBackground(context: Context): Drawable {
+        val radius = dp(context, BOX_RADIUS).toFloat()
         fun face(stroke: Int, width: Int) = GradientDrawable().apply {
             cornerRadius = radius
             setColor(this@ClipTranslatePage.colors.field)
             setStroke(width, stroke)
         }
-        val hair = dp(view.context, 1).coerceAtLeast(1)
+        val hair = dp(context, 1).coerceAtLeast(1)
         return StateListDrawable().apply {
             addState(intArrayOf(android.R.attr.state_focused), face(colors.accent, hair * 2))
             addState(intArrayOf(), face(colors.line, hair))

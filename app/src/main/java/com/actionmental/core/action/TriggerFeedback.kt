@@ -192,6 +192,10 @@ data class TriggerFeedback(
                 is Action.ClipboardHistory -> (result as? ActionResult.Failed)?.let {
                     TriggerFeedback(translate(action.label), value = translate(it.message), failed = true)
                 }
+                // 录音页本身就是反馈；只有打不开（锁屏、无障碍未开）时才说一声
+                is Action.SpeechToText -> (result as? ActionResult.Failed)?.let {
+                    TriggerFeedback(translate(action.label), value = translate(it.message), failed = true)
+                }
                 // 语音面板弹出来就是反馈；只有没唤起、或者切了输入法（看不出切到了谁）时才说一声
                 is Action.VoiceInput -> when (result) {
                     is ActionResult.Ok -> result.detail.takeIf { it.startsWith("已切") }

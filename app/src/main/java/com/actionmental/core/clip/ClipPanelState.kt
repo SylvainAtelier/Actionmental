@@ -306,7 +306,8 @@ class ClipTranslationState(source: String, target: TranslationLanguage?) {
         return true
     }
 
-    fun selectTarget(language: TranslationLanguage) {
+    /** null clears the target: a custom action has none until its instruction is written. */
+    fun selectTarget(language: TranslationLanguage?) {
         cancel()
         target = language
         result = null
@@ -315,7 +316,7 @@ class ClipTranslationState(source: String, target: TranslationLanguage?) {
     fun restore(entry: TranslationHistoryEntry, languages: List<TranslationLanguage>) {
         restore(entry, languages.firstOrNull { it.id == entry.targetId }
             ?: TranslationLanguage(entry.targetId, entry.targetName,
-                entry.prompt.removeSuffix("\n\n" + TranslationRequest.RULES)))
+                TranslationRequest.instructionOf(entry)))
     }
 
     fun restore(entry: TranslationHistoryEntry, language: TranslationLanguage) {

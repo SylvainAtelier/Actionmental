@@ -115,6 +115,9 @@ import kotlinx.coroutines.delay
 import com.actionmental.platform.MiniMaxTranslator
 import com.actionmental.data.TranslationHistoryStore
 import com.actionmental.core.translate.TranslationResult
+import com.actionmental.core.translate.TranslationRequest
+import com.actionmental.core.translate.TextAction
+import com.actionmental.core.translate.VoiceCommand
 import com.actionmental.ui.MainActivity
 
 /**
@@ -238,6 +241,61 @@ class AppGraph private constructor(context: Context) {
         }
     }
 
+    /** Tidy transcripts with the text model before they are shown; off by default, since it is a second request. */
+    var speechTidy: Boolean
+        get() = speechPrefs.getBoolean("tidy", false)
+        set(value) { speechPrefs.edit { putBoolean("tidy", value) } }
+    /** Dictation or command, remembered between sessions so the page opens the way it was last used. */
+    var speechCommandMode: Boolean
+        get() = speechPrefs.getBoolean("command_mode", false)
+        set(value) { speechPrefs.edit { putBoolean("command_mode", value) } }
+
+    /** null when tidying is unavailable or fails: the raw transcript is then used unchanged. */
+    suspend fun tidyDictation(text: String): String? {
+        if (!miniMaxTranslator.hasToken() || text.length > TranslationRequest.MAX_SOURCE) return null
+        return try {
+            miniMaxTranslator.translate(TranslationRequest(text, TextAction.DICTATION,
+                settingsRepository.settings.value.translation.model)).text.trim().takeIf { it.isNotEmpty() }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) { null }
+    }
+
+    data class SpeechCommand(val shortcutId: String, val name: String, val combo: String)
+
+    /** Shortcuts a spoken request may pick from; opening the panel itself would be pointless. */
+    private fun voiceCommandShortcuts() = shortcutRepository.shortcuts.value
+        .filter { it.enabled && it.action != Action.ClipboardHistory && it.action != Action.SpeechToText }
+        .take(MAX_VOICE_COMMANDS)
+
+    val hasVoiceCommands: Boolean get() = voiceCommandShortcuts().isNotEmpty()
+
+    /**
+     * The model only chooses among numbered shortcuts and never sees ids or arguments, so the worst a
+     * misheard request can do is propose the wrong shortcut — which the page asks the user to confirm.
+     */
+    suspend fun matchVoiceCommand(text: String): SpeechCommand? {
+        val shortcuts = voiceCommandShortcuts()
+        if (shortcuts.isEmpty() || text.length > TranslationRequest.MAX_SOURCE) return null
+        val candidates = shortcuts.mapIndexed { index, shortcut ->
+            VoiceCommand.Candidate((index + 1).toString(), DesktopName.of(shortcut, ::translate), translate(shortcut.action.label))
+        }
+        val reply = miniMaxTranslator.translate(TranslationRequest(text, VoiceCommand.target(candidates),
+            settingsRepository.settings.value.translation.model)).text
+        val hit = VoiceCommand.parse(reply, candidates) ?: return null
+        val shortcut = shortcuts[hit.id.toInt() - 1]
+        return SpeechCommand(shortcut.id, hit.name, shortcut.combo.toString())
+    }
+
+    /** Runs only after the speech page has handed the foreground back to the app the command is for. */
+    fun runVoiceCommand(shortcutId: String) {
+        if (speechInsertion?.isActive == true) return
+        speechInsertion = scope.launch(Dispatchers.Main) {
+            awaitSpeechPageGone()
+            runQuickShortcut(shortcutId)
+        }
+    }
+
     /** A non-null [translationSource] means the request came from the translation page. */
     private fun openSpeechCapture(translationSource: String?) {
         if (appContext.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked != false) {
@@ -252,8 +310,33 @@ class AppGraph private constructor(context: Context) {
             _speechCanInsert.value = speechCommitter != null
         }
         accessibility.markInputBorrowed()
+        launchSpeechPage(toggle = false)
+    }
+
+    private fun launchSpeechPage(toggle: Boolean) {
         appContext.startActivity(Intent(appContext, com.actionmental.platform.SpeechCaptureActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra(com.actionmental.platform.SpeechCaptureActivity.EXTRA_TOGGLE, toggle))
+    }
+
+    /**
+     * Shortcut entry. First press opens the page (which starts recording); a press while the page is up
+     * finishes the take. The panel, when open, hands off as its own speech button would.
+     */
+    private suspend fun speechShortcut(): ActionResult = withContext(Dispatchers.Main) {
+        if (appContext.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked != false) {
+            return@withContext ActionResult.Failed(ActionResult.Reason.UNSUPPORTED, "锁屏时无法录音，请先解锁")
+        }
+        when {
+            speechCaptureVisible -> launchSpeechPage(toggle = true)
+            clipPanel.handOffToSpeech() -> Unit
+            else -> {
+                // Freeze the field focused at the key press, exactly as opening the panel would.
+                accessibility.markOverlayShown()
+                openSpeechCapture(null)
+            }
+        }
+        ActionResult.Ok("语音转文字")
     }
     val translationHistoryStore = TranslationHistoryStore(appContext)
     val shortcutRepository = ShortcutRepository(appStore, scope)
@@ -766,6 +849,7 @@ class AppGraph private constructor(context: Context) {
         keyChord = keyChord,
         clipboard = clipboardWriter,
         toggleClipboardHistory = clipPanel::toggle,
+        speechToText = ::speechShortcut,
         privileged = { actionBackend },
     )
 
@@ -2234,6 +2318,8 @@ class AppGraph private constructor(context: Context) {
     companion object {
         /** 面板关上后等多久再执行快捷操作：让焦点先回到原应用，发出的按键才落得到它身上。 */
         private const val QUICK_RUN_DELAY_MS = 150L
+        /** Keeps the numbered list inside the request prompt limit. */
+        private const val MAX_VOICE_COMMANDS = 40
 
         private const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
 
