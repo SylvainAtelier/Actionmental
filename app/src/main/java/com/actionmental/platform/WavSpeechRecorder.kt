@@ -17,7 +17,7 @@ import kotlin.math.log10
 /** Thrown when a recording never rose above the noise floor; uploading it would only cost money. */
 internal class SilentAudioException : IllegalStateException("No speech level captured")
 
-/** Foreground-only, bounded PCM capture. No network or service is involved. */
+/** Visible-session, bounded PCM capture. No network or service is involved. */
 internal class WavSpeechRecorder(
     private val file: File,
     private val onComplete: (Result<File>) -> Unit,
@@ -29,6 +29,19 @@ internal class WavSpeechRecorder(
     /** Latest input level in 0..1, written by the capture thread and sampled by the UI per frame. */
     @Volatile var level: Float = 0f
         private set
+    private var sessionId = 0
+
+    /**
+     * True when the system feeds this capture silence instead of the microphone: the privacy toggle,
+     * another app holding the mic, or a background restriction. Reads keep succeeding in that case,
+     * so without asking the system a silenced take would only look like a quiet room.
+     */
+    fun silenced(audioManager: android.media.AudioManager): Boolean {
+        val id = sessionId.takeIf { audio != null } ?: return false
+        return runCatching {
+            audioManager.activeRecordingConfigurations.any { it.clientAudioSessionId == id && it.isClientSilenced }
+        }.getOrDefault(false)
+    }
 
     @SuppressLint("MissingPermission")
     fun start() {
@@ -41,6 +54,7 @@ internal class WavSpeechRecorder(
             error("Microphone unavailable")
         }
         audio = recorder
+        sessionId = recorder.audioSessionId
         try {
             recorder.startRecording()
             check(recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING)

@@ -37,6 +37,7 @@ class MiniMaxSpeechRecognizer internal constructor(
     private val tokenPresent: () -> Boolean,
     private val openConnection: () -> HttpURLConnection,
     private val timeoutMs: Long = 120_000,
+    private val dedicatedPresent: () -> Boolean = tokenPresent,
 ) {
     constructor(context: Context) : this(SyncCredentials(context))
     private constructor(credentials: SyncCredentials) : this(
@@ -45,11 +46,15 @@ class MiniMaxSpeechRecognizer internal constructor(
         { credentials.remove(TOKEN_KEY) },
         { credentials.has(TOKEN_KEY) || credentials.has(FALLBACK_TOKEN_KEY) },
         { URL(ENDPOINT).openConnection() as HttpURLConnection },
+        dedicatedPresent = { credentials.has(TOKEN_KEY) },
     )
 
     init { require(timeoutMs in 1..MAX_TIMEOUT_MS) }
 
     fun hasToken(): Boolean = tokenPresent()
+
+    /** Only the speech-specific key, not the translation fallback; settings show which one is in use. */
+    fun hasDedicatedToken(): Boolean = dedicatedPresent()
 
     fun saveToken(token: String) {
         val value = token.trim()

@@ -89,6 +89,29 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun saveSpeechToken(token: String) = changeSpeechToken(token)
+    fun clearSpeechToken() = changeSpeechToken(null)
+
+    private fun changeSpeechToken(token: String?) {
+        if (translationOperations.value.speechTokenSaving) return
+        translationOperations.update { it.copy(speechTokenSaving = true, speechTokenMessage = null) }
+        viewModelScope.launch {
+            try {
+                val present = withContext(Dispatchers.IO) {
+                    if (token == null) graph.miniMaxSpeech.clearToken() else graph.miniMaxSpeech.saveToken(token)
+                    graph.miniMaxSpeech.hasDedicatedToken()
+                }
+                translationOperations.update { it.copy(speechTokenConfigured = present, speechTokenSaving = false,
+                    speechTokenFailed = false, speechTokenMessage = if (token == null) "Token 已移除" else "Token 已保存") }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                translationOperations.update { it.copy(speechTokenSaving = false, speechTokenFailed = true,
+                    speechTokenMessage = "Token 保存失败，请检查格式后重试") }
+            }
+        }
+    }
+
     fun saveTranslationToken(token: String) = changeTranslationToken(token)
     fun clearTranslationToken() = changeTranslationToken(null)
 
@@ -209,8 +232,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         viewModelScope.launch {
-            val present = withContext(Dispatchers.IO) { runCatching { graph.miniMaxTranslator.hasToken() }.getOrDefault(false) }
-            translationOperations.update { it.copy(tokenConfigured = present) }
+            val (present, speech) = withContext(Dispatchers.IO) {
+                runCatching { graph.miniMaxTranslator.hasToken() }.getOrDefault(false) to
+                    runCatching { graph.miniMaxSpeech.hasDedicatedToken() }.getOrDefault(false)
+            }
+            translationOperations.update { it.copy(tokenConfigured = present, speechTokenConfigured = speech) }
         }
         // 自愈发生在图里、可能在用户没看屏幕时；界面一回来就把它接过来当作提示
         viewModelScope.launch {

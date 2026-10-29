@@ -33,6 +33,9 @@ import android.widget.AbsListView
 import android.widget.BaseAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.provider.Settings
+import android.net.Uri
+import android.content.Intent
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ListView
@@ -143,7 +146,10 @@ class ClipPanel(
     private val onCopyTranslation: suspend (String) -> Boolean = { false },
     private val translationConfigured: () -> Boolean = { true },
     private val onOpenTranslationSettings: () -> Unit = {},
-    private val onOpenSpeech: (translationSource: String?) -> Unit = {},
+    /** null hides every speech entry: the page needs a recognizer and its preferences. */
+    private val speech: SpeechServices? = null,
+    /** A field was focused when the panel opened and the system can write into it. */
+    private val canInsertText: () -> Boolean = { false },
 ) {
     /** 一格快捷操作。[glyph] 是图标中央那一个字，[combo] 是触发它的组合键写法。 */
     data class QuickAction(val id: String, val name: String, val glyph: String, val combo: String)
@@ -224,6 +230,10 @@ class ClipPanel(
     private var editor: Editor? = null
     private var editorRequest = 0L
     private var translationPage: ClipTranslatePage? = null
+    private var speechPage: ClipSpeechPage? = null
+    /** The last transcript survives closing the panel, so a mistaken close never loses dictation. */
+    private var speechDraft = ""
+    private val inDetail get() = editor != null || translationPage != null || speechPage != null
     private var translationInputBorrowed = false
     /** Keep one local draft while switching modes; closing the panel releases it. */
     private var translationDraft: ClipTranslatePage? = null
@@ -241,7 +251,7 @@ class ClipPanel(
         card.removeView(view)
         browseViews.forEach { it.visibility = View.VISIBLE }
         render()
-        root?.post { if (editor == null && translationPage == null) revealSelected() }
+        root?.post { if (!inDetail) revealSelected() }
     }
 
     /** 三格快捷操作此刻的内容，长度恒为 [QUICK_SLOTS]。 */
@@ -259,42 +269,35 @@ class ClipPanel(
         return ActionResult.Ok(if (open) "关闭剪贴板历史" else "打开剪贴板历史")
     }
 
-    /** Open (or reuse) the panel on the translation page with [text] as the source, ready to translate. */
-    fun openTranslationWith(text: String, onOpened: (Boolean) -> Unit): ActionResult {
+    /**
+     * The speech shortcut. Closed panel: open straight onto the speech page and start listening.
+     * Speech page up: do its next step (finish, transcribe, deliver). Elsewhere in the panel: switch to
+     * the speech page, carrying the translation source along when that is where the user was.
+     */
+    fun speechShortcut(): ActionResult {
         val service = serviceProvider() ?: return ActionResult.Failed(ActionResult.Reason.ACCESSIBILITY_OFF)
+        if (speech == null) return ActionResult.Failed(ActionResult.Reason.UNSUPPORTED)
         if (service.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true) {
-            return ActionResult.Failed(ActionResult.Reason.UNSUPPORTED, "锁屏时不显示剪贴板历史")
+            return ActionResult.Failed(ActionResult.Reason.UNSUPPORTED, "锁屏时无法录音，请先解锁")
         }
         main.post {
-            var opened = false
-            guarded("Open translation with transcript") {
-                // An unsaved clip edit is never discarded on the transcript's behalf.
-                if (editor != null) return@guarded
-                if (root == null) show(service)
-                if (translationPage == null) openTranslation()
-                val page = translationPage ?: return@guarded
-                page.sourceField.setText(text)
-                page.sourceField.setSelection(page.sourceField.length())
-                opened = true
+            guarded("Speech shortcut") {
+                val page = speechPage
+                when {
+                    root == null -> { show(service); openSpeech(null, autoStart = true) }
+                    page != null -> page.advance()
+                    // An unsaved clip edit is never dropped for a recording: surface its discard prompt instead.
+                    editor?.dirty == true -> requestExitEditor(closePanel = false)
+                    else -> {
+                        if (editor != null) leaveEditor()
+                        val source = translationPage?.source
+                        if (translationPage != null) leaveTranslation()
+                        openSpeech(source, autoStart = true)
+                    }
+                }
             }
-            onOpened(opened)
         }
-        return ActionResult.Ok("打开翻译")
-    }
-
-    /**
-     * The speech shortcut pressed while the panel is up: behave like the panel's own speech entry,
-     * so the translation page keeps its source. Main thread only; false when the panel is closed,
-     * true when the press was consumed here.
-     */
-    fun handOffToSpeech(): Boolean {
-        if (!open) return false
-        // An unsaved clip edit is never dropped for a recording: surface its discard prompt instead.
-        if (editor?.dirty == true) return true.also { requestExitEditor(closePanel = true) }
-        val source = translationPage?.source
-        close()
-        onOpenSpeech(source)
-        return true
+        return ActionResult.Ok("语音转文字")
     }
 
     /** 熄屏、服务断开时调用。 */
@@ -357,6 +360,11 @@ class ClipPanel(
 
     private fun close() {
         translationPage?.let(::returnTranslationInput)
+        speechPage?.let { page ->
+            returnSpeechInput(page)
+            page.dispose()
+        }
+        speechPage = null
         pipeline.modal = null
         open = false
         generation++
@@ -391,7 +399,7 @@ class ClipPanel(
         }
         // 编辑页、翻译页是输入框：面板不认的键交回管线，快捷键与键位映射照常生效，和在普通应用里打字一样。
         // 列表页的字符是搜索输入，不认的键仍原样放行
-        val unclaimed: Boolean? = if (editor != null || translationPage != null) null else false
+        val unclaimed: Boolean? = if (inDetail) null else false
         // 修饰键放行：它们只是状态，吞掉反而会让底下的应用以为 Ctrl 一直按着
         if (e.isModifier) return unclaimed
         // 自己吞掉的按下，抬起由管线负责拦；别人的抬起原样放行
@@ -407,6 +415,7 @@ class ClipPanel(
             if (e.keyCode == KeyEvent.KEYCODE_ESCAPE || e.keyCode == KeyEvent.KEYCODE_BACK) return true
         }
         editor?.let { return onEditorKey(it, e, modifiers) }
+        speechPage?.let { page -> return onSpeechKey(page, e, modifiers) }
         translationPage?.let { page ->
             if (e.repeatCount == 0 && isToggle(e)) { close(); return true }
             val key = TranslationPanelKeys.map(e.keyCode, modifiers, pick)
@@ -598,7 +607,7 @@ class ClipPanel(
         mainAdapter.notifyDataSetChanged()
         val empty = state.entries.isEmpty()
         // 编辑页开着时列表那几块一直收着，后台查回来的结果不该把它们翻出来
-        if (editor == null && translationPage == null) {
+        if (!inDetail) {
             emptyView.visibility = if (empty) View.VISIBLE else View.GONE
             lists.visibility = if (empty) View.GONE else View.VISIBLE
         }
@@ -1089,7 +1098,7 @@ class ClipPanel(
 
     /** The source always starts empty: the user types or pastes what to translate, never a clip picked for them. */
     private fun openTranslation() {
-        if (editor != null || translationPage != null) return
+        if (inDetail) return
         dismissMenu()
         val host = root ?: return
         guarded("Open translation detail") {
@@ -1105,18 +1114,7 @@ class ClipPanel(
             val settings = translationSettings()
             val page = ClipTranslatePage(host.context, "", settings.languages,
                 settings.languages.firstOrNull { it.id == settings.lastTargetId } ?: settings.languages.firstOrNull(),
-                ClipTranslatePage.Colors(
-                    ink = palette.ink, mid = palette.mid, muted = palette.faint, surface = palette.surface,
-                    field = palette.field, line = palette.line, error = palette.error, accent = palette.accent,
-                    accentInk = palette.emphasis, ripple = palette.ripple, dark = palette.dark,
-                ),
-                translate, { label, style, click ->
-                    actionButton(host.context, label, when (style) {
-                        ClipTranslatePage.ButtonStyle.TEXT -> Tone.TEXT
-                        ClipTranslatePage.ButtonStyle.OUTLINE -> Tone.OUTLINE
-                        ClipTranslatePage.ButtonStyle.PRIMARY -> Tone.PRIMARY
-                    }, click)
-                },
+                pageColors(), translate, pageButton(host.context),
                 translate("原文可编辑 · Enter 换行 · Ctrl+Enter 翻译或输入 · Ctrl+R 重新翻译 · Ctrl+T 返回列表 · Esc 先收键盘再返回").replace(PickKeys.TEMPLATE, pick.hint),
                 ::leaveTranslation, { translationPage?.let(::confirmTranslation) }, {
                     translationPage?.let { current ->
@@ -1126,13 +1124,13 @@ class ClipPanel(
                 }, { translationPage?.let(::copyTranslation) }, { translationPage?.let { current -> returnTranslationInput(current); loadTranslationHistory(current) } }, {
                     close()
                     onOpenTranslationSettings()
-                }, onSpeech = {
+                }, onSpeech = if (speech == null) null else ({
                     translationPage?.let { current ->
                         val source = current.source
-                        close()
-                        onOpenSpeech(source)
+                        leaveTranslation()
+                        openSpeech(source, autoStart = true)
                     }
-                })
+                }))
             translationPage = page
             translationDraft = page
             page.onSourceChanged = { value ->
@@ -1178,9 +1176,210 @@ class ClipPanel(
         }
     }
 
+    // --- Speech ---------------------------------------------------------------
+
+    private fun pageColors() = ClipTranslatePage.Colors(
+        ink = palette.ink, mid = palette.mid, muted = palette.faint, surface = palette.surface,
+        field = palette.field, line = palette.line, error = palette.error, accent = palette.accent,
+        accentInk = palette.emphasis, ripple = palette.ripple, dark = palette.dark,
+    )
+
+    private fun pageButton(context: Context): (String, ClipTranslatePage.ButtonStyle, () -> Unit) -> Button = { label, style, click ->
+        actionButton(context, label, when (style) {
+            ClipTranslatePage.ButtonStyle.TEXT -> Tone.TEXT
+            ClipTranslatePage.ButtonStyle.OUTLINE -> Tone.OUTLINE
+            ClipTranslatePage.ButtonStyle.PRIMARY -> Tone.PRIMARY
+        }, click)
+    }
+
+    /**
+     * The speech page replaces the list inside the same card, like translation. [translationSource]
+     * non-null means it was opened from the translation page, which is where the words then go.
+     */
+    private fun openSpeech(translationSource: String?, autoStart: Boolean) {
+        val services = speech ?: return
+        if (inDetail) return
+        dismissMenu()
+        val host = root ?: return
+        guarded("Open speech page") {
+            val route = if (translationSource != null) ClipSpeechPage.Route.TRANSLATE else ClipSpeechPage.Route.INSERT
+            // Decided once: the field captured when the panel opened does not change while it is up.
+            val insertable = canInsertText()
+            var self: ClipSpeechPage? = null
+            val page = ClipSpeechPage(host.context, pageColors(), translate, pageButton(host.context), services,
+                object : ClipSpeechPage.Host {
+                    override val canInsert get() = insertable
+                    override fun back() = leaveSpeech()
+                    override fun insert(text: String) { self?.let { insertSpeech(it, text) } }
+                    override fun toTranslation(text: String) = speechToTranslation(text)
+                    override fun copy(text: String) = copySpeech(text)
+                    override fun runCommand(command: SpeechCommand) {
+                        close()
+                        onRunQuick(command.shortcutId)
+                    }
+                    override fun openSettings() {
+                        close()
+                        onOpenTranslationSettings()
+                    }
+                    override fun openAppSettings() {
+                        val context = owner ?: return
+                        close()
+                        runCatching {
+                            context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.fromParts("package", context.packageName, null)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }.onFailure { onError("Open app permission settings", it) }
+                    }
+                    override fun requestMicPermission(done: (Boolean) -> Unit) = requestMic(done)
+                    override fun onDraftFocus(field: EditText?) {
+                        val current = self ?: return
+                        if (speechPage !== current) return
+                        if (field != null && !current.inserting) {
+                            translationInputBorrowed = true
+                            setWindowIme(true)
+                            showKeyboard(field)
+                        } else if (field == null) returnSpeechInput(current)
+                    }
+                    override fun onDraftChanged(text: String) { speechDraft = text }
+                }, route, speechDraft)
+            self = page
+            speechPage = page
+            showDetail(page.view)
+            page.view.requestFocus()
+            page.start(autoStart)
+        }
+    }
+
+    private fun leaveSpeech() {
+        val page = speechPage ?: return
+        returnSpeechInput(page)
+        page.dispose()
+        speechPage = null
+        restoreTranslationWindow()
+        removeDetail(page.view)
+    }
+
+    /** Esc / back / a tap outside: the keyboard first, then the step in progress, then the page. */
+    private fun escapeSpeech() {
+        val page = speechPage ?: return
+        if (translationInputBorrowed && imeVisible()) {
+            hideKeyboard(page.draftField)
+            return
+        }
+        returnSpeechInput(page)
+        page.escape()
+    }
+
+    private fun returnSpeechInput(page: ClipSpeechPage) {
+        if (!translationInputBorrowed) return
+        translationInputBorrowed = false
+        hideKeyboard(page.draftField)
+        if (page.editing) page.view.requestFocus()
+        page.draftField.clearFocus()
+        setWindowIme(false)
+        onInputReturned()
+    }
+
+    /** Enter / Space do the page's next step; unclaimed keys go on to shortcuts, including speech's own. */
+    private fun onSpeechKey(page: ClipSpeechPage, e: NormalizedKeyEvent, modifiers: Int): Boolean? {
+        if (e.repeatCount == 0 && isToggle(e)) { close(); return true }
+        val ctrl = modifiers and KeyCombo.MOD_CTRL != 0
+        val enter = e.keyCode == KeyEvent.KEYCODE_ENTER || e.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
+        if (e.keyCode == KeyEvent.KEYCODE_ESCAPE || e.keyCode == KeyEvent.KEYCODE_BACK) {
+            if (e.repeatCount == 0) escapeSpeech()
+            return true
+        }
+        if (page.editing) {
+            if (!(ctrl && enter)) return null
+            if (e.repeatCount == 0) { returnSpeechInput(page); page.advance() }
+            return true
+        }
+        if (enter || (e.keyCode == KeyEvent.KEYCODE_SPACE && modifiers == 0)) {
+            if (e.repeatCount == 0) page.advance()
+            return true
+        }
+        return null
+    }
+
+    /** Step aside exactly as translation insertion does, so the original field takes focus back. */
+    private fun insertSpeech(page: ClipSpeechPage, text: String) {
+        val host = root ?: return
+        val lp = params ?: return
+        if (page.inserting || speechPage !== page) return
+        returnSpeechInput(page)
+        page.inserting = true
+        host.visibility = View.INVISIBLE
+        lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        owner?.getSystemService(WindowManager::class.java)?.updateViewLayout(host, lp)
+        host.postDelayed({
+            if (root !== host || speechPage !== page) return@postDelayed
+            scope.launch {
+                val success = try { onInsertTranslation(text) }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (error: Exception) { onError("Insert transcript", error); false }
+                main.post {
+                    if (root !== host || speechPage !== page) return@post
+                    if (success) {
+                        speechDraft = ""
+                        close()
+                    } else {
+                        restoreTranslationWindow()
+                        page.inserting = false
+                        page.showError(translate("未能写入原输入框，文字已保留；请回到原应用聚焦后重试，或复制"))
+                    }
+                }
+            }
+        }, 80L)
+    }
+
+    /** Append to whatever the translation page already holds; nothing typed there is replaced. */
+    private fun speechToTranslation(text: String) {
+        leaveSpeech()
+        openTranslation()
+        val page = translationPage ?: return
+        val base = page.source.trimEnd()
+        page.sourceField.setText(if (base.isEmpty()) text else base + "\n" + text)
+        page.sourceField.setSelection(page.sourceField.length())
+        speechDraft = ""
+    }
+
+    private fun copySpeech(text: String) {
+        val host = root ?: return
+        scope.launch {
+            val copied = try { onCopyTranslation(text) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (error: Exception) { onError("Copy transcript", error); false }
+            main.post {
+                if (root !== host) return@post
+                Toast.makeText(host.context, translate(if (copied) "已复制到剪贴板" else "复制失败"), Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /** The system prompt would sit under this overlay, so the panel steps aside until it is answered. */
+    private fun requestMic(done: (Boolean) -> Unit) {
+        val host = root ?: return done(false)
+        val lp = params ?: return done(false)
+        host.visibility = View.INVISIBLE
+        lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        owner?.getSystemService(WindowManager::class.java)?.updateViewLayout(host, lp)
+        val started = runCatching {
+            MicPermissionActivity.request(host.context) { granted ->
+                main.post {
+                    if (root === host) restoreTranslationWindow()
+                    done(granted)
+                }
+            }
+        }
+        if (started.isFailure) {
+            onError("Request microphone permission", started.exceptionOrNull()!!)
+            restoreTranslationWindow()
+            done(false)
+        }
+    }
+
     /** Explicitly chosen from a clip's menu: unlike plain translation, the clip itself becomes the source. */
     private fun processClip(entry: ClipEntry) {
-        if (editor != null || translationPage != null) return
+        if (inDetail) return
         dismissMenu()
         val host = root ?: return
         val request = ++editorRequest
@@ -1190,7 +1389,7 @@ class ClipPanel(
                 catch (cancelled: CancellationException) { throw cancelled }
                 catch (error: Exception) { onError("Read clip for text action", error); null }
             main.post {
-                if (root !== host || request != editorRequest || editor != null || translationPage != null) return@post
+                if (root !== host || request != editorRequest || inDetail) return@post
                 if (full == null) {
                     Toast.makeText(host.context, translate("无法读取完整内容，请重新打开后重试"), Toast.LENGTH_LONG).show()
                     return@post
@@ -1568,7 +1767,7 @@ class ClipPanel(
 
     /** 先取全文（列表里只有预览）再换成编辑页。几毫秒的事，不必另画加载态。 */
     private fun openEditor(entry: ClipEntry) {
-        if (editor != null || translationPage != null) return
+        if (inDetail) return
         dismissMenu()
         val host = root ?: return
         val request = ++editorRequest
@@ -1581,7 +1780,7 @@ class ClipPanel(
                 Result.failure(error)
             }
             main.post {
-                if (root !== host || request != editorRequest || editor != null || translationPage != null) return@post
+                if (root !== host || request != editorRequest || inDetail) return@post
                 result.onSuccess { full -> guarded("打开编辑页") { showEditor(entry, full) } }
                     .onFailure {
                         onError("读取编辑正文", it)
@@ -1738,7 +1937,8 @@ class ClipPanel(
     /** 窗口刚改成可接输入法，输入连接下一帧才起来：晚一点再叫键盘。接着实体键盘时系统自己不弹，不用管。 */
     private fun showKeyboard(field: EditText) {
         field.postDelayed({
-            val translationField = translationPage?.let { it.sourceField === field || it.instructionField === field } == true
+            val translationField = translationPage?.let { it.sourceField === field || it.instructionField === field } == true ||
+                speechPage?.draftField === field
             if (editor?.field !== field && (!translationField || !translationInputBorrowed || !field.hasFocus())) return@postDelayed
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) field.windowInsetsController?.show(WindowInsets.Type.ime())
             field.context.getSystemService(InputMethodManager::class.java)?.showSoftInput(field, InputMethodManager.SHOW_IMPLICIT)
@@ -2220,10 +2420,10 @@ class ClipPanel(
             setCompoundDrawablesRelativeWithIntrinsicBounds(glyph, null, null, null)
             compoundDrawablePadding = dp(context, 8f).toInt()
         }
-        val speech = actionButton(context, translate("语音转文字"), Tone.OUTLINE) {
-            close()
-            onOpenSpeech(null)
+        val speechButton = actionButton(context, translate("语音转文字"), Tone.OUTLINE) {
+            openSpeech(null, autoStart = true)
         }.apply {
+            visibility = if (speech == null) View.GONE else View.VISIBLE
             val mic = context.getDrawable(com.actionmental.R.drawable.ic_speech_microphone)?.mutate()
             mic?.setTint(palette.ink)
             setCompoundDrawablesRelativeWithIntrinsicBounds(mic, null, null, null)
@@ -2232,7 +2432,7 @@ class ClipPanel(
         val tools = LinearLayout(context).apply {
             gravity = Gravity.CENTER_VERTICAL
             addView(translationSwitch)
-            addView(speech, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(context, 8f).toInt() })
+            addView(speechButton, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(context, 8f).toInt() })
         }
         val titles = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -2261,7 +2461,7 @@ class ClipPanel(
                     topMargin = if (stacked) dp(context, 12f).toInt() else 0
                     marginStart = if (stacked) 0 else dp(context, 12f).toInt()
                 }
-                listOf(translationSwitch, speech).forEachIndexed { index, button ->
+                listOf(translationSwitch, speechButton).forEachIndexed { index, button ->
                     button.layoutParams = LinearLayout.LayoutParams(
                         if (compact) -1 else if (stacked) 0 else -2, -2,
                         if (stacked && !compact) 1f else 0f,
@@ -2376,7 +2576,14 @@ class ClipPanel(
             // 点卡片外面关闭：面板是模态的，底下的应用此刻本来就点不到。
             // 编辑页开着时只当是「返回」：手一滑点到外面，不该把没保存的修改一起关掉
             setOnClickListener {
-                guarded("点面板外面") { if (editor != null) requestExitEditor(closePanel = false) else if (translationPage != null) leaveTranslation() else close() }
+                guarded("点面板外面") {
+                    when {
+                        editor != null -> requestExitEditor(closePanel = false)
+                        speechPage != null -> escapeSpeech()
+                        translationPage != null -> leaveTranslation()
+                        else -> close()
+                    }
+                }
             }
             addView(card)
             contentDescription = translate("剪贴板历史")
@@ -2410,6 +2617,7 @@ class ClipPanel(
                     val ed = editor ?: return@guarded
                     if (imeVisible()) hideKeyboard(ed.field) else requestExitEditor(closePanel = false)
                 }
+                speechPage != null -> escapeSpeech()
                 translationPage != null -> escapeTranslation()
                 root === this -> close()
             }
@@ -2466,7 +2674,7 @@ class ClipPanel(
                 applyColumns()
                 refreshData(follow = true)
             }
-            val maxCard = if (split || translationPage != null) MAX_SPLIT_CARD_WIDTH_DP else MAX_CARD_WIDTH_DP
+            val maxCard = if (split || translationPage != null || speechPage != null) MAX_SPLIT_CARD_WIDTH_DP else MAX_CARD_WIDTH_DP
             val side = maxOf(gutter, (availWidth - dp(context, maxCard).toInt()) / 2)
             // 键盘弹出来时高度很金贵（横屏手机上只剩一百多 dp）：上下的留白收到最小，让给编辑框
             val vertical = if ((editor != null || translationInputBorrowed) && insets[4] > 0) {
@@ -2492,6 +2700,7 @@ class ClipPanel(
             if (hint.text.toString() != wanted) hint.text = wanted
             editor?.fit(px2dp(cardWidth))
             translationPage?.fit(px2dp(cardWidth))
+            speechPage?.fit(px2dp(cardWidth))
             super.onMeasure(widthMeasureSpec, heightMeasureSpec)
         }
 

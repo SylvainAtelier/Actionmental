@@ -97,6 +97,11 @@ data class TranslationSettingsUiState(
     val connectionFailed: Boolean = false,
     val tokenMessage: String? = null,
     val tokenFailed: Boolean = false,
+    /** A separate speech key, for accounts whose translation key cannot call speech to text. */
+    val speechTokenConfigured: Boolean = false,
+    val speechTokenSaving: Boolean = false,
+    val speechTokenMessage: String? = null,
+    val speechTokenFailed: Boolean = false,
     val models: List<String> = emptyList(),
     val modelsLoading: Boolean = false,
     val modelsMessage: String? = null,
@@ -113,6 +118,8 @@ data class TranslationSettingsActions(
     val onLanguagesChange: (List<TranslationLanguage>) -> Unit,
     val onTestConnection: () -> Unit,
     val onLoadModels: (String?) -> Unit,
+    val onSaveSpeechToken: (String) -> Unit = {},
+    val onClearSpeechToken: () -> Unit = {},
 )
 
 /** Stateless persistence boundary: the caller owns encrypted storage, networking and errors. */
@@ -329,6 +336,9 @@ fun TranslationSettings(
                 SettingNote("最多添加 30 种目标语言；删除一项后可继续添加。")
             }
         }
+        SettingDivider()
+
+        SpeechTokenBlock(state, actions)
     }
 
     if (clearTokenConfirmation) {
@@ -366,6 +376,68 @@ fun TranslationSettings(
                 )
                 editorOpen = false
             })
+        }
+    }
+}
+
+/**
+ * Speech to text uses the translation token unless a dedicated one is saved here: some MiniMax plans
+ * cover text models but not speech, and the panel itself has no room for typing a secret.
+ */
+@Composable
+private fun SpeechTokenBlock(state: TranslationSettingsUiState, actions: TranslationSettingsActions) {
+    // Intentionally not saveable: never persist a token draft in saved instance state.
+    var token by remember { mutableStateOf("") }
+    var visible by remember { mutableStateOf(false) }
+    val busy = state.speechTokenSaving
+    SettingBlock(
+        "语音转文字 Token（可选）",
+        description = when {
+            state.speechTokenConfigured -> "已配置专用 Token · 本机加密保存"
+            state.tokenConfigured -> "未配置 · 语音转文字使用上面的翻译 Token"
+            else -> "未配置 · 填写此项或翻译 Token 后即可使用语音转文字"
+        },
+    ) {
+        OutlinedTextField(
+            value = token,
+            onValueChange = { token = it },
+            placeholder = { Text(if (state.speechTokenConfigured) "输入新 Token 以替换" else "粘贴 API Token") },
+            singleLine = true,
+            enabled = !busy,
+            textStyle = AmType.body,
+            visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+            trailingIcon = {
+                IconButton(onClick = { visible = !visible }) {
+                    Icon(
+                        if (visible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                        contentDescription = localize(if (visible) "隐藏 Token" else "显示 Token"),
+                    )
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            AmPrimaryButton(
+                if (busy) "正在保存…" else "保存",
+                icon = Icons.Outlined.Check,
+                onClick = {
+                    val pending = token.trim()
+                    token = ""
+                    visible = false
+                    actions.onSaveSpeechToken(pending)
+                },
+                enabled = token.isNotBlank() && !busy,
+            )
+            if (state.speechTokenConfigured) {
+                AmSecondaryButton("移除", icon = Icons.Outlined.DeleteOutline, onClick = actions.onClearSpeechToken,
+                    enabled = !busy, accent = true)
+            }
+        }
+        when {
+            busy -> Progress("正在保存 Token…")
+            state.speechTokenMessage != null -> Feedback(state.speechTokenMessage, state.speechTokenFailed)
+            else -> SettingNote("仅在语音转文字点击「完成」或「转写」后上传录音。")
         }
     }
 }

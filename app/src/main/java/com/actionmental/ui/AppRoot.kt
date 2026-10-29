@@ -195,6 +195,8 @@ fun AppRoot(vm: AppViewModel, settingsRequest: Int = 0) {
                         onLanguagesChange = vm::updateTranslationLanguages,
                         onTestConnection = vm::testTranslationConnection,
                         onLoadModels = vm::loadTranslationModels,
+                        onSaveSpeechToken = vm::saveSpeechToken,
+                        onClearSpeechToken = vm::clearSpeechToken,
                     ))
                 }
             }

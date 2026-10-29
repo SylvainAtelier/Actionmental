@@ -61,6 +61,10 @@ import com.actionmental.platform.AppCatalog
 import com.actionmental.platform.ClipBubble
 import com.actionmental.platform.ClipCapture
 import com.actionmental.platform.ClipPanel
+import com.actionmental.platform.MiniMaxSpeechRecognizer
+import com.actionmental.platform.SpeechCommand
+import com.actionmental.platform.SpeechPreferences
+import com.actionmental.platform.SpeechServices
 import com.actionmental.platform.ClipboardWriter
 import com.actionmental.platform.ConfigBackupFile
 import com.actionmental.platform.CoverScreenWatch
@@ -153,105 +157,12 @@ class AppGraph private constructor(context: Context) {
     val settingsRepository = SettingsRepository(appStore, scope)
     val miniMaxTranslator = MiniMaxTranslator(appContext)
 
-    // A short-lived memory draft survives returning to the original app after insertion fails.
-    private val _speechDraft = MutableStateFlow("")
-    val speechDraft: StateFlow<String> = _speechDraft.asStateFlow()
-    private val _speechCanInsert = MutableStateFlow(false)
-    val speechCanInsert: StateFlow<Boolean> = _speechCanInsert.asStateFlow()
-
-    /** Where a finished transcript goes: the captured input field, or the translation source. */
-    enum class SpeechRoute { INSERT, TRANSLATE }
-    private val _speechRoute = MutableStateFlow(SpeechRoute.INSERT)
-    val speechRoute: StateFlow<SpeechRoute> = _speechRoute.asStateFlow()
-    private var speechTranslationPrefix = ""
-    private val speechPrefs by lazy { appContext.getSharedPreferences("speech", Context.MODE_PRIVATE) }
-    /** Deliver a transcript without a review step; on by default, remembered per device. */
-    var speechAutoDeliver: Boolean
-        get() = speechPrefs.getBoolean("auto_deliver", true)
-        set(value) { speechPrefs.edit { putBoolean("auto_deliver", value) } }
-    private var speechCommitter: ((String) -> Boolean)? = null
-    private var speechInsertion: Job? = null
-    private var speechCaptureOwner: Any? = null
-    private val speechCaptureVisible: Boolean get() = speechCaptureOwner != null
-
-    fun markSpeechCaptureVisible(owner: Any, visible: Boolean) {
-        if (visible) speechCaptureOwner = owner
-        else if (speechCaptureOwner === owner) speechCaptureOwner = null
-    }
-
-    fun updateSpeechDraft(text: String) { _speechDraft.value = text }
-
-    fun copySpeechText(text: String) {
-        if (text.isBlank()) return
-        scope.launch {
-            val copied = runCatching { clipboardWriter.write("speech", text) }.getOrDefault(false)
-            withContext(Dispatchers.Main) {
-                Toast.makeText(appContext, translate(if (copied) "已复制转写文本" else "复制失败，请重试"), Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    /** Wait until the speech page has handed the foreground back, instead of guessing a fixed delay. */
-    private suspend fun awaitSpeechPageGone() {
-        accessibility.markInputBorrowed()
-        withTimeoutOrNull(1_500L) {
-            accessibility.foregroundPackage.first { it != null && it != appContext.packageName }
-        }
-        accessibility.awaitInputBack()
-    }
-
-    fun insertSpeechText(text: String) {
-        if (text.isBlank() || speechInsertion?.isActive == true) return
-        _speechDraft.value = text
-        val commit = speechCommitter
-        speechInsertion = scope.launch(Dispatchers.Main) {
-            awaitSpeechPageGone()
-            // Focus can land a few frames after the window: retry briefly rather than fail on the first look.
-            var inserted = false
-            if (commit != null) withTimeoutOrNull(1_200L) {
-                while (!inserted) {
-                    inserted = runCatching { commit(text) }.getOrDefault(false)
-                    if (!inserted) delay(80)
-                }
-            }
-            if (inserted && _speechDraft.value == text) _speechDraft.value = ""
-            if (inserted) {
-                speechCommitter = null
-                _speechCanInsert.value = false
-                triggerHud.show(TriggerFeedback(translate("已上屏")))
-            } else Toast.makeText(appContext, translate(
-                "未能写入原输入框，文本已保留；请打开语音转文字后复制"), Toast.LENGTH_LONG).show()
-        }
-    }
-
-    /** Reopen the panel on the translation page with the transcript after the earlier source. */
-    fun sendSpeechToTranslation(text: String) {
-        if (text.isBlank() || speechInsertion?.isActive == true) return
-        _speechDraft.value = text
-        val source = speechTranslationPrefix.trimEnd().let { if (it.isEmpty()) text else it + "\n" + text }
-        speechInsertion = scope.launch(Dispatchers.Main) {
-            awaitSpeechPageGone()
-            val opened = CompletableDeferred<Boolean>()
-            if (clipPanel.openTranslationWith(source, opened::complete) !is ActionResult.Ok) opened.complete(false)
-            if (opened.await()) {
-                speechTranslationPrefix = ""
-                if (_speechDraft.value == text) _speechDraft.value = ""
-            } else Toast.makeText(appContext, translate(
-                "未能打开翻译，文本已保留；请打开语音转文字后复制"), Toast.LENGTH_LONG).show()
-        }
-    }
-
-    /** Tidy transcripts with the text model before they are shown; off by default, since it is a second request. */
-    var speechTidy: Boolean
-        get() = speechPrefs.getBoolean("tidy", false)
-        set(value) { speechPrefs.edit { putBoolean("tidy", value) } }
-    /** Dictation or command, remembered between sessions so the page opens the way it was last used. */
-    var speechCommandMode: Boolean
-        get() = speechPrefs.getBoolean("command_mode", false)
-        set(value) { speechPrefs.edit { putBoolean("command_mode", value) } }
+    /** Speech to text runs inside the clipboard panel; these outlive any one panel. */
+    val miniMaxSpeech = MiniMaxSpeechRecognizer(appContext)
+    private val speechPreferences = SpeechPreferences(appContext)
 
     /** null when tidying is unavailable or fails: the raw transcript is then used unchanged. */
-    suspend fun tidyDictation(text: String): String? {
+    private suspend fun tidyDictation(text: String): String? {
         if (!miniMaxTranslator.hasToken() || text.length > TranslationRequest.MAX_SOURCE) return null
         return try {
             miniMaxTranslator.translate(TranslationRequest(text, TextAction.DICTATION,
@@ -261,20 +172,16 @@ class AppGraph private constructor(context: Context) {
         } catch (_: Exception) { null }
     }
 
-    data class SpeechCommand(val shortcutId: String, val name: String, val combo: String)
-
     /** Shortcuts a spoken request may pick from; opening the panel itself would be pointless. */
     private fun voiceCommandShortcuts() = shortcutRepository.shortcuts.value
         .filter { it.enabled && it.action != Action.ClipboardHistory && it.action != Action.SpeechToText }
         .take(MAX_VOICE_COMMANDS)
 
-    val hasVoiceCommands: Boolean get() = voiceCommandShortcuts().isNotEmpty()
-
     /**
      * The model only chooses among numbered shortcuts and never sees ids or arguments, so the worst a
      * misheard request can do is propose the wrong shortcut — which the page asks the user to confirm.
      */
-    suspend fun matchVoiceCommand(text: String): SpeechCommand? {
+    private suspend fun matchVoiceCommand(text: String): SpeechCommand? {
         val shortcuts = voiceCommandShortcuts()
         if (shortcuts.isEmpty() || text.length > TranslationRequest.MAX_SOURCE) return null
         val candidates = shortcuts.mapIndexed { index, shortcut ->
@@ -287,57 +194,11 @@ class AppGraph private constructor(context: Context) {
         return SpeechCommand(shortcut.id, hit.name, shortcut.combo.toString())
     }
 
-    /** Runs only after the speech page has handed the foreground back to the app the command is for. */
-    fun runVoiceCommand(shortcutId: String) {
-        if (speechInsertion?.isActive == true) return
-        speechInsertion = scope.launch(Dispatchers.Main) {
-            awaitSpeechPageGone()
-            runQuickShortcut(shortcutId)
-        }
-    }
-
-    /** A non-null [translationSource] means the request came from the translation page. */
-    private fun openSpeechCapture(translationSource: String?) {
-        if (appContext.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked != false) {
-            triggerHud.show(TriggerFeedback(translate("锁屏时无法录音，请先解锁"), failed = true))
-            return
-        }
-        _speechRoute.value = if (translationSource != null) SpeechRoute.TRANSLATE else SpeechRoute.INSERT
-        speechTranslationPrefix = translationSource.orEmpty()
-        // Re-entering from a panel above the recording page must not capture its own editor.
-        if (!speechCaptureVisible) {
-            speechCommitter = accessibility.captureOverlayCommitter()
-            _speechCanInsert.value = speechCommitter != null
-        }
-        accessibility.markInputBorrowed()
-        launchSpeechPage(toggle = false)
-    }
-
-    private fun launchSpeechPage(toggle: Boolean) {
-        appContext.startActivity(Intent(appContext, com.actionmental.platform.SpeechCaptureActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            .putExtra(com.actionmental.platform.SpeechCaptureActivity.EXTRA_TOGGLE, toggle))
-    }
-
-    /**
-     * Shortcut entry. First press opens the page (which starts recording); a press while the page is up
-     * finishes the take. The panel, when open, hands off as its own speech button would.
-     */
+    /** First press opens the panel on the speech page and listens; later presses advance that page. */
     private suspend fun speechShortcut(): ActionResult = withContext(Dispatchers.Main) {
-        if (appContext.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked != false) {
-            return@withContext ActionResult.Failed(ActionResult.Reason.UNSUPPORTED, "锁屏时无法录音，请先解锁")
-        }
-        when {
-            speechCaptureVisible -> launchSpeechPage(toggle = true)
-            clipPanel.handOffToSpeech() -> Unit
-            else -> {
-                // Freeze the field focused at the key press, exactly as opening the panel would.
-                accessibility.markOverlayShown()
-                openSpeechCapture(null)
-            }
-        }
-        ActionResult.Ok("语音转文字")
+        clipPanel.speechShortcut()
     }
+
     val translationHistoryStore = TranslationHistoryStore(appContext)
     val shortcutRepository = ShortcutRepository(appStore, scope)
     val rotationRuleRepository = RotationRuleRepository(appStore, scope)
@@ -655,7 +516,15 @@ class AppGraph private constructor(context: Context) {
             withContext(Dispatchers.Main) { accessibility.commitTextToOverlayTarget(text) }
         },
         onCopyTranslation = { text -> clipboardWriter.write("translation", text) },
-        onOpenSpeech = ::openSpeechCapture,
+        speech = SpeechServices(
+            recognizer = miniMaxSpeech,
+            preferences = speechPreferences,
+            tidy = ::tidyDictation,
+            matchCommand = ::matchVoiceCommand,
+            hasCommands = { voiceCommandShortcuts().isNotEmpty() },
+            scope = scope,
+        ),
+        canInsertText = { accessibility.captureOverlayCommitter() != null },
         onOpenTranslationSettings = {
             appContext.startActivity(Intent(appContext, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
