@@ -57,6 +57,7 @@ import com.actionmental.core.clip.ClipPanelState
 import com.actionmental.core.clip.ClipPolicy
 import com.actionmental.core.clip.PanelEffect
 import com.actionmental.core.clip.PanelKey
+import com.actionmental.core.clip.PanelGeometry
 import com.actionmental.core.clip.PanelKeys
 import com.actionmental.core.clip.PickKeys
 import com.actionmental.core.clip.TranslationPanelKey
@@ -92,7 +93,7 @@ import kotlin.math.abs
  * 版式跟着窗口走（见 [PanelRoot]）：卡片居中、封顶 640dp 宽，四周留足白；列表在卡片里滚。列表是 ListView：只为看得见的那几行建视图并循环复用，数据按页懒加载，
  * 每行只拿预览 —— 几万条历史时滑动也只动十来个视图、几十条数据。
  *
- * 置顶与最近分开摆：宽窗口（卡片 ≥ [SPLIT_MIN_DP]）左右两栏各自滚动；窄窗口是同一列表里的两段，
+ * 置顶与最近分开摆：宽窗口（放得下 [PanelGeometry.SPLIT_MIN_DP] 宽的卡片，只看窗口宽度、不看转向）左右两栏各自滚动；窄窗口是同一列表里的两段，
  * 置顶的压成单行，多了收起成前 [PIN_PEEK] 条。←→ 在两段之间跳。没有置顶时与以前一样只有一串。
  *
  * 长按一行（或 Ctrl+E）可以改它的正文：卡片原地换成编辑页（见 [Editor]）。只有这时窗口才临时接输入法，
@@ -2594,7 +2595,7 @@ class ClipPanel(
      * 面板的根：每次测量时按当前窗口重算卡片四周的留白，转屏、分屏、小窗都自动跟上。
      *
      * - 卡片浮在避开系统栏之后的区域正中，四周留足白：基础留白按短边取（不到 480dp 时 24dp，
-     *   否则 48dp），上下再按可用高度的 8% 取大的那个；宽度封顶 [MAX_CARD_WIDTH_DP]，宽屏上不摊成一条；
+     *   否则 48dp，分栏时左右可收到 24dp），上下再按可用高度的 8% 取大的那个；宽度封顶 [MAX_CARD_WIDTH_DP]，宽屏上不摊成一条；
      * - 列表在卡片里滚，条目少时下面空着，卡片的边框不随内容跳；
      * - 按键提示随宽度换繁简两版，窄窗口不折成三行。
      *
@@ -2662,12 +2663,13 @@ class ClipPanel(
             val width = MeasureSpec.getSize(widthMeasureSpec)
             val height = MeasureSpec.getSize(heightMeasureSpec)
             val insets = systemInsets()
-            // 留白按短边取：横屏时也是同一个数，四周看起来一样宽
-            val gutter = dp(context, if (px2dp(minOf(width, height)) < 480) 24f else 48f).toInt()
+            val gutterDp = PanelGeometry.gutter(px2dp(width), px2dp(height))
+            val gutter = dp(context, gutterDp).toInt()
             val availWidth = width - insets[0] - insets[2]
             val availHeight = height - insets[1] - insets[3]
-            // 有置顶、且去掉留白后放得下两栏才分栏：横屏手机、平板、展开的折叠屏；竖屏手机与副屏仍是单列
-            val split = hasPins && px2dp(availWidth - gutter * 2) >= SPLIT_MIN_DP
+            // 有置顶、且窗口放得下两栏才分栏：只看窗口宽度，不看转向 —— 横屏手机、平板竖放、展开的折叠屏、
+            // 够宽的分屏都分；竖屏手机、副屏与窄小窗仍是单列
+            val split = hasPins && PanelGeometry.columns(px2dp(availWidth))
             if (split != columns) {
                 // 测量子视图之前换好：本趟测量就按新版式来，不闪一帧旧的
                 columns = split
@@ -2675,7 +2677,7 @@ class ClipPanel(
                 refreshData(follow = true)
             }
             val maxCard = if (split || translationPage != null || speechPage != null) MAX_SPLIT_CARD_WIDTH_DP else MAX_CARD_WIDTH_DP
-            val side = maxOf(gutter, (availWidth - dp(context, maxCard).toInt()) / 2)
+            val side = dp(context, PanelGeometry.side(px2dp(availWidth), gutterDp, maxCard, split)).toInt()
             // 键盘弹出来时高度很金贵（横屏手机上只剩一百多 dp）：上下的留白收到最小，让给编辑框
             val vertical = if ((editor != null || translationInputBorrowed) && insets[4] > 0) {
                 dp(context, 12f).toInt()
@@ -2757,9 +2759,6 @@ class ClipPanel(
 
         /** 分两栏时卡片最宽多少 dp：左栏 2 份、右栏 3 份，右栏仍不超过单列时的宽度。 */
         const val MAX_SPLIT_CARD_WIDTH_DP = 960f
-
-        /** 卡片能有多宽（dp）时才分两栏：再窄右栏的两行预览就读不下一句话了。 */
-        const val SPLIT_MIN_DP = 600f
 
         /** 单列时置顶段收起后露出几条。 */
         const val PIN_PEEK = 3
