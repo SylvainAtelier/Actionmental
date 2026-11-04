@@ -47,7 +47,6 @@ import kotlinx.coroutines.CancellationException
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import androidx.annotation.RequiresApi
-import androidx.compose.ui.graphics.toArgb
 import androidx.core.graphics.ColorUtils
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -67,8 +66,6 @@ import com.actionmental.core.key.KeyPipeline
 import com.actionmental.core.key.NormalizedKeyEvent
 import com.actionmental.data.ClipHistoryStore
 import com.actionmental.data.UserSettings
-import com.actionmental.ui.theme.AmColors
-import com.actionmental.ui.theme.amColorsFor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
@@ -163,7 +160,7 @@ class ClipPanel(
     /** 以下只在主线程读写。 */
     private var root: PanelRoot? = null
     private var owner: AccessibilityService? = null
-    private var palette = Palette.of(dark = true, UserSettings.Accent.TERRACOTTA)
+    private var palette = ClipPalette.of(dark = true, UserSettings.Accent.TERRACOTTA, glass = false)
     private var pick = PickKeys.CTRL_DIGITS
     private var state = ClipPanelState()
     private var generation = 0L
@@ -222,6 +219,9 @@ class ClipPanel(
 
     /** 窗口参数留着：进出编辑页要改输入法相关的那两项。 */
     private var params: WindowManager.LayoutParams? = null
+
+    /** 窗口背后的系统模糊；没有（Android 12 以下、系统关着）时是 null，卡片实心。 */
+    private var blur: PanelBlur? = null
 
     /** 卡片与列表模式下的那几块；编辑页打开时它们收起，卡片里只剩编辑页。 */
     private lateinit var card: LinearLayout
@@ -321,7 +321,7 @@ class ClipPanel(
 
     private fun show(service: AccessibilityService) {
         val wm = service.getSystemService(WindowManager::class.java) ?: return
-        palette = Palette.of(dark(), accent())
+        palette = ClipPalette.of(dark(), accent(), glass = ClipPalette.blurAvailable(wm))
         pick = pickKeys()
         lastLoadedQuery = ""
         state = ClipPanelState()
@@ -349,6 +349,16 @@ class ClipPanel(
         }
         onShown()
         if (runCatching { wm.addView(view, params) }.isFailure) return
+        if (palette.glass) {
+            blur = PanelBlur.attach(wm, view, params, dp(service, BLUR_RADIUS_DP).toInt()) {
+                guarded("系统关了模糊，换回实心卡片") { dropGlass() }
+            }
+            // 判断与挂上之间系统刚好关了模糊：卡片随之实心
+            if (blur == null) {
+                palette = palette.opaque()
+                paintCard(view)
+            }
+        }
         view.playEnter()
         this.params = params
         root = view
@@ -383,6 +393,8 @@ class ClipPanel(
             onInputReturned()
         }
         val view = root ?: return
+        blur?.stop()
+        blur = null
         root = null
         params = null
         runCatching { owner?.getSystemService(WindowManager::class.java)?.removeViewImmediate(view) }
@@ -1308,9 +1320,7 @@ class ClipPanel(
         if (page.inserting || speechPage !== page) return
         returnSpeechInput(page)
         page.inserting = true
-        host.visibility = View.INVISIBLE
-        lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-        owner?.getSystemService(WindowManager::class.java)?.updateViewLayout(host, lp)
+        stepAside(host, lp)
         host.postDelayed({
             if (root !== host || speechPage !== page) return@postDelayed
             scope.launch {
@@ -1360,9 +1370,7 @@ class ClipPanel(
     private fun requestMic(done: (Boolean) -> Unit) {
         val host = root ?: return done(false)
         val lp = params ?: return done(false)
-        host.visibility = View.INVISIBLE
-        lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-        owner?.getSystemService(WindowManager::class.java)?.updateViewLayout(host, lp)
+        stepAside(host, lp)
         val started = runCatching {
             MicPermissionActivity.request(host.context) { granted ->
                 main.post {
@@ -1566,9 +1574,7 @@ class ClipPanel(
         page.error = null
         page.refresh()
         val token = ++translationRequest
-        host.visibility = View.INVISIBLE
-        lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-        owner?.getSystemService(WindowManager::class.java)?.updateViewLayout(host, lp)
+        stepAside(host, lp)
         host.postDelayed({
             if (root !== host || translationPage !== page || token != translationRequest) return@postDelayed
             translationJob = scope.launch {
@@ -1589,12 +1595,43 @@ class ClipPanel(
         }, 80L)
     }
 
+    /**
+     * 让开：窗口隐身、不拿焦点，底下的窗口（原输入框、系统权限框）才接得到焦点、看得清。
+     * 背后的模糊一起撤掉，不然整屏还糊着。由 [restoreTranslationWindow] 恢复。
+     */
+    private fun stepAside(host: View, lp: WindowManager.LayoutParams) {
+        host.visibility = View.INVISIBLE
+        lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        blur?.show(false)
+        owner?.getSystemService(WindowManager::class.java)?.updateViewLayout(host, lp)
+    }
+
     private fun restoreTranslationWindow() {
         val host = root ?: return
         val lp = params ?: return
         lp.flags = lp.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+        blur?.show(true)
         owner?.getSystemService(WindowManager::class.java)?.updateViewLayout(host, lp)
         host.visibility = View.VISIBLE
+    }
+
+    /** 面板开着时系统收回了模糊：背后的内容变清晰，半透明的卡片会透出底下的字，换回实心。 */
+    private fun dropGlass() {
+        val view = root ?: return
+        val lp = params ?: return
+        blur?.stop()
+        blur = null
+        palette = palette.opaque()
+        owner?.getSystemService(WindowManager::class.java)?.updateViewLayout(view, lp)
+        paintCard(view)
+    }
+
+    /** 卡片与遮罩跟着 [palette] 的材质走：玻璃卡片不投影，见 [ClipPalette.card]。 */
+    private fun paintCard(host: View) {
+        val context = host.context
+        host.setBackgroundColor(palette.backdrop)
+        card.background = palette.card(dp(context, 24f), dp(context, 1f).toInt())
+        card.elevation = if (palette.glass) 0f else dp(context, 24f)
     }
 
     private fun loadTranslationHistory(page: ClipTranslatePage) {
@@ -2555,12 +2592,6 @@ class ClipPanel(
         card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(pad - dp(context, 4f).toInt(), pad, pad - dp(context, 4f).toInt(), pad - dp(context, 2f).toInt())
-            background = GradientDrawable().apply {
-                cornerRadius = dp(context, 24f)
-                setColor(palette.surface)
-                setStroke(dp(context, 1f).toInt(), palette.line)
-            }
-            elevation = dp(context, 24f)
             // 吃掉卡片上的点击，免得穿到背景上把面板关了
             isClickable = true
             addView(header)
@@ -2573,7 +2604,7 @@ class ClipPanel(
         }
         browseViews = listOf(header, quickBar, queryView, lists, emptyView, hint)
         return PanelRoot(context, card, hint).apply {
-            setBackgroundColor(palette.backdrop)
+            paintCard(this)
             // 点卡片外面关闭：面板是模态的，底下的应用此刻本来就点不到。
             // 编辑页开着时只当是「返回」：手一滑点到外面，不该把没保存的修改一起关掉
             setOnClickListener {
@@ -2760,6 +2791,9 @@ class ClipPanel(
         /** 分两栏时卡片最宽多少 dp：左栏 2 份、右栏 3 份，右栏仍不超过单列时的宽度。 */
         const val MAX_SPLIT_CARD_WIDTH_DP = 960f
 
+        /** 背后模糊的半径：糊到认不出字、又还看得出底下是什么颜色的界面。 */
+        const val BLUR_RADIUS_DP = 32f
+
         /** 单列时置顶段收起后露出几条。 */
         const val PIN_PEEK = 3
 
@@ -2776,44 +2810,6 @@ class ClipPanel(
         const val TYPE_ENTRY = 0
         const val TYPE_LABEL = 1
         const val TYPE_TOGGLE = 2
-    }
-
-    /**
-     * 面板的配色，取应用自己的设计令牌（[amColorsFor]，跟着用户选的强调色），不另起一套色值。
-     *
-     * 当前项要一眼认得出，靠的是三样东西叠在一起，而不是一块淡色：
-     * 强调色调过的底（浅色 14%、深色 24%，深色底上同样的透明度显得更暗，所以加量）、
-     * 左侧 3dp 的强调条、实心强调色的序号角标。三者任一种在色弱或强光下失效，另外两种仍然看得出。
-     * 「淡」一档用 inkMuted 而不是 inkFaint：浅色下 inkFaint 落在白底上几乎看不见。
-     */
-    private class Palette(c: AmColors, val dark: Boolean) {
-        val surface = c.surface.toArgb()
-        val field = c.surfaceSunken.toArgb()
-        val line = c.line.toArgb()
-        val ink = c.ink.toArgb()
-        val mid = c.inkMid.toArgb()
-        val faint = c.inkMuted.toArgb()
-        val accent = c.accent.toArgb()
-        val emphasis = c.accentInk.toArgb()
-        val error = amColorsFor(dark, UserSettings.Accent.TERRACOTTA).accentInk.toArgb()
-        val onAccent = Color.WHITE
-
-        /** 主按钮与应用里的 AmPrimaryButton 一致：墨色面、底色字、3dp 硬阴影。两种主题下对比度都在 12:1 以上。 */
-        val primary = ink
-        val onPrimary = c.bgScreen.toArgb()
-        val shadow = c.shadowSolid.toArgb()
-
-        /** 快捷操作图标的底：强调色淡淡一层。 */
-        val accentSoft = ColorUtils.blendARGB(surface, accent, if (dark) 0.26f else 0.14f)
-        val selected = ColorUtils.blendARGB(surface, accent, if (dark) 0.24f else 0.14f)
-        val ripple = ColorUtils.setAlphaComponent(accent, if (dark) 0x40 else 0x2E)
-
-        /** 背后的遮罩：浅色下压得轻一点，否则整屏发灰。 */
-        val backdrop = if (dark) 0x73000000 else 0x33000000
-
-        companion object {
-            fun of(dark: Boolean, accent: UserSettings.Accent): Palette = Palette(amColorsFor(dark, accent), dark)
-        }
     }
 }
 
