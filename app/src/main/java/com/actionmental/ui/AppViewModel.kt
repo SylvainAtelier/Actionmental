@@ -13,7 +13,9 @@ import com.actionmental.core.hardening.HealOutcome
 import com.actionmental.core.hardening.HealTrigger
 import com.actionmental.core.rotation.AppRotationRule
 import com.actionmental.core.rotation.OrientationCompatTarget
+import com.actionmental.core.rotation.Panel
 import com.actionmental.core.rotation.RotationMode
+import com.actionmental.core.rotation.edit
 import com.actionmental.core.shortcut.Shortcut
 import com.actionmental.data.UserSettings
 import com.actionmental.platform.PackageBackend
@@ -444,6 +446,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (blockedWhilePaused()) return@launch
         report(graph.rotation.setGlobal(mode))
     }
+
+    /** 折叠屏此刻用的是哪块屏；直板机上一直是 null。 */
+    val currentPanel = graph.screenWatch.panel
+    val foldable: Boolean get() = graph.screenWatch.foldable
+
+    /** 方向页选中的那块屏：正在用的就是改全局方向；另一块只记下，切过去时生效。 */
+    fun setScreenMode(panel: Panel, mode: RotationMode) {
+        if (graph.screenWatch.panel.value?.sameScreen(panel) == true) setRotation(mode)
+        else updateSettings { s -> s.copy(screens = s.screens.edit(panel) { it.copy(mode = mode) }) }
+    }
+
+    fun setScreenAppRules(panel: Panel, on: Boolean) =
+        updateSettings { s -> s.copy(screens = s.screens.edit(panel) { it.copy(appRules = on) }) }
 
     fun toggleLandscape() = viewModelScope.launch {
         if (blockedWhilePaused()) return@launch

@@ -57,7 +57,7 @@ class ActionExecutor(
         is Action.OpenUrl -> packages.openUrl(action.url)
         is Action.Rotation -> when (action.op) {
             Action.Rotation.Op.SET -> rotation.toggle(action.mode)
-            Action.Rotation.Op.RESTORE -> rotation.setGlobal(com.actionmental.core.rotation.RotationMode.NORMAL)
+            Action.Rotation.Op.RESTORE -> rotation.restore()
             Action.Rotation.Op.TOGGLE_LANDSCAPE -> rotation.toggleLandscape()
             Action.Rotation.Op.CYCLE -> rotation.cycle()
         }

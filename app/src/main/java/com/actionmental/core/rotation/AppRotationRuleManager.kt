@@ -23,6 +23,8 @@ class AppRotationRuleManager(
     private val settings: SettingsRepository,
     private val controller: RotationController,
     foregroundPackage: StateFlow<String?>,
+    /** 此刻在哪块屏上（折叠屏）；null 表示不分屏。 */
+    panel: StateFlow<Panel?>,
 ) {
     private val _activeRule = MutableStateFlow<AppRotationRule?>(null)
     val activeRule: StateFlow<AppRotationRule?> = _activeRule.asStateFlow()
@@ -35,11 +37,13 @@ class AppRotationRuleManager(
                 foregroundPackage,
                 rules.rules,
                 settings.settings,
-            ) { pkg, list, config ->
+                panel,
+            ) { pkg, list, config, screen ->
                 // 暂停期间规则一律不成立：前台包在这时本来也不再更新，
                 // 但设置刚被切到暂停的那一刻，这条流会再发一次 —— 必须让它算出 null，
-                // 把已经压着的 override 撤掉。
-                val rule = if (config.paused || !config.appRulesEnabled || pkg == null) null
+                // 把已经压着的 override 撤掉。这块屏不套应用规则时同理。
+                val here = screen?.let { config.screens.profileOf(it) }?.appRules ?: true
+                val rule = if (config.paused || !config.appRulesEnabled || !here || pkg == null) null
                 else list.firstOrNull { it.packageName == pkg && it.enabled }
                 pkg to rule
             }

@@ -127,12 +127,16 @@ Shizuku 是唯一能「向系统注入任意按键」「执行 `cmd window`」�
 读不到），仍然转不过去就撤掉窗口、退到锁定并如实提示 —— 留着它回读会谎报「已强制」。
 悬浮层随服务实例作废，服务重绑、Shizuku 来去时 `RotationController.reapplyAsync()` 按意图重新落一次。
 
-折叠屏内外屏各记方向（`coverScreenPortrait`，默认关）：`CoverScreenWatch` 只在开关打开时监听 display 0，
-按 `Display.Mode` 物理尺寸认「换到了另一块面板」（`PanelSwitchDetector`），亮屏且解锁、再稳 1s 后
-记下旧屏的全局意图（`panelRotations`），换成新屏上一次的方向；没见过的屏只有「更小、长宽比不同」
-才落到 0°（`PanelSwitch.target`，不用 600dp 一类绝对阈值 —— Flip 的内屏本身就在阈值以下）。
-全局意图属于哪块屏落盘在 `lastPanel`，进程重启后接着认；开关关掉时清空。走 `setGlobal`：
-应用规则照旧优先，暂停期间只记账不动方向，每次换屏只落一次。
+折叠屏按屏配置（`UserSettings.screens`，有铰链角度传感器即启用）：`ScreenWatch` 监听 display 0，
+按 `Display.Mode` 物理尺寸认出背后是哪块面板（同一块屏按长宽比认，切分辨率不算换屏），一变就叫
+`AppGraph.onScreen`，不等亮屏或解锁。每块屏一份 `ScreenProfile`（方向 + 是否套用应用规则）；
+当前屏的方向与 `globalRotationMode` 在 `persistGlobalMode` 的同一次写盘里更新，换屏时只读新屏那份、
+意图先落盘再 `setGlobal`（旋转闸门关着时放开那一刻照它写）。没见过的屏若比已知的更小、长宽比又不同，
+就是外屏：默认 0° 竖屏、不套应用规则（不用 600dp 一类绝对阈值 —— Flip 的内屏本身就在阈值以下）。
+`AppRotationRuleManager` 在不套规则的屏上把规则算成 null。方向页顶部的选屏器决定下面的角度与开关作用于哪块屏。
+
+快捷键、剪贴板面板的快捷按钮与磁贴走 `RotationController.setActive`：前台应用的规则正压着时，
+改的是规则那一层，只到前台应用换掉为止，规则与屏幕配置都不动；否则就是 `setGlobal`。
 
 **映射（`KeyOutput` / `KeyRouting`）**
 

@@ -171,4 +171,40 @@ class RotationReassertTest {
         assertNull(probe.sourcePackage)
         assertFalse(probe.pulledAway(expected = 3))
     }
+
+    @Test
+    fun `应用规则压着时快捷键临时改规则那一层 不动全局意图`() = runBlocking {
+        val shell = FakeShell()
+        val persisted = mutableListOf<RotationMode>()
+        val c = RotationController(
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            backend = { shell },
+            settings = { key -> shell.table[key] },
+            persistGlobalMode = { persisted += it },
+        ).also { it.setPaused(false) }
+        c.setGlobal(RotationMode.FORCE_PORTRAIT)
+        c.setOverride(RotationMode.FORCE_LANDSCAPE)
+        assertEquals(1, shell.table["user_rotation"])
+
+        val result = c.toggle(RotationMode.FORCE_REVERSE_LANDSCAPE)
+        assertTrue(result.succeeded)
+        assertTrue(result.message.contains("临时"))
+        // 屏幕立刻转过去，全局意图（屏幕配置）没被改
+        assertEquals(3, shell.table["user_rotation"])
+        assertEquals(RotationMode.FORCE_PORTRAIT, c.globalMode)
+        assertEquals(listOf(RotationMode.FORCE_PORTRAIT), persisted)
+
+        // 离开应用：规则管理器撤掉 override，回到全局意图
+        c.setOverride(null)
+        assertEquals(0, shell.table["user_rotation"])
+    }
+
+    @Test
+    fun `没有应用规则时快捷键改的是全局意图`() = runBlocking {
+        val shell = FakeShell()
+        val c = controller(shell)
+        c.setGlobal(RotationMode.FORCE_PORTRAIT)
+        assertTrue(c.cycle().succeeded)
+        assertEquals(RotationMode.NORMAL, c.globalMode)
+    }
 }

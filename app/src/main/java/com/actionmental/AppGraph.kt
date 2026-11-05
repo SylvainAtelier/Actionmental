@@ -40,9 +40,12 @@ import com.actionmental.core.remap.KeyRemapMatcher
 import com.actionmental.core.rotation.AppOverrideController
 import com.actionmental.core.rotation.AppRotationRuleManager
 import com.actionmental.core.rotation.OrientationCompatKeeper
-import com.actionmental.core.rotation.PanelSwitch
+import com.actionmental.core.rotation.Panel
 import com.actionmental.core.rotation.RotationController
 import com.actionmental.core.rotation.RotationMode
+import com.actionmental.core.rotation.ScreenProfile
+import com.actionmental.core.rotation.edit
+import com.actionmental.core.rotation.observe
 import com.actionmental.core.shortcut.DesktopName
 import com.actionmental.core.shortcut.Shortcut
 import com.actionmental.core.shortcut.ShortcutMatcher
@@ -68,7 +71,6 @@ import com.actionmental.platform.SpeechPreferences
 import com.actionmental.platform.SpeechServices
 import com.actionmental.platform.ClipboardWriter
 import com.actionmental.platform.ConfigBackupFile
-import com.actionmental.platform.CoverScreenWatch
 import com.actionmental.platform.AudioBackend
 import com.actionmental.platform.DesktopShortcuts
 import com.actionmental.platform.HardeningNotifier
@@ -81,6 +83,7 @@ import com.actionmental.platform.OverlayRotationBackend
 import com.actionmental.platform.PackageBackend
 import com.actionmental.platform.ScreenAwakeBackend
 import com.actionmental.platform.ScreenAwakeNotifier
+import com.actionmental.platform.ScreenWatch
 import com.actionmental.platform.SettingsFirstBackend
 import com.actionmental.platform.SettingsReader
 import com.actionmental.platform.SystemSettingsAccess
@@ -101,6 +104,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -374,11 +378,26 @@ class AppGraph private constructor(context: Context) {
     /** 同一件事的第二条出口：应用不在前台时，只有通知栏能当场说清楚。 */
     val notifier = HardeningNotifier(context)
 
+    /** 折叠屏此刻用的是哪块屏。换屏见 [onScreen]，每块屏的配置见 [com.actionmental.data.UserSettings.screens]。 */
+    val screenWatch = ScreenWatch(context) { panel, inches -> sightings.trySend(panel to inches) }
+
+    /** 换屏一条一条按顺序处理，积压时只留最新那块：快速开合时最后落下的必须是手上这块屏的方向。 */
+    private val sightings = Channel<Pair<Panel, Float?>>(Channel.CONFLATED)
+
     val rotation = RotationController(
         scope = scope,
         backend = { rotationBackend },
         settings = settingsReader,
-        persistGlobalMode = { mode -> settingsRepository.update { it.copy(globalRotationMode = mode) } },
+        // 全局意图就是当前这块屏的方向：同一次写盘一起改，换屏时只读不补记
+        persistGlobalMode = { mode ->
+            settingsRepository.update { s ->
+                val here = screenWatch.panel.value
+                s.copy(
+                    globalRotationMode = mode,
+                    screens = if (here == null) s.screens else s.screens.edit(here) { it.copy(mode = mode) },
+                )
+            }
+        },
         // Shizuku 不在时：无障碍悬浮层压方向，系统设置锁角度
         local = OverlayRotationBackend(context, accessibility::boundService, settingsAccess),
         // 「被要求设置旋转」与「真的写下去了」是两个数。去重到底省掉了多少，只看得见这一对
@@ -392,8 +411,6 @@ class AppGraph private constructor(context: Context) {
         },
     )
 
-    /** 折叠屏换了一块屏并用起来了。开关见 [com.actionmental.data.UserSettings.coverScreenPortrait]。 */
-    private val coverScreen = CoverScreenWatch(context) { scope.launch { onPanelSwitch(it) } }
 
     /**
      * 屏幕常亮。
@@ -773,6 +790,7 @@ class AppGraph private constructor(context: Context) {
         settings = settingsRepository,
         controller = rotation,
         foregroundPackage = accessibility.foregroundPackage,
+        panel = screenWatch.panel,
     )
 
     /** 界面在不在前台。纯诊断用，写进体征日志的运行画像里。 */
@@ -925,8 +943,6 @@ class AppGraph private constructor(context: Context) {
             if (intent?.action == Intent.ACTION_USER_PRESENT) {
                 unlocked.value = true
                 scope.launch { clipCapture.catchUp() }
-                // 合上后停在锁屏上，解锁这一下才算在外屏上用起来；解锁不会让屏幕报变化
-                coverScreen.check()
             }
             // 没设锁屏的机器亮屏即可用，收不到 USER_PRESENT 也要把按钮放出来
             if (intent?.action == Intent.ACTION_SCREEN_ON &&
@@ -1010,39 +1026,34 @@ class AppGraph private constructor(context: Context) {
     }
 
     /**
-     * 折叠屏换了一块屏、并且用起来了：记下旧屏的全局方向，换成新屏该用的那个（[PanelSwitch.target]）。
+     * 折叠屏换到了 [panel]（进程起来后的第一次取样也算）：把它记进屏幕表，换成它的方向。
      *
-     * 走 [RotationController.setGlobal]，与在方向页点角度完全同一条路：意图落盘、按事实去重、
-     * 写完回读。应用规则照旧压在它上面 —— 前台应用有自己的规则时以规则为准。
-     * 暂停期间照样记账，只是不动方向：暂停的承诺是不改屏幕旋转。
+     * 意图先落盘：暂停期间、或进程刚起来旋转闸门还没放开时写不下去，放开那一刻
+     * 按的也已经是这块屏的方向。方向相同也要按事实核对一次 —— 忽略方向请求的开关是按屏存的，
+     * 换到的那块屏上未必开着。走 [RotationController.setGlobal]，与在方向页点角度同一条路；
+     * 这块屏套用应用规则时，前台应用的规则照旧压在上面。
      */
-    private suspend fun onPanelSwitch(switch: PanelSwitch) {
-        val settings = settingsRepository.load()
-        if (!settings.coverScreenPortrait) return
-        val from = rotation.globalMode
-        val target = switch.target(settings.panelRotations)
+    private suspend fun onScreen(panel: Panel, inches: Float?) {
+        lateinit var profile: ScreenProfile
+        var from = RotationMode.NORMAL
         settingsRepository.update { s ->
-            s.copy(
-                lastPanel = switch.to,
-                panelRotations = switch.from?.let { s.panelRotations + (it.key to from) } ?: s.panelRotations,
-            )
+            val (screens, seen) = s.screens.observe(panel, inches, s.globalRotationMode)
+            profile = seen
+            from = s.globalRotationMode
+            s.copy(screens = screens, globalRotationMode = seen.mode)
         }
-        val message = "换屏 " + (switch.from?.key ?: "?") + " → " + switch.to.key
-        if (target == null || target == from) {
-            eventLog.debug("rotation", message + " · 方向不动", "全局意图=" + from.label)
-            return
-        }
-        if (pausedNow) {
-            eventLog.debug("rotation", message + " · 暂停中，不改方向", "全局意图=" + from.label)
+        val message = "换屏 " + panel.short + "×" + panel.long + " · 全局方向 " + from.label + " → " + profile.mode.label
+        // 闸门还关着（暂停中，或冷启动尚未确认没暂停）：意图已落盘，放开那一刻照它写
+        if (rotation.paused) {
+            eventLog.debug("rotation", message + " · 旋转闸门关着，只记下意图")
             return
         }
         // 换了一块屏，上一次看到的系统状态不再当真
         rotation.invalidateObservedState()
-        val result = rotation.setGlobal(target)
-        val change = message + " · 全局方向 " + from.label + " → " + target.label
+        val result = rotation.setGlobal(profile.mode)
         val detail = "前台=" + (accessibility.foregroundPackage.value ?: "?") + " · " + result.message
-        if (result is ActionResult.Failed) eventLog.warn("rotation", change + " 失败", detail)
-        else eventLog.info("rotation", change, detail)
+        if (result is ActionResult.Failed) eventLog.warn("rotation", message + " 失败", detail)
+        else eventLog.info("rotation", message, detail)
     }
 
     private fun onDevicesChanged() {
@@ -1243,17 +1254,8 @@ class AppGraph private constructor(context: Context) {
         }
         scope.launch { rotation.refresh() }
 
-        // 换屏的监听只在开关打开时挂着：每次转屏、亮灭屏 display 0 都会报一次变化。
-        // 按盘上的值走：settings 刚起来时给的是默认值（关），不能拿它去清 lastPanel
-        scope.launch {
-            settingsRepository.settings.map { it.coverScreenPortrait }.distinctUntilChanged().collect {
-                val settings = settingsRepository.load()
-                if (!settings.coverScreenPortrait && settings.lastPanel != null) {
-                    settingsRepository.update { it.copy(lastPanel = null) }
-                }
-                coverScreen.setEnabled(settings.coverScreenPortrait, settings.lastPanel)
-            }
-        }
+        scope.launch { for ((panel, inches) in sightings) onScreen(panel, inches) }
+        screenWatch.start()
 
         // 唤醒锁随进程消失，所以「上次开着常亮」只能靠盘上的意图重建。
         // 用 load() 而不是订阅 settings：这里只要开机那一次，

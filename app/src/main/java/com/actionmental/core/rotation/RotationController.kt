@@ -128,7 +128,8 @@ class RotationController(
      * 由 [com.actionmental.AppGraph] 在暂停状态落定后放开。
      */
     @Volatile
-    private var paused = true
+    var paused = true
+        private set
 
     /**
      * 进 / 出暂停。
@@ -256,6 +257,24 @@ class RotationController(
         return applyEffective()
     }
 
+    /**
+     * 快捷键 / 磁贴 / 剪贴板面板按钮：改此刻决定屏幕的那一层。
+     *
+     * 前台应用有规则时，规则压着全局意图 —— 只改全局，屏幕纹丝不动，按了像没按。
+     * 这时改的是规则那一层，而且只到前台应用换掉为止：规则管理器在那一刻按规则重新压一次，
+     * 规则本身与屏幕配置都不动。用户明确按下的那一下要立刻看得到，但不悄悄改长期配置。
+     */
+    private suspend fun setActive(mode: RotationMode): ActionResult {
+        if (paused) return pausedResult()
+        if (override == null) return setGlobal(mode)
+        override = mode
+        val result = applyEffective()
+        return if (result is ActionResult.Ok) ActionResult.Ok(joinDetail("临时 · 离开应用后恢复", result.detail)) else result
+    }
+
+    /** 快捷键的「恢复系统默认旋转」。 */
+    suspend fun restore(): ActionResult = setActive(RotationMode.NORMAL)
+
     /** 磁贴与快捷键的「切换强制横屏」。基于真实状态判断，而不是本地 boolean。 */
     suspend fun toggleLandscape(): ActionResult {
         if (paused) return pausedResult()
@@ -263,7 +282,7 @@ class RotationController(
         if (!current.writable) return notWritable(current)
         val target = if (current.mode == RotationMode.FORCE_LANDSCAPE) RotationMode.NORMAL
         else RotationMode.FORCE_LANDSCAPE
-        return withTransition(current.mode, target, setGlobal(target))
+        return withTransition(current.mode, target, setActive(target))
     }
 
     /** 快捷键切换指定方向；再次触发当前方向时撤销强制方向并回到竖屏锁定。 */
@@ -272,7 +291,7 @@ class RotationController(
         val current = refresh()
         if (!current.writable) return notWritable(current)
         val target = RotationMode.toggleTarget(current.mode, mode)
-        return withTransition(current.mode, target, setGlobal(target))
+        return withTransition(current.mode, target, setActive(target))
     }
 
     /**
@@ -283,7 +302,7 @@ class RotationController(
      */
     private fun withTransition(from: RotationMode, to: RotationMode, result: ActionResult): ActionResult =
         if (result is ActionResult.Ok) {
-            ActionResult.Ok(from.label + " → " + to.label + if (result.detail.isBlank()) "" else " · " + result.detail)
+            ActionResult.Ok(joinDetail(from.label + " → " + to.label, result.detail))
         } else {
             result
         }
@@ -298,8 +317,11 @@ class RotationController(
             RotationMode.FORCE_LANDSCAPE -> RotationMode.FORCE_PORTRAIT
             else -> RotationMode.NORMAL
         }
-        return setGlobal(next)
+        return withTransition(current.mode, next, setActive(next))
     }
+
+    private fun joinDetail(head: String, detail: String): String =
+        if (detail.isBlank()) head else "$head · $detail"
 
     private fun effectiveMode(): RotationMode = override ?: globalMode
 
