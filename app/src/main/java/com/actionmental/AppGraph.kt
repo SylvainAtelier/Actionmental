@@ -40,6 +40,7 @@ import com.actionmental.core.remap.KeyRemapMatcher
 import com.actionmental.core.rotation.AppOverrideController
 import com.actionmental.core.rotation.AppRotationRuleManager
 import com.actionmental.core.rotation.OrientationCompatKeeper
+import com.actionmental.core.rotation.PanelSwitch
 import com.actionmental.core.rotation.RotationController
 import com.actionmental.core.rotation.RotationMode
 import com.actionmental.core.shortcut.DesktopName
@@ -391,8 +392,8 @@ class AppGraph private constructor(context: Context) {
         },
     )
 
-    /** 折叠屏合上、在外屏上继续用。开关见 [com.actionmental.data.UserSettings.coverScreenPortrait]。 */
-    private val coverScreen = CoverScreenWatch(context) { scope.launch { onEnterCoverScreen() } }
+    /** 折叠屏换了一块屏并用起来了。开关见 [com.actionmental.data.UserSettings.coverScreenPortrait]。 */
+    private val coverScreen = CoverScreenWatch(context) { scope.launch { onPanelSwitch(it) } }
 
     /**
      * 屏幕常亮。
@@ -1009,26 +1010,39 @@ class AppGraph private constructor(context: Context) {
     }
 
     /**
-     * 合上折叠屏、在外屏上用起来了：把全局意图改回 0° 竖屏。
+     * 折叠屏换了一块屏、并且用起来了：记下旧屏的全局方向，换成新屏该用的那个（[PanelSwitch.target]）。
      *
-     * 走 [RotationController.setGlobal]，与在方向页点 0° 完全同一条路：意图落盘、按事实去重、
+     * 走 [RotationController.setGlobal]，与在方向页点角度完全同一条路：意图落盘、按事实去重、
      * 写完回读。应用规则照旧压在它上面 —— 前台应用有自己的规则时以规则为准。
-     * 暂停期间不动：暂停的承诺是不改屏幕旋转。
+     * 暂停期间照样记账，只是不动方向：暂停的承诺是不改屏幕旋转。
      */
-    private suspend fun onEnterCoverScreen() {
-        if (!settingsRepository.load().coverScreenPortrait) return
+    private suspend fun onPanelSwitch(switch: PanelSwitch) {
+        val settings = settingsRepository.load()
+        if (!settings.coverScreenPortrait) return
         val from = rotation.globalMode
+        val target = switch.target(settings.panelRotations)
+        settingsRepository.update { s ->
+            s.copy(
+                lastPanel = switch.to,
+                panelRotations = switch.from?.let { s.panelRotations + (it.key to from) } ?: s.panelRotations,
+            )
+        }
+        val message = "换屏 " + (switch.from?.key ?: "?") + " → " + switch.to.key
+        if (target == null || target == from) {
+            eventLog.debug("rotation", message + " · 方向不动", "全局意图=" + from.label)
+            return
+        }
         if (pausedNow) {
-            eventLog.debug("rotation", "切到外屏 · 暂停中，不改方向", "全局意图=" + from.label)
+            eventLog.debug("rotation", message + " · 暂停中，不改方向", "全局意图=" + from.label)
             return
         }
         // 换了一块屏，上一次看到的系统状态不再当真
         rotation.invalidateObservedState()
-        val result = rotation.setGlobal(RotationMode.FORCE_PORTRAIT)
-        val message = "切到外屏 · 全局方向 " + from.label + " → " + RotationMode.FORCE_PORTRAIT.label
+        val result = rotation.setGlobal(target)
+        val change = message + " · 全局方向 " + from.label + " → " + target.label
         val detail = "前台=" + (accessibility.foregroundPackage.value ?: "?") + " · " + result.message
-        if (result is ActionResult.Failed) eventLog.warn("rotation", message + " 失败", detail)
-        else eventLog.info("rotation", message, detail)
+        if (result is ActionResult.Failed) eventLog.warn("rotation", change + " 失败", detail)
+        else eventLog.info("rotation", change, detail)
     }
 
     private fun onDevicesChanged() {
@@ -1229,10 +1243,15 @@ class AppGraph private constructor(context: Context) {
         }
         scope.launch { rotation.refresh() }
 
-        // 外屏回 0° 的监听只在开关打开时挂着：每次转屏、亮灭屏 display 0 都会报一次变化
+        // 换屏的监听只在开关打开时挂着：每次转屏、亮灭屏 display 0 都会报一次变化。
+        // 按盘上的值走：settings 刚起来时给的是默认值（关），不能拿它去清 lastPanel
         scope.launch {
             settingsRepository.settings.map { it.coverScreenPortrait }.distinctUntilChanged().collect {
-                coverScreen.setEnabled(it)
+                val settings = settingsRepository.load()
+                if (!settings.coverScreenPortrait && settings.lastPanel != null) {
+                    settingsRepository.update { it.copy(lastPanel = null) }
+                }
+                coverScreen.setEnabled(settings.coverScreenPortrait, settings.lastPanel)
             }
         }
 

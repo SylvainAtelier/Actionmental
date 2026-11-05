@@ -148,10 +148,10 @@ private fun RotationControlSection(vm: AppViewModel, modifier: Modifier = Modifi
         AmCard(Modifier.fillMaxWidth()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("折叠屏外屏回到 0°", style = AmType.body, color = c.ink)
+                    Text("折叠屏内外屏各记方向", style = AmType.body, color = c.ink)
                     Text(
-                        if (settings.coverScreenPortrait) "已启用 · 合上后在外屏继续使用时改为 0° 竖屏"
-                        else "未启用 · 合上折叠屏时方向保持不变",
+                        if (settings.coverScreenPortrait) "已启用 · 换屏后恢复这块屏上次的方向，外屏初次为 0° 竖屏"
+                        else "未启用 · 合上或展开折叠屏时方向保持不变",
                         style = AmType.data,
                         color = c.inkFaint,
                     )
@@ -159,14 +159,13 @@ private fun RotationControlSection(vm: AppViewModel, modifier: Modifier = Modifi
                 AmSwitch(
                     settings.coverScreenPortrait,
                     onCheckedChange = { on -> vm.updateSettings { it.copy(coverScreenPortrait = on) } },
-                    label = "折叠屏外屏回到 0°",
+                    label = "折叠屏内外屏各记方向",
                 )
             }
             if (settings.coverScreenPortrait) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "改的是全局方向本身，展开后不会自动回到原来的角度；前台应用有自己的规则时以规则为准。" +
-                        "进程启动时已经在外屏上的，要展开再合上一次才认得出。",
+                    "改的是全局方向本身，在哪块屏上转过方向就记在哪块屏上；前台应用有自己的规则时以规则为准。",
                     style = AmType.secondary,
                     color = c.inkMid,
                 )

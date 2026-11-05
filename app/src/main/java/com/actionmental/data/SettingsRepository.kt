@@ -26,13 +26,21 @@ data class UserSettings(
     val globalRotationMode: RotationMode = RotationMode.NORMAL,
     val appRulesEnabled: Boolean = true,
     /**
-     * 折叠屏合上、在外屏上继续用时，把 [globalRotationMode] 改回 0° 竖屏。
+     * 折叠屏的内外屏各自记住 [globalRotationMode]，换屏并用起来时换成那块屏上一次的方向；
+     * 没见过的外屏落到 0° 竖屏。
      *
      * 内屏配着键盘强制横屏，合上之后窄长的外屏也跟着横过来，几乎没法用。
-     * 改的是全局意图本身（等同于在方向页点 0°），展开后不会自动回到横屏。
-     * 默认关闭：它会替用户改掉一个明确设过的方向。
+     * 改的是全局意图本身（等同于在方向页点那个角度）。
+     * 默认关闭：它会替用户改掉一个明确设过的方向。字段名沿用最早只回 0° 时的叫法。
      */
     val coverScreenPortrait: Boolean = false,
+    /** 每块屏离开时的全局方向，键是 [com.actionmental.core.rotation.Panel.key]。关掉开关也保留。 */
+    val panelRotations: Map<String, RotationMode> = emptyMap(),
+    /**
+     * 全局方向此刻属于哪块屏，跨进程重启接续换屏判定。
+     * 开关关着时没人看着换屏，关掉就清空，免得下次打开把旧屏的方向记到别的屏头上。
+     */
+    val lastPanel: com.actionmental.core.rotation.Panel? = null,
     /**
      * 屏幕常亮的意图。
      *
