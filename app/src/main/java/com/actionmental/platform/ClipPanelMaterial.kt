@@ -74,11 +74,16 @@ internal class ClipPalette private constructor(private val colors: AmColors, val
     fun opaque() = ClipPalette(colors, dark, glass = false)
 
     companion object {
-        /** 玻璃卡片的不透明度，与遮罩成对取值；改任何一个都要让 ClipGlassContrastTest 通过。 */
-        const val LIGHT_GLASS_ALPHA = 0xE0
-        const val DARK_GLASS_ALPHA = 0xDB
-        const val LIGHT_GLASS_SCRIM = 0x4DFFFFFF
-        const val DARK_GLASS_SCRIM = 0x66000000
+        /**
+         * 玻璃卡片的不透明度，与遮罩成对取值；改任何一个都要让 ClipGlassContrastTest 通过。
+         *
+         * 卡片连同它底下那层遮罩，合起来的不透明度被可读性钉在九成左右，遮罩轻了卡片就得补上。
+         * 所以遮罩取得很轻，让卡片四周的背景尽量透；卡片自己贴着对比度下限取值。
+         */
+        const val LIGHT_GLASS_ALPHA = 0xE4
+        const val DARK_GLASS_ALPHA = 0xE1
+        const val LIGHT_GLASS_SCRIM = 0x1AFFFFFF
+        const val DARK_GLASS_SCRIM = 0x33000000
 
         fun of(dark: Boolean, accent: UserSettings.Accent, glass: Boolean): ClipPalette =
             ClipPalette(amColorsFor(dark, accent), dark, glass)

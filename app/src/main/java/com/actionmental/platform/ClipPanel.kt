@@ -2792,7 +2792,7 @@ class ClipPanel(
         const val MAX_SPLIT_CARD_WIDTH_DP = 960f
 
         /** 背后模糊的半径：糊到认不出字、又还看得出底下是什么颜色的界面。 */
-        const val BLUR_RADIUS_DP = 32f
+        const val BLUR_RADIUS_DP = 24f
 
         /** 单列时置顶段收起后露出几条。 */
         const val PIN_PEEK = 3
