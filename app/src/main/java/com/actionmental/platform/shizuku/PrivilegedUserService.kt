@@ -21,6 +21,10 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
         const val MODE_ASYNC = 0
     }
 
+    init {
+        runCatching { killStaleInstances() }
+    }
+
     /** 解析一次就固定下来：按键注入在按键路径上，不能每次都做反射查找。 */
     private val injector: ((KeyEvent) -> Boolean)? by lazy { resolveInjector() }
 
@@ -181,6 +185,39 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
     override fun stopAdbPairing() {
         runCatching { adbManager.javaClass.getMethod("disablePairing").invoke(adbManager) }
     }
+
+    /**
+     * 清掉上一代留下的特权进程。
+     *
+     * Shizuku 的 ServiceStarter 只在局部变量里持有服务端 binder 就 linkToDeath，
+     * BinderProxy 被 GC 后死亡通知随之解除 —— 服务端被系统查杀重启后旧进程收不到通知、不会退出，
+     * 每重启一次就多一个孤儿，覆盖安装后还跑着旧 apk 的代码。同一时刻只该有一个实例，
+     * 所以新实例起来时结束同名、同 uid、启动更早的进程；只杀更早的，两个同时起来时不会互相杀光。
+     */
+    private fun killStaleInstances() {
+        val self = android.os.Process.myPid()
+        val name = cmdlineName(self) ?: return
+        // 名字没改成「包名:后缀」说明不在预期的进程里，宁可不动
+        if (!name.contains(':')) return
+        val uid = android.os.Process.myUid()
+        val started = startTime(self) ?: return
+        java.io.File("/proc").listFiles()?.forEach { dir ->
+            val pid = dir.name.toIntOrNull() ?: return@forEach
+            if (pid == self || cmdlineName(pid) != name) return@forEach
+            val owner = runCatching { android.system.Os.stat(dir.path).st_uid }.getOrNull()
+            val time = startTime(pid)
+            if (owner == uid && time != null && time < started) android.os.Process.killProcess(pid)
+        }
+    }
+
+    private fun cmdlineName(pid: Int): String? = runCatching {
+        java.io.File("/proc/$pid/cmdline").readText().substringBefore('\u0000').trim()
+    }.getOrNull()?.takeIf { it.isNotEmpty() }
+
+    /** /proc/pid/stat 第 22 项（开机以来的时钟滴答）。进程名可能含空格与括号，从最后一个 ')' 之后数。 */
+    private fun startTime(pid: Int): Long? = runCatching {
+        java.io.File("/proc/$pid/stat").readText().substringAfterLast(')').trim().split(' ')[19].toLong()
+    }.getOrNull()
 
     /** 反射调用的异常包在 InvocationTargetException 里，取出真正的原因。 */
     private fun describe(t: Throwable): String {
