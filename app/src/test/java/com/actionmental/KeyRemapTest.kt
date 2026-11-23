@@ -230,6 +230,22 @@ class KeyRemapTest {
     }
 
     @Test
+    fun `键盘固件随主键同一帧发出的 Shift 不被映射改写，Fn + L 照样打出问号`() {
+        val emitted = mutableListOf<KeyCombo>()
+        val pipeline = KeyPipeline(traceCapacity = 0).apply {
+            onTrigger = { _, _ -> false }
+            rewriteCombo = { combo, pressed, _ -> rewriteModifiers(combo, pressed, listOf(shiftToAlt)) }
+            onRemap = { original, effective, _ ->
+                if (effective == original) false else { emitted += effective; true }
+            }
+        }
+
+        pipeline.dispatch(down(KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.META_SHIFT_ON, at = 100L))
+        assertFalse(pipeline.dispatch(down(KeyEvent.KEYCODE_SLASH, KeyEvent.META_SHIFT_ON, at = 100L)))
+        assertTrue(emitted.isEmpty())
+    }
+
+    @Test
     fun `只添上修饰位的改写不退回原组合，Caps + 1 不会触发单独 1 的快捷键`() {
         val ctrlOne = KeyCombo(KeyEvent.KEYCODE_1, KeyCombo.MOD_CTRL)
         assertNull(KeyPipeline.physicalFallback(KeyCombo(KeyEvent.KEYCODE_1), ctrlOne, 0))
@@ -426,9 +442,12 @@ class KeyRemapTest {
         }
     }
 
-    private fun down(keyCode: Int, metaState: Int = 0, repeatCount: Int = 0) =
-        NormalizedKeyEvent(keyCode, 0, metaState, true, repeatCount, 1L, KeyboardDevice.UNKNOWN)
+    /** 手按的键各有各的时刻；同一时刻按下的修饰键会被当成键盘固件随主键发出的。 */
+    private var clock = 0L
+
+    private fun down(keyCode: Int, metaState: Int = 0, repeatCount: Int = 0, at: Long = ++clock) =
+        NormalizedKeyEvent(keyCode, 0, metaState, true, repeatCount, at, KeyboardDevice.UNKNOWN)
 
     private fun up(keyCode: Int, metaState: Int = 0) =
-        NormalizedKeyEvent(keyCode, 0, metaState, false, 0, 1L, KeyboardDevice.UNKNOWN)
+        NormalizedKeyEvent(keyCode, 0, metaState, false, 0, ++clock, KeyboardDevice.UNKNOWN)
 }

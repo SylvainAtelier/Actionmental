@@ -157,6 +157,9 @@ class KeyPipeline(
     private val traceIds = AtomicLong(0)
     private val consumedKeyCodes = mutableSetOf<Int>()
 
+    /** 按着的修饰键 → 按下时刻（eventTime）。只在按键线程上读写。 */
+    private val modifierDownAt = mutableMapOf<Int, Long>()
+
     /** 正在等待「轻点」判定的修饰键。只在按键线程上读写。 */
     private var tapCandidate: Int? = null
 
@@ -318,7 +321,7 @@ class KeyPipeline(
 
         // 修饰键映射先生效：快捷键按改写后的组合匹配，
         // 于是「左 Shift 映射成 Alt」之后，Alt + X 的快捷键真的能被 左Shift + X 按出来
-        val effective = rewriteCombo?.invoke(combo, _snapshot.value.pressedKeyCodes, e.device) ?: combo
+        val effective = rewriteCombo?.invoke(combo, rewritablePressed(e), e.device) ?: combo
 
         // 改写后的组合没绑东西，再拿手指真按下的组合问一次：录制录的就是它（见上），
         // 「左 Shift → 左 Alt」之后录下的 Shift + / 才匹配得上，而不是被当成 Alt + / 发出去
@@ -348,7 +351,20 @@ class KeyPipeline(
     private fun modalModifiers(e: NormalizedKeyEvent): Int {
         if (e.isModifier) return e.modifiers
         val rewrite = rewriteCombo ?: return e.modifiers
-        return rewrite(KeyCombo(e.keyCode, e.modifiers), _snapshot.value.pressedKeyCodes, e.device).modifiers
+        return rewrite(KeyCombo(e.keyCode, e.modifiers), rewritablePressed(e), e.device).modifiers
+    }
+
+    /**
+     * 交给修饰键映射的「按着的键」，去掉与主键同一帧按下的修饰键。
+     *
+     * 那是键盘固件随主键一起发出的修饰位：Fn + L 在固件里就是「左 Shift + /」，一份 HID 报告，
+     * 两颗键的时间戳完全相同。它属于这颗键的字符本身，不是手指按的修饰键 ——
+     * 照映射改写的话，「左 Shift ↔ 左 Alt」对调后 Fn + L 就成了 Alt + /，什么也打不出来。
+     */
+    private fun rewritablePressed(e: NormalizedKeyEvent): Set<Int> {
+        val pressed = _snapshot.value.pressedKeyCodes
+        if (modifierDownAt.none { it.value == e.eventTimeMs }) return pressed
+        return pressed.filterTo(mutableSetOf()) { modifierDownAt[it] != e.eventTimeMs }
     }
 
     fun clearTraces() {
@@ -395,6 +411,10 @@ class KeyPipeline(
         deviceCache.getOrPut(deviceId) { KeyboardDevice.from(InputDevice.getDevice(deviceId)) }
 
     private fun updateSnapshot(e: NormalizedKeyEvent) {
+        if (e.isModifier) {
+            if (!e.down) modifierDownAt -= e.keyCode
+            else if (e.repeatCount == 0) modifierDownAt[e.keyCode] = e.eventTimeMs
+        }
         _snapshot.update { prev ->
             val keys = prev.pressedKeyCodes.toMutableSet()
             if (e.down) keys += e.keyCode else keys -= e.keyCode
@@ -440,6 +460,7 @@ class KeyPipeline(
         _snapshot.value = KeyPressSnapshot()
         deviceCache.clear()
         consumedKeyCodes.clear()
+        modifierDownAt.clear()
         activeRemaps.clear()
         tapCandidate = null
     }

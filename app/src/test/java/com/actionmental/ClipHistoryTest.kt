@@ -497,13 +497,15 @@ class ClipHistoryTest {
 
     // --- 管线的模态接管 -------------------------------------------------------
 
+    private var clock = 0L
+
     private fun key(down: Boolean, keyCode: Int, metaState: Int = 0, repeat: Int = 0) = NormalizedKeyEvent(
         keyCode = keyCode,
         scanCode = 0,
         metaState = metaState,
         down = down,
         repeatCount = repeat,
-        eventTimeMs = 1L,
+        eventTimeMs = ++clock,
         device = KeyboardDevice.UNKNOWN,
     )
 
