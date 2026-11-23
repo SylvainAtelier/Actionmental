@@ -42,6 +42,9 @@ class KeyPipeline(
      */
     var rewriteCombo: ((KeyCombo, Set<Int>, KeyboardDevice) -> KeyCombo)? = null
 
+    /** 这把键盘上映射产出的修饰位，见 [physicalFallback]。 */
+    var remappedModifiers: ((KeyboardDevice) -> Int)? = null
+
     /**
      * 整颗替换。
      *
@@ -320,7 +323,8 @@ class KeyPipeline(
         // 改写后的组合没绑东西，再拿手指真按下的组合问一次：录制录的就是它（见上），
         // 「左 Shift → 左 Alt」之后录下的 Shift + / 才匹配得上，而不是被当成 Alt + / 发出去
         val matched = (onTrigger?.invoke(effective, e.device) ?: false) ||
-            (physicalFallback(combo, effective)?.let { onTrigger?.invoke(it, e.device) } ?: false)
+            (physicalFallback(combo, effective, remappedModifiers?.invoke(e.device) ?: 0)
+                ?.let { onTrigger?.invoke(it, e.device) } ?: false)
         val remapped = !matched && (onRemap?.invoke(combo, effective, e.device) ?: false)
         if (!matched && !remapped) {
             // 没绑定的键是绝大多数：打字时每一个字母都走到这里。
@@ -447,10 +451,12 @@ class KeyPipeline(
          * 只在改写**摘掉**了手指真按着的修饰位时才退（Shift 被映射成 Alt：原组合里的 Shift 是真按着的）。
          * 只是**添上**修饰位的不退（Caps → Ctrl：原组合「1」里根本没有 Caps 的影子），
          * 否则按着 Caps + 1 会去触发绑在单独「1」上的快捷键。
+         * 摘掉的位若由别的映射产出（Alt ↔ Shift 对调）也不退：那颗修饰键已经搬到别的键上，
+         * 退回去等于物理 Alt 照旧触发 Alt 快捷键，对调就失效了。
          */
-        fun physicalFallback(original: KeyCombo, effective: KeyCombo): KeyCombo? {
+        fun physicalFallback(original: KeyCombo, effective: KeyCombo, remapped: Int): KeyCombo? {
             if (original == effective) return null
-            val removed = original.modifiers and effective.modifiers.inv()
+            val removed = original.modifiers and effective.modifiers.inv() and remapped.inv()
             return original.takeIf { removed != 0 }
         }
 

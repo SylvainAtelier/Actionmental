@@ -232,13 +232,36 @@ class KeyRemapTest {
     @Test
     fun `只添上修饰位的改写不退回原组合，Caps + 1 不会触发单独 1 的快捷键`() {
         val ctrlOne = KeyCombo(KeyEvent.KEYCODE_1, KeyCombo.MOD_CTRL)
-        assertNull(KeyPipeline.physicalFallback(KeyCombo(KeyEvent.KEYCODE_1), ctrlOne))
-        assertNull(KeyPipeline.physicalFallback(ctrlOne, ctrlOne))
+        assertNull(KeyPipeline.physicalFallback(KeyCombo(KeyEvent.KEYCODE_1), ctrlOne, 0))
+        assertNull(KeyPipeline.physicalFallback(ctrlOne, ctrlOne, 0))
         val shiftSlash = KeyCombo(KeyEvent.KEYCODE_SLASH, KeyCombo.MOD_SHIFT)
         assertEquals(
             shiftSlash,
-            KeyPipeline.physicalFallback(shiftSlash, KeyCombo(KeyEvent.KEYCODE_SLASH, KeyCombo.MOD_ALT)),
+            KeyPipeline.physicalFallback(shiftSlash, KeyCombo(KeyEvent.KEYCODE_SLASH, KeyCombo.MOD_ALT), KeyCombo.MOD_ALT),
         )
+    }
+
+    @Test
+    fun `Alt 与 Shift 对调后，物理 Alt + Tab 不再退回去触发 Alt + Tab 的快捷键`() {
+        val matcher = KeyRemapMatcher().apply {
+            update(listOf(shiftToAlt, KeyRemap("n", altLeft, shiftLeft)))
+        }
+        val altTab = KeyCombo(KeyEvent.KEYCODE_TAB, KeyCombo.MOD_ALT)
+        val fired = mutableListOf<KeyCombo>()
+        val emitted = mutableListOf<KeyCombo>()
+        val pipeline = KeyPipeline(traceCapacity = 0).apply {
+            onTrigger = { combo, _ -> fired += combo; combo == altTab }
+            rewriteCombo = { combo, pressed, device -> matcher.rewrite(combo, pressed, device) }
+            remappedModifiers = { device -> matcher.targetModifiers(device) }
+            onRemap = { _, effective, _ -> emitted += effective; true }
+        }
+
+        pipeline.dispatch(down(KeyEvent.KEYCODE_ALT_LEFT, KeyEvent.META_ALT_ON))
+        pipeline.dispatch(down(KeyEvent.KEYCODE_TAB, KeyEvent.META_ALT_ON))
+
+        val shiftTab = KeyCombo(KeyEvent.KEYCODE_TAB, KeyCombo.MOD_SHIFT)
+        assertEquals(listOf(shiftTab), fired)
+        assertEquals(listOf(shiftTab), emitted)
     }
 
     @Test

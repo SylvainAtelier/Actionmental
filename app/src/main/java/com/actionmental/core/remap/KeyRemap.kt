@@ -133,6 +133,16 @@ class KeyRemapMatcher {
         val rules = sources.mapNotNull { source -> match(source, device)?.takeIf { it.isModifierRemap } }
         return rewriteModifiers(combo, pressedKeyCodes, rules)
     }
+
+    /** 这把键盘上由映射产出的修饰位：Shift → Alt 时为 ALT。对调两颗修饰键时两位都在。 */
+    fun targetModifiers(device: KeyboardDevice): Int {
+        val sources = index.modifierSources
+        if (sources.isEmpty()) return 0
+        return sources.fold(0) { mask, source ->
+            val rule = match(source, device)?.takeIf { it.isModifierRemap } ?: return@fold mask
+            mask or KeyCombo.selfModifierMask(rule.to.keyCode)
+        }
+    }
 }
 
 /** 空列表时给的几条常见改法，一键就能建。 */

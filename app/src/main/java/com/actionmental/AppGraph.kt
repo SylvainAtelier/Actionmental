@@ -464,7 +464,8 @@ class AppGraph private constructor(context: Context) {
                 val foreground = accessibility.foregroundPackage.value
                 // 与管线的匹配同一规则：改写后的没命中，再按手指真按下的认一次
                 val shortcut = matcher.match(effective, e.device, foreground)
-                    ?: KeyPipeline.physicalFallback(combo, effective)?.let { matcher.match(it, e.device, foreground) }
+                    ?: KeyPipeline.physicalFallback(combo, effective, remapMatcher.targetModifiers(e.device))
+                        ?.let { matcher.match(it, e.device, foreground) }
                 shortcut?.action == Action.ClipboardHistory
             } ?: false
         },
@@ -1422,6 +1423,7 @@ class AppGraph private constructor(context: Context) {
         // 快捷键匹配用的就是改写后的组合 —— 于是「左 Shift 映射成 Alt」以后，
         // 绑在 Alt + X 上的快捷键真的能被 左 Shift + X 按出来。
         pipeline.rewriteCombo = { combo, pressed, device -> remapMatcher.rewrite(combo, pressed, device) }
+        pipeline.remappedModifiers = { device -> remapMatcher.targetModifiers(device) }
 
         // 整颗替换：源键的按下 / 连发 / 抬起被拦下，换成目标键的同一半事件。
         // 输入法看不到原键，所以「短按左 Shift 切中英文」这类由原键触发的行为也一并消失。
