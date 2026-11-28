@@ -134,9 +134,20 @@ class ShizukuManager(
         ((updated / 1000) % Int.MAX_VALUE).toInt().coerceAtLeast(1)
     }.getOrDefault(4)
 
+    /**
+     * daemon：主进程被杀时特权进程不跟着退。Athena 查杀本应用时从不碰 uid 2000 的进程，
+     * 留下的这个既能把主进程拉回来（[setGuarded]），重启后也不必再花 1–3 秒重建它。
+     */
     private val userServiceArgs = Shizuku.UserServiceArgs(
         ComponentName(context.packageName, PrivilegedUserService::class.java.name)
-    ).daemon(false).processNameSuffix("privileged").debuggable(false).version(serviceVersion)
+    ).daemon(true).processNameSuffix("privileged").debuggable(false).version(serviceVersion)
+
+    /** 交给特权进程的信物：它的讣告就是这个进程的死讯。 */
+    private val lifeToken = android.os.Binder()
+
+    /** 要不要让特权进程在本进程死后把它拉起来。每次连上特权服务都按它重新交代一遍。 */
+    @Volatile
+    private var guarded = false
 
     /** 守着一次绑定直到连上；超时就重置重绑。同一时刻只有一个。 */
     private val bindLock = Any()
@@ -153,6 +164,7 @@ class ShizukuManager(
                 awaitTimeoutLogged = false
                 _status.value = _status.value.copy(bindStuck = false)
                 onEvent(false, "特权服务已连接", "距请求绑定 " + sinceMs(bindRequestedAtMs) + "ms")
+                scope.launch(Dispatchers.IO) { applyGuard() }
             } else {
                 onEvent(true, "特权服务回调了连接，但 binder 为空", describe())
             }
@@ -299,6 +311,20 @@ class ShizukuManager(
         context.packageManager.getPackageInfo(SHIZUKU_PACKAGE, 0)
         true
     }.getOrDefault(false)
+
+    fun setGuarded(on: Boolean) {
+        guarded = on
+        scope.launch(Dispatchers.IO) { applyGuard() }
+    }
+
+    @Synchronized
+    private fun applyGuard() {
+        val svc = service ?: return
+        val on = guarded
+        runCatching { if (on) svc.guard(lifeToken, context.packageName) else svc.unguard() }
+            .onSuccess { onEvent(false, if (on) "特权进程开始守护主进程" else "特权进程停止守护主进程", "") }
+            .onFailure { onEvent(true, "交代守护失败", it.javaClass.simpleName + " · " + it.message.orEmpty()) }
+    }
 
     // --- PrivilegedBackend ---------------------------------------------------
 

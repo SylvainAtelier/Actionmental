@@ -88,7 +88,7 @@ service/       系统实例化的组件，尽可能薄
 - UI 不执行 shell，`Action.Shell` 也要经过 `ActionExecutor`（PRD 35.8）；
 - `AccessibilityService` 只做三件事：登记自己、转发按键、上报前台包名（PRD 35.1）；
 - Shizuku 不碰键盘（PRD 35.2）；
-- 特权侧 `PrivilegedUserService` 只有一个 `exec(String)`，没有任何业务逻辑。
+- 特权侧 `PrivilegedUserService` 只提供受控能力（命令、按键注入、剪贴板、拉起主进程），没有任何业务逻辑。
 
 ### 能力分层
 
@@ -174,6 +174,12 @@ Shizuku 是唯一能「向系统注入任意按键」「执行 `cmd window`」�
 
 常亮与常驻前台服务不受暂停管：常亮不依赖键盘，悬浮层不收事件、不跑定时器；
 常驻服务要让进程活到键盘回来，自动暂停才解除得了。
+
+「常驻」挡不住 ColorOS Athena 的内存清理：它照杀 adj=100、开着前台服务、在后台保护名单里的进程，
+而系统自己重启无障碍服务要几十秒。所以同一个开关还让特权进程（Shizuku user service，uid 2000，
+以 daemon 运行，不在 Athena 的查杀范围里）盯住主进程：主进程一死，`AppGuardian` 经 shell 访问
+本应用导出的 `ShizukuProvider` 把进程拉起，挂着的无障碍服务随之绑回，实测约 1 秒。
+无障碍里关掉了本应用、或应用被强行停止时不拉；连续被杀按 2s 起、×4、封顶 60s 退避。
 
 常亮是会一直耗电、又可能被一个快捷键悄悄按开的状态，所以它有三处可见性，
 三处读的都是同一个 `ScreenAwakeController.state`：状态中心的开关卡、快捷设置磁贴、

@@ -81,7 +81,7 @@ On Android 13 and newer, the app can request the Force Landscape tile. Add the S
 - A bounded in-memory trace of up to 200 key events. The monitor enables collection only while it is open.
 - Runtime, shell, process-exit, thermal, and process-vitals diagnostics.
 - Copyable diagnostic output and clearable local logs.
-- Optional process residency through a foreground service.
+- Optional process residency: a foreground service, plus near-instant relaunch through Shizuku when the system clears the app anyway.
 - Optional Shizuku hardening for the Doze allowlist and background app-operation settings, with readback verification.
 - Best-effort Accessibility Service recovery after OEM task killers or a reboot, with visible notifications and an audit history.
 - An eight-step onboarding flow that checks the required capabilities and installs starter shortcuts.

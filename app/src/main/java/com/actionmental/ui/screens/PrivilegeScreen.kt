@@ -248,9 +248,8 @@ fun PrivilegeScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                "设备上记录到的每一次被杀都是同一条 bgLimit_level_thermal —— 温控升到高位后，" +
-                    "系统清理的是「后台」进程，而不是「占得多」的进程：内存从 977MB 压到 104MB 之后照样被杀。" +
-                    "开启后本应用算作前台，那条清理挑不到它。",
+                "系统内存紧张时，本应用即使算作前台、在后台保护名单里，也照样会被清掉，没有办法完全避免。" +
+                    "开启后，只要 Shizuku 可用，本应用一被清掉就会立刻被拉回来，按键映射只中断一瞬间。",
                 style = AmType.secondary,
                 color = c.inkMid,
             )

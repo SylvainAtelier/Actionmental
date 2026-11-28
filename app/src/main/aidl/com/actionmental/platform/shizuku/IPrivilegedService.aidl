@@ -27,4 +27,8 @@ interface IPrivilegedService {
      * deviceId 为触发它的那把实体键盘：有的输入法只认实体键盘来的快捷键。返回空串表示成功。
      */
     String injectSequence(int deviceId, in int[] keyCodes, in int[] downs, in int[] metaStates) = 10;
+    /** 盯住主进程：client 死掉时经 shell 把 packageName 拉起来。再调一次即换成新的 client。 */
+    void guard(IBinder client, String packageName) = 11;
+    /** 不再盯：主进程之后的死亡不再拉起。 */
+    void unguard() = 12;
 }

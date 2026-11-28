@@ -2165,7 +2165,7 @@ class AppGraph private constructor(context: Context) {
     }
 
     /**
-     * 开 / 关常驻前台服务。
+     * 开 / 关常驻：前台服务，加上特权进程对本进程的守护。
      *
      * 失败必须留痕：Android 12 起从后台启动前台服务是受限的，而进程被杀之后的
      * 那一次重启恰好就在后台 —— 静默失败的表现是「开关是开的、通知栏什么都没有」，
@@ -2174,6 +2174,7 @@ class AppGraph private constructor(context: Context) {
     private fun applyKeepAlive(on: Boolean) {
         val wasOn = keepAliveOn
         keepAliveOn = on
+        shizuku.setGuarded(on)
         val intent = Intent(appContext, KeepAliveService::class.java)
         runCatching {
             when {

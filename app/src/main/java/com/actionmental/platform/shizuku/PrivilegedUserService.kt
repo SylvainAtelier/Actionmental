@@ -10,8 +10,10 @@ import java.io.BufferedReader
 /**
  * 运行在 Shizuku 授予的 shell 进程中的特权服务。
  *
- * 只提供三种受控能力：执行一条命令、注入一次按键、以 shell 身份读写与监听剪贴板。
+ * 只提供几种受控能力：执行一条命令、注入按键、以 shell 身份读写与监听剪贴板、主进程死后把它拉起。
  * 业务逻辑一律不放在这里（PRD 21 · PrivilegedService）。
+ *
+ * 以 daemon 方式运行：主进程被杀时它留着，既负责拉起（[AppGuardian]），重启后的主进程也省掉重建它的 1–3 秒。
  * [exec] 的返回值统一编码为 "exitCode\n输出"，避免再定义一套 AIDL 数据类型。
  */
 class PrivilegedUserService : IPrivilegedService.Stub() {
@@ -34,6 +36,12 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
     override fun destroy() {
         System.exit(0)
     }
+
+    private val guardian by lazy { AppGuardian(::exec) }
+
+    override fun guard(client: android.os.IBinder, packageName: String) = guardian.guard(client, packageName)
+
+    override fun unguard() = guardian.unguard()
 
     override fun exec(command: String): String = try {
         val process = ProcessBuilder("sh", "-c", command)
@@ -132,7 +140,7 @@ class PrivilegedUserService : IPrivilegedService.Stub() {
             try {
                 sink.onClip(text, ShellClipboard.isSensitive(clip))
             } catch (_: android.os.DeadObjectException) {
-                // 主进程没了：特权进程随后也会被 Shizuku 收掉，先把监听摘下来
+                // 主进程没了：把监听摘下来，重启后的主进程会重新挂
                 clipboard.unwatch(userId)
             }
         }

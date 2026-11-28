@@ -23,9 +23,9 @@ import com.actionmental.R
  *
  * 但它也不是只挑「在后台的」：后来记到的一次死亡写的是
  * `bgLimit_level_thermal_10[(service){fg-service}]` —— 前台服务开着，照样被同一条
- * 策略收走。所以这个开关只是把顺位往后挪一点，**不是**保命符；真正能改变结论的
- * 是别让机器热起来：见 RotationController 的写入去重与 execBatch，
- * 那里才是这个应用曾经烧掉的 CPU。
+ * 策略收走；ColorOS Athena 的内存清理 o-kill(4008) 也照杀前台服务（adj=100）。
+ * 所以它只是把顺位往后挪一点，**不是**保命符。同一个开关还让特权进程在本进程死后
+ * 立刻把它拉回来（ShizukuManager.setGuarded），缩短停机靠的是那一路。
  *
  * 代价是通知栏里一条撤不掉的通知，所以它默认关闭，由用户在「后台加固」页明确打开。
  *
@@ -35,6 +35,9 @@ import com.actionmental.R
 class KeepAliveService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    /** 进程重启时系统按 START_STICKY 拉一次、开关再发一次，同一个实例只记第一次进前台。 */
+    private var announced = false
 
     /**
      * 一进来就必须 startForeground —— 哪怕这一趟是来关掉它的。
@@ -69,7 +72,8 @@ class KeepAliveService : Service() {
             }
         }.fold(
             onSuccess = {
-                if (!stopping) log.info("keepalive", "常驻前台服务已启动")
+                if (!stopping && !announced) log.info("keepalive", "常驻前台服务已启动")
+                announced = !stopping
                 true
             },
             onFailure = {
